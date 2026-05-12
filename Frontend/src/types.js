@@ -1,4 +1,21 @@
 /**
+ * @typedef {Object} AuthUser
+ * @property {string} [id]
+ * @property {string} name
+ * @property {string} email
+ * @property {string} role
+ */
+
+/**
+ * @typedef {Object} TeamUserRow
+ * @property {string} id
+ * @property {string} name
+ * @property {string} email
+ * @property {string} role
+ * @property {boolean} active
+ */
+
+/**
  * @typedef {Object} Sale
  * @property {string} id
  * @property {string} customerName

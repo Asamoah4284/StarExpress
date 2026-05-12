@@ -1,8 +1,11 @@
 import * as React from "react"
-import { Navigate, useLocation, useNavigate } from "react-router-dom"
-import { Lock, Satellite } from "lucide-react"
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom"
+import { Lock, Loader2, Satellite } from "lucide-react"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { MOCK_LOGIN_EMAIL, MOCK_LOGIN_PASSWORD } from "@/lib/authCredentials.js"
+import { isBackendEnabled } from "@/lib/env.js"
+import { PasswordField } from "@/components/auth/PasswordField.jsx"
+import { ApiDisabledNotice } from "@/components/auth/ApiDisabledNotice.jsx"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -16,26 +19,42 @@ import {
 } from "@/components/ui/card"
 
 export default function Login() {
-  const { isAuthenticated, login } = useAuth()
+  const { isAuthenticated, authReady, login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = typeof location.state?.from === "string" ? location.state.from : "/"
+  const useApi = isBackendEnabled()
 
   const [email, setEmail] = React.useState("")
   const [password, setPassword] = React.useState("")
   const [error, setError] = React.useState(false)
+  const [submitting, setSubmitting] = React.useState(false)
+
+  if (!authReady) {
+    return (
+      <div className="text-foreground bg-canvas flex min-h-svh items-center justify-center dark:bg-background">
+        <Loader2 className="text-primary size-8 animate-spin" aria-label="Loading" />
+      </div>
+    )
+  }
 
   if (isAuthenticated) {
     return <Navigate to={from === "/login" ? "/" : from} replace />
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     setError(false)
-    if (login(email, password)) {
-      navigate(from === "/login" || !from.startsWith("/") ? "/" : from, { replace: true })
-    } else {
-      setError(true)
+    setSubmitting(true)
+    try {
+      const ok = await login(email, password)
+      if (ok) {
+        navigate(from === "/login" || !from.startsWith("/") ? "/" : from, { replace: true })
+      } else {
+        setError(true)
+      }
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -65,6 +84,8 @@ export default function Login() {
             Secure access to sales, inventory, locations, and team tools.
           </p>
         </div>
+
+        <ApiDisabledNotice />
 
         <Card className="border-border/70 w-full gap-0 overflow-hidden rounded-xl border bg-card/90 py-0 shadow-[0_20px_60px_-24px_rgba(124,58,237,0.3),0_8px_28px_-14px_rgba(15,23,42,0.1)] ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-card/85 dark:shadow-[0_28px_90px_-32px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.06)] dark:ring-white/[0.08] sm:gap-4 sm:rounded-2xl sm:py-1 sm:shadow-[0_28px_90px_-28px_rgba(124,58,237,0.35),0_12px_40px_-18px_rgba(15,23,42,0.12)]">
           <div className="from-primary via-primary/90 to-primary/70 h-0.5 w-full bg-gradient-to-r sm:h-1" aria-hidden />
@@ -107,10 +128,9 @@ export default function Login() {
                 <Label htmlFor="login-password" className="text-foreground text-sm font-medium dark:text-foreground">
                   Password
                 </Label>
-                <Input
+                <PasswordField
                   id="login-password"
                   name="password"
-                  type="password"
                   autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -122,15 +142,18 @@ export default function Login() {
               </div>
               {error ? (
                 <p id="login-error" className="text-destructive bg-destructive/8 rounded-md px-2.5 py-1.5 text-xs leading-snug dark:bg-destructive/15 sm:px-3 sm:py-2 sm:text-sm sm:leading-normal" role="alert">
-                  Invalid email or password. Check the demo credentials below and try again.
+                  {useApi
+                    ? "Invalid email or password."
+                    : "Invalid email or password. Check the demo credentials below and try again."}
                 </p>
               ) : null}
               <Button
                 type="submit"
                 size="lg"
-                className="h-10 w-full rounded-md text-sm font-semibold shadow-md shadow-primary/20 transition-[box-shadow,transform] hover:shadow-lg hover:shadow-primary/25 active:scale-[0.99] dark:shadow-primary/10 dark:hover:shadow-primary/20 sm:h-11 sm:rounded-lg sm:text-base"
+                disabled={submitting}
+                className="h-10 w-full rounded-md text-sm font-semibold shadow-md shadow-primary/20 transition-[box-shadow,transform] hover:shadow-lg hover:shadow-primary/25 active:scale-[0.99] disabled:opacity-70 dark:shadow-primary/10 dark:hover:shadow-primary/20 sm:h-11 sm:rounded-lg sm:text-base"
               >
-                Sign in
+                {submitting ? "Signing in…" : "Sign in"}
               </Button>
             </form>
           </CardContent>
@@ -138,22 +161,37 @@ export default function Login() {
           <CardFooter className="border-border/60 bg-muted/40 flex flex-col gap-1 rounded-b-xl border-t px-4 py-2.5 sm:gap-2 sm:rounded-b-2xl sm:px-8 sm:py-4 dark:border-border/60 dark:bg-muted/25">
             <div className="text-muted-foreground flex items-center justify-center gap-1.5 text-[11px] font-medium dark:text-muted-foreground sm:gap-2 sm:text-xs">
               <Lock className="size-3 shrink-0 opacity-70 sm:size-3.5" aria-hidden />
-              <span>Mock environment</span>
+              <span>{useApi ? "API environment" : "Mock environment"}</span>
             </div>
-            <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
-              Demo sign-in — email{" "}
-              <code className="text-foreground bg-background/80 rounded px-1.5 py-0.5 font-mono text-[11px] font-medium dark:bg-background/60 dark:text-foreground">
-                {MOCK_LOGIN_EMAIL}
-              </code>{" "}
-              · password{" "}
-              <code className="text-foreground bg-background/80 rounded px-1.5 py-0.5 font-mono text-[11px] font-medium dark:bg-background/60 dark:text-foreground">
-                {MOCK_LOGIN_PASSWORD}
-              </code>
-            </p>
+            {useApi ? (
+              <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
+                Use the administrator email and password from your <code className="text-foreground bg-background/80 rounded px-1 font-mono dark:bg-background/60">Backend/.env</code> file (
+                <code className="text-foreground bg-background/80 rounded px-1 font-mono">ADMIN_EMAIL</code>,{" "}
+                <code className="text-foreground bg-background/80 rounded px-1 font-mono">ADMIN_PASSWORD</code>).
+              </p>
+            ) : (
+              <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
+                Demo sign-in — email{" "}
+                <code className="text-foreground bg-background/80 rounded px-1.5 py-0.5 font-mono text-[11px] font-medium dark:bg-background/60 dark:text-foreground">
+                  {MOCK_LOGIN_EMAIL}
+                </code>{" "}
+                · password{" "}
+                <code className="text-foreground bg-background/80 rounded px-1.5 py-0.5 font-mono text-[11px] font-medium dark:bg-background/60 dark:text-foreground">
+                  {MOCK_LOGIN_PASSWORD}
+                </code>
+              </p>
+            )}
           </CardFooter>
         </Card>
 
-        <p className="text-muted-foreground mt-4 max-w-sm text-center text-[10px] leading-snug dark:text-muted-foreground sm:mt-8 sm:text-[11px] sm:leading-relaxed">
+        <p className="text-muted-foreground mt-4 text-center text-xs dark:text-muted-foreground sm:mt-6">
+          Need an account?{" "}
+          <Link to="/signup" className="text-primary font-medium underline-offset-4 hover:underline dark:text-primary">
+            Create one
+          </Link>
+        </p>
+
+        <p className="text-muted-foreground mt-2 max-w-sm text-center text-[10px] leading-snug dark:text-muted-foreground sm:mt-4 sm:text-[11px] sm:leading-relaxed">
           This is a front-end demo. Do not reuse these credentials in production.
         </p>
       </div>
