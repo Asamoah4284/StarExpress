@@ -1,20 +1,21 @@
 import * as React from "react"
-import { Outlet } from "react-router-dom"
+import { Outlet, useNavigate } from "react-router-dom"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Sidebar } from "@/components/layout/Sidebar.jsx"
 import { TopBar } from "@/components/layout/TopBar.jsx"
 import { useSidebarCollapsed } from "@/hooks/use-sidebar-collapsed.js"
-import { users } from "@/data/users.js"
-
-const currentUser = users[0]
+import { useAuth } from "@/context/AuthContext.jsx"
 
 export function MainLayout() {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
   const { collapsed, toggle } = useSidebarCollapsed()
   const [mobileOpen, setMobileOpen] = React.useState(false)
 
   const handleLogout = React.useCallback(() => {
-    console.info("Logout (UI only — no backend).")
-  }, [])
+    logout()
+    navigate("/login", { replace: true })
+  }, [logout, navigate])
 
   return (
     <div className="flex h-svh w-full overflow-hidden bg-canvas text-foreground">
@@ -23,7 +24,7 @@ export function MainLayout() {
           collapsed={collapsed}
           onToggleCollapse={toggle}
           onLogout={handleLogout}
-          user={currentUser}
+          user={user}
         />
       </div>
 
@@ -33,7 +34,7 @@ export function MainLayout() {
             className="h-full min-h-0 border-0"
             collapsed={false}
             onToggleCollapse={toggle}
-            user={currentUser}
+            user={user}
             onLogout={() => {
               setMobileOpen(false)
               handleLogout()
@@ -45,7 +46,7 @@ export function MainLayout() {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <TopBar
-          user={{ name: currentUser.name, role: currentUser.role, email: currentUser.email }}
+          user={{ name: user.name, role: user.role, email: user.email }}
           onMenuClick={() => setMobileOpen(true)}
           onLogout={handleLogout}
         />
