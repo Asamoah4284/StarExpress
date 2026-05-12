@@ -1,0 +1,17 @@
+export const auditLogs = [
+  { id: "a1", actor: "Nana Adjoa", action: "Updated location pricing (Accra)", at: "2026-05-11T08:12:00Z" },
+  { id: "a2", actor: "Yaw Darko", action: "Created new package draft (Maritime)", at: "2026-05-11T07:55:00Z" },
+  { id: "a3", actor: "Kojo Owusu", action: "Recorded sale #SX-2041", at: "2026-05-10T16:40:00Z" },
+  { id: "a4", actor: "Akosua Boateng", action: "Deactivated user kwaku@starexpress.local", at: "2026-05-10T14:02:00Z" },
+  { id: "a5", actor: "Abena Frimpong", action: "Exported sales CSV", at: "2026-05-10T11:18:00Z" },
+  { id: "a6", actor: "Nana Adjoa", action: "Resolved dispute d4", at: "2026-05-09T19:22:00Z" },
+  { id: "a7", actor: "Selorm Agbeko", action: "Added location note (Tema)", at: "2026-05-09T09:05:00Z" },
+  { id: "a8", actor: "Yaw Darko", action: "Changed theme default to light", at: "2026-05-08T13:44:00Z" },
+  { id: "a9", actor: "Esi Osei", action: "Updated customer phone (sale #SX-1998)", at: "2026-05-08T10:30:00Z" },
+  { id: "a10", actor: "Akosua Boateng", action: "Promoted agent to Admin (pending)", at: "2026-05-07T17:11:00Z" },
+  { id: "a11", actor: "Kojo Owusu", action: "Voided sale #SX-1977", at: "2026-05-06T15:50:00Z" },
+  { id: "a12", actor: "Nana Adjoa", action: "Updated company display name", at: "2026-05-05T08:00:00Z" },
+  { id: "a13", actor: "Abena Frimpong", action: "Bulk import packages (skipped 2)", at: "2026-05-04T12:25:00Z" },
+  { id: "a14", actor: "Yaw Darko", action: "Locked reporting period April", at: "2026-05-03T23:59:00Z" },
+  { id: "a15", actor: "Selorm Agbeko", action: "Reset filter presets for Sales", at: "2026-05-02T09:17:00Z" },
+]
