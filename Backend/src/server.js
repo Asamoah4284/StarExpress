@@ -28,24 +28,60 @@ function envTruthy(key) {
 /**
  * Comma- or newline-separated browser origins (scheme + host + port).
  * @param {string | undefined} raw
- * @returns {string | string[]}
+ * @returns {string[]}
  */
-function parseCorsOrigins(raw) {
-  const fallback = "http://localhost:5173"
+function parseCorsOriginsList(raw) {
+  const fallback = ["http://localhost:5173", "http://127.0.0.1:5173"]
   if (raw == null || String(raw).trim() === "") return fallback
   const list = String(raw)
     .split(/[,;\n]+/)
     .map((x) => x.trim())
     .filter(Boolean)
-  if (list.length === 0) return fallback
-  if (list.length === 1) return list[0]
-  return list
+  return list.length ? list : fallback
+}
+
+/**
+ * Any Vercel deployment host (production, preview, branch URLs).
+ * @param {string | undefined} origin
+ */
+function isVercelAppOrigin(origin) {
+  if (!origin) return false
+  try {
+    const { hostname } = new URL(origin)
+    const h = hostname.toLowerCase()
+    return h === "vercel.app" || h.endsWith(".vercel.app")
+  } catch {
+    return false
+  }
+}
+
+/**
+ * @param {string[]} explicitOrigins
+ * @param {boolean} allowAllVercelApp
+ */
+function createCorsOriginCallback(explicitOrigins, allowAllVercelApp) {
+  return (/** @type {string | undefined} */ origin, /** @type {(err: null, allow?: boolean) => void} */ callback) => {
+    if (!origin) {
+      callback(null, true)
+      return
+    }
+    if (explicitOrigins.includes(origin)) {
+      callback(null, true)
+      return
+    }
+    if (allowAllVercelApp && isVercelAppOrigin(origin)) {
+      callback(null, true)
+      return
+    }
+    callback(null, false)
+  }
 }
 
 const PORT = Number(process.env.PORT) || 4000
 const JWT_SECRET = process.env.JWT_SECRET
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d"
-const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN)
+const corsExplicitOrigins = parseCorsOriginsList(process.env.CORS_ORIGIN)
+const corsAllowAllVercelApp = !envTruthy("CORS_DISABLE_VERCEL_APP")
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const BCRYPT_SALT_ROUNDS = Number(process.env.BCRYPT_SALT_ROUNDS) || 10
@@ -87,10 +123,16 @@ async function main() {
   }
 
   const app = express()
-  app.use(cors({ origin: corsOrigins, credentials: false }))
+  app.use(
+    cors({
+      origin: createCorsOriginCallback(corsExplicitOrigins, corsAllowAllVercelApp),
+      credentials: false,
+    }),
+  )
   console.info(
-    "CORS origins:",
-    Array.isArray(corsOrigins) ? corsOrigins.join(" | ") : corsOrigins,
+    "CORS explicit:",
+    corsExplicitOrigins.join(" | "),
+    corsAllowAllVercelApp ? "| + any https://*.vercel.app" : "| (Vercel wildcard disabled via CORS_DISABLE_VERCEL_APP)",
   )
   app.use(express.json({ limit: "5mb" }))
 
