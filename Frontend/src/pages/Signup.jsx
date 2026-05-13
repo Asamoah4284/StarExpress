@@ -2,10 +2,7 @@ import * as React from "react"
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom"
 import { Lock, Loader2, UserPlus } from "lucide-react"
 import { useAuth } from "@/context/AuthContext.jsx"
-import { MOCK_LOGIN_EMAIL } from "@/lib/authCredentials.js"
-import { isBackendEnabled } from "@/lib/env.js"
 import { PasswordField } from "@/components/auth/PasswordField.jsx"
-import { ApiDisabledNotice } from "@/components/auth/ApiDisabledNotice.jsx"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -23,7 +20,6 @@ export default function Signup() {
   const navigate = useNavigate()
   const location = useLocation()
   const from = typeof location.state?.from === "string" ? location.state.from : "/"
-  const useApi = isBackendEnabled()
 
   const [name, setName] = React.useState("")
   const [email, setEmail] = React.useState("")
@@ -72,9 +68,7 @@ export default function Signup() {
     error === "mismatch"
       ? "Passwords do not match. Re-enter them and try again."
       : error === "exists"
-        ? useApi
-          ? "An account with this email already exists. Sign in instead."
-          : `That email is reserved for the demo account (${MOCK_LOGIN_EMAIL}). Sign in instead or use a different email.`
+        ? "An account with this email already exists. Sign in instead."
         : error === "invalid"
           ? "Enter your full name (2+ characters), a valid email, and a password of at least 6 characters."
           : error === "network"
@@ -101,14 +95,12 @@ export default function Signup() {
             StarExpress
           </p>
           <h1 className="text-foreground mt-1.5 text-2xl font-bold tracking-tight dark:text-foreground sm:mt-2 sm:text-[1.75rem] sm:leading-tight">
-            Admin console
+            Create your workspace
           </h1>
           <p className="text-muted-foreground mx-auto mt-1 max-w-[340px] text-xs leading-snug dark:text-muted-foreground sm:mt-1.5 sm:text-sm sm:leading-snug">
-            Secure access to sales, inventory, locations, and team tools.
+            First user becomes an administrator; add sales agents later from Users.
           </p>
         </div>
-
-        <ApiDisabledNotice />
 
         <Card className="border-border/70 w-full gap-0 overflow-hidden rounded-xl border bg-card/90 py-0 shadow-[0_20px_60px_-24px_rgba(124,58,237,0.3),0_8px_28px_-14px_rgba(15,23,42,0.1)] ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-card/85 dark:shadow-[0_28px_90px_-32px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.06)] dark:ring-white/[0.08] sm:rounded-2xl sm:shadow-[0_28px_90px_-28px_rgba(124,58,237,0.35),0_12px_40px_-18px_rgba(15,23,42,0.12)]">
           <div className="from-primary via-primary/90 to-primary/70 h-0.5 w-full bg-gradient-to-r sm:h-0.5" aria-hidden />
@@ -215,17 +207,11 @@ export default function Signup() {
           <CardFooter className="border-border/60 bg-muted/40 flex flex-col gap-0.5 rounded-b-xl border-t px-4 py-2 sm:rounded-b-2xl sm:px-6 sm:py-2.5 dark:border-border/60 dark:bg-muted/25">
             <div className="text-muted-foreground flex items-center justify-center gap-1.5 text-[10px] font-medium dark:text-muted-foreground sm:text-[11px]">
               <Lock className="size-3 shrink-0 opacity-70" aria-hidden />
-              <span>{useApi ? "API environment" : "Mock environment"}</span>
+              <span>API sign-up</span>
             </div>
-            {useApi ? (
-              <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
-                New accounts are stored in memory on the server until it restarts. JWT session is kept in the browser.
-              </p>
-            ) : (
-              <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
-                Demo signup — no server; your session is stored locally until you sign out.
-              </p>
-            )}
+            <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
+              New accounts are stored in MongoDB. You receive a JWT stored in session storage.
+            </p>
           </CardFooter>
         </Card>
 

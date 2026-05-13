@@ -162,3 +162,238 @@ export async function setTeamUserActive(token, id, active) {
   }
   return { ok: true }
 }
+
+/** @param {string} token */
+export async function fetchCatalog(token) {
+  const { res, data } = await parseJsonResponse("/api/catalog", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    !Array.isArray(data.locations) ||
+    !Array.isArray(data.packages) ||
+    !Array.isArray(data.sales) ||
+    !Array.isArray(data.disputes) ||
+    !Array.isArray(data.auditLogs)
+  ) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return {
+    ok: true,
+    catalog: {
+      locations: data.locations,
+      packages: data.packages,
+      sales: data.sales,
+      disputes: data.disputes,
+      auditLogs: data.auditLogs,
+    },
+  }
+}
+
+/**
+ * @param {string} token
+ * @param {{ fileName: string, rows: string[][] }} body
+ */
+export async function importVouchersBatch(token, body) {
+  const rows = body.rows.map((line) => line.map((cell) => String(cell ?? "")))
+  const { res, data } = await parseJsonResponse("/api/catalog/vouchers/batch", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ fileName: body.fileName, rows }),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    typeof data.batchId !== "string" ||
+    typeof data.inserted !== "number"
+  ) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return {
+    ok: true,
+    batchId: data.batchId,
+    inserted: data.inserted,
+    skippedAlreadyInDb: typeof data.skippedAlreadyInDb === "number" ? data.skippedAlreadyInDb : 0,
+    skippedDuplicateInFile: typeof data.skippedDuplicateInFile === "number" ? data.skippedDuplicateInFile : 0,
+    skippedNoId: typeof data.skippedNoId === "number" ? data.skippedNoId : 0,
+    totalRowsInFile: typeof data.totalRowsInFile === "number" ? data.totalRowsInFile : 0,
+  }
+}
+
+/** @param {string} token */
+export async function fetchVouchers(token) {
+  const { res, data } = await parseJsonResponse("/api/catalog/vouchers", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.vouchers)) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, vouchers: data.vouchers }
+}
+
+/** @param {string} token */
+export async function fetchAuditLogs(token) {
+  const { res, data } = await parseJsonResponse("/api/catalog/audit-logs", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.auditLogs)) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, auditLogs: data.auditLogs }
+}
+
+/**
+ * @param {string} token
+ * @param {{ name: string, address: string, manager: string, totalSales: number, managerUserId?: string | null }} body
+ */
+export async function createCatalogLocation(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/locations", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.location !== "object" || data.location === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, location: data.location }
+}
+
+/**
+ * @param {string} token
+ * @param {string} id
+ * @param {{
+ *   name?: string
+ *   address?: string
+ *   manager?: string
+ *   totalSales?: number
+ *   managerUserId?: string | null
+ * }} body
+ */
+export async function updateCatalogLocation(token, id, body) {
+  const path = `/api/catalog/locations/${encodeURIComponent(id)}`
+  const { res, data } = await parseJsonResponse(path, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.location !== "object" || data.location === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, location: data.location }
+}
+
+/** @param {string} token @param {string} id */
+export async function deleteCatalogLocation(token, id) {
+  const path = `/api/catalog/locations/${encodeURIComponent(id)}`
+  const { res, data } = await parseJsonResponse(path, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  return { ok: true }
+}
+
+/**
+ * @param {string} token
+ * @param {{ name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number }} body
+ */
+export async function createCatalogPackage(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/packages", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.package !== "object" || data.package === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, package: data.package }
+}
+
+/**
+ * @param {string} token
+ * @param {string} id
+ * @param {{ name?: string, priceGHS?: number, dataLimit?: string, status?: string, stockUnits?: number }} body
+ */
+export async function updateCatalogPackage(token, id, body) {
+  const path = `/api/catalog/packages/${encodeURIComponent(id)}`
+  const { res, data } = await parseJsonResponse(path, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.package !== "object" || data.package === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, package: data.package }
+}
+
+/** @param {string} token @param {string} id */
+export async function deleteCatalogPackage(token, id) {
+  const path = `/api/catalog/packages/${encodeURIComponent(id)}`
+  const { res, data } = await parseJsonResponse(path, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  return { ok: true }
+}
+
+/** @param {string} token @param {string} id */
+export async function resolveCatalogDispute(token, id) {
+  const path = `/api/catalog/disputes/${encodeURIComponent(id)}`
+  const { res, data } = await parseJsonResponse(path, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ status: "Resolved" }),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.dispute !== "object" || data.dispute === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, dispute: data.dispute }
+}

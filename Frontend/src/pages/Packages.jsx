@@ -1,5 +1,5 @@
 import * as React from "react"
-import { packages as seedPackages } from "@/data/packages.js"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Button } from "@/components/ui/button"
@@ -13,12 +13,18 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useAuth } from "@/context/AuthContext.jsx"
+import { useCatalog } from "@/hooks/useCatalog.js"
+import { createCatalogPackage, deleteCatalogPackage, updateCatalogPackage } from "@/lib/api.js"
 import { formatCedis } from "@/lib/utils"
 
-let idCounter = 100
-
 export default function Packages() {
-  const [rows, setRows] = React.useState(() => seedPackages.map((p) => ({ ...p })))
+  const { token, user } = useAuth()
+  const catalog = useCatalog()
+  const queryClient = useQueryClient()
+  const rows = catalog.data?.packages ?? []
+  const isAdmin = user?.role === "Admin"
+
   const [open, setOpen] = React.useState(false)
   const [editing, setEditing] = React.useState(null)
   const [form, setForm] = React.useState({
@@ -28,10 +34,62 @@ export default function Packages() {
     status: "Active",
     stockUnits: "",
   })
+  const [formError, setFormError] = React.useState(null)
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const price = Number(form.priceGHS)
+      const stock = Number(form.stockUnits)
+      if (editing) {
+        const r = await updateCatalogPackage(token, editing.id, {
+          name: form.name.trim(),
+          priceGHS: price,
+          dataLimit: form.dataLimit.trim(),
+          status: form.status,
+          stockUnits: stock,
+        })
+        if (!r.ok) throw new Error(r.error || "Update failed")
+      } else {
+        const r = await createCatalogPackage(token, {
+          name: form.name.trim(),
+          priceGHS: price,
+          dataLimit: form.dataLimit.trim(),
+          status: form.status,
+          stockUnits: stock,
+        })
+        if (!r.ok) throw new Error(r.error || "Create failed")
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["catalog"] })
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      setOpen(false)
+      setEditing(null)
+      setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active", stockUnits: "" })
+      setFormError(null)
+    },
+    onError: (err) => {
+      setFormError(err instanceof Error ? err.message : "Request failed")
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id) => {
+      if (!token) throw new Error("Not signed in")
+      const r = await deleteCatalogPackage(token, id)
+      if (!r.ok) throw new Error(r.error || "Delete failed")
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["catalog"] })
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+    },
+  })
 
   const resetForm = () => {
     setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active", stockUnits: "" })
     setEditing(null)
+    setFormError(null)
   }
 
   const openAdd = () => {
@@ -48,50 +106,31 @@ export default function Packages() {
       status: row.status,
       stockUnits: String(row.stockUnits),
     })
+    setFormError(null)
     setOpen(true)
   }, [])
 
-  const remove = React.useCallback((id) => {
-    if (!window.confirm("Delete this package? (mock only)")) return
-    setRows((prev) => prev.filter((p) => p.id !== id))
-  }, [])
+  const remove = React.useCallback(
+    (id) => {
+      if (!window.confirm("Delete this package?")) return
+      deleteMutation.mutate(id)
+    },
+    [deleteMutation],
+  )
 
   const save = () => {
+    setFormError(null)
+    if (!isAdmin) {
+      setFormError("Only administrators can edit the catalog.")
+      return
+    }
     const price = Number(form.priceGHS)
     const stock = Number(form.stockUnits)
-    if (!form.name.trim() || Number.isNaN(price) || Number.isNaN(stock)) return
-
-    if (editing) {
-      setRows((prev) =>
-        prev.map((p) =>
-          p.id === editing.id
-            ? {
-                ...p,
-                name: form.name.trim(),
-                priceGHS: price,
-                dataLimit: form.dataLimit.trim(),
-                status: form.status,
-                stockUnits: stock,
-              }
-            : p,
-        ),
-      )
-    } else {
-      idCounter += 1
-      setRows((prev) => [
-        ...prev,
-        {
-          id: `pkg-${idCounter}`,
-          name: form.name.trim(),
-          priceGHS: price,
-          dataLimit: form.dataLimit.trim(),
-          status: form.status,
-          stockUnits: stock,
-        },
-      ])
+    if (!form.name.trim() || Number.isNaN(price) || Number.isNaN(stock)) {
+      setFormError("Valid name, price, and stock are required.")
+      return
     }
-    setOpen(false)
-    resetForm()
+    saveMutation.mutate()
   }
 
   const columns = React.useMemo(
@@ -120,35 +159,64 @@ export default function Packages() {
         meta: { headerClassName: "text-right", cellClassName: "text-right" },
         cell: ({ row }) => (
           <div className="flex flex-wrap justify-end gap-2">
-            <Button type="button" size="sm" variant="outline" onClick={() => openEdit(row.original)}>
+            <Button type="button" size="sm" variant="outline" disabled={!isAdmin} onClick={() => openEdit(row.original)}>
               Edit
             </Button>
-            <Button type="button" size="sm" variant="destructive" onClick={() => remove(row.original.id)}>
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              disabled={!isAdmin || deleteMutation.isPending}
+              onClick={() => remove(row.original.id)}
+            >
               Delete
             </Button>
           </div>
         ),
       },
     ],
-    [openEdit, remove],
+    [openEdit, remove, isAdmin, deleteMutation.isPending],
   )
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Packages" description="Starlink package catalog — changes reset on refresh (mock).">
-        <Button type="button" onClick={openAdd}>
+      <PageHeader title="Packages" description="Starlink package catalog stored in MongoDB.">
+        <Button type="button" onClick={openAdd} disabled={!isAdmin}>
           Add package
         </Button>
       </PageHeader>
 
+      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {catalog.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {catalog.error instanceof Error ? catalog.error.message : "Failed to load"}
+        </p>
+      ) : null}
+      {deleteMutation.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {deleteMutation.error instanceof Error ? deleteMutation.error.message : "Delete failed"}
+        </p>
+      ) : null}
+
       <DataTable data={rows} columns={columns} searchPlaceholder="Search name, price, data limit, status…" pageSize={8} />
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o)
+          if (!o) resetForm()
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editing ? "Edit package" : "Add package"}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
+            {formError ? (
+              <p className="text-destructive bg-destructive/10 rounded-md px-2 py-1.5 text-sm" role="alert">
+                {formError}
+              </p>
+            ) : null}
             <div className="space-y-1.5">
               <Label htmlFor="pkg-name">Package name</Label>
               <Input
@@ -199,8 +267,8 @@ export default function Packages() {
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button type="button" onClick={save}>
-              Save
+            <Button type="button" onClick={save} disabled={!isAdmin || saveMutation.isPending}>
+              {saveMutation.isPending ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

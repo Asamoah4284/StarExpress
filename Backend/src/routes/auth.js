@@ -1,5 +1,6 @@
 import express from "express"
 import jwt from "jsonwebtoken"
+import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { UserStore } from "../userStore.js"
 
 /**
@@ -29,7 +30,8 @@ export function createAuthRouter({ userStore, jwtSecret, jwtExpiresIn }) {
       return res.json({ token: signToken(user), user: publicUser })
     } catch (err) {
       console.error(err)
-      return res.status(500).json({ error: "Server error." })
+      const { status, error } = mongoHttpError(err)
+      return res.status(status).json({ error })
     }
   })
 
@@ -65,7 +67,8 @@ export function createAuthRouter({ userStore, jwtSecret, jwtExpiresIn }) {
       return res.status(201).json({ token: signToken(created), user: publicUser })
     } catch (err) {
       console.error(err)
-      return res.status(500).json({ error: "Server error." })
+      const { status, error } = mongoHttpError(err)
+      return res.status(status).json({ error })
     }
   })
 
@@ -83,8 +86,17 @@ export function createAuthRouter({ userStore, jwtSecret, jwtExpiresIn }) {
       const user = await userStore.getPublicUserById(decoded.sub)
       if (!user) return res.status(401).json({ error: "User not found." })
       return res.json({ user })
-    } catch {
-      return res.status(401).json({ error: "Invalid or expired token." })
+    } catch (err) {
+      const name =
+        err !== null && typeof err === "object" && "name" in err && typeof err.name === "string"
+          ? err.name
+          : ""
+      if (name === "JsonWebTokenError" || name === "TokenExpiredError" || name === "NotBeforeError") {
+        return res.status(401).json({ error: "Invalid or expired token." })
+      }
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      return res.status(status).json({ error })
     }
   })
 

@@ -1,7 +1,5 @@
 import * as React from "react"
-import { credentialsMatch, MOCK_LOGIN_EMAIL, MOCK_LOGIN_EMAIL_ALT } from "@/lib/authCredentials.js"
 import { authLogin, authMe, authSignup } from "@/lib/api.js"
-import { isBackendEnabled } from "@/lib/env.js"
 
 const STORAGE_KEY = "starexpress-auth-session"
 
@@ -11,7 +9,9 @@ const STORAGE_KEY = "starexpress-auth-session"
 
 /** @typedef {{ user: AuthUser, token: string | null }} StoredSession */
 
-/** @type {React.Context<{ user: AuthUser | null, token: string | null, isAuthenticated: boolean, authReady: boolean, login: (email: string, password: string) => Promise<boolean>, signup: (name: string, email: string, password: string) => Promise<SignupResult>, logout: () => void } | null>} */
+/** @typedef {{ ok: true, user: AuthUser } | { ok: false }} LoginResult */
+
+/** @type {React.Context<{ user: AuthUser | null, token: string | null, isAuthenticated: boolean, authReady: boolean, login: (email: string, password: string) => Promise<LoginResult>, signup: (name: string, email: string, password: string) => Promise<SignupResult>, logout: () => void } | null>} */
 const AuthContext = React.createContext(null)
 
 /** @param {unknown} u */
@@ -35,11 +35,16 @@ function readStoredSession() {
 
     if ("user" in parsed && isAuthUserShape(parsed.user)) {
       const token = typeof parsed.token === "string" ? parsed.token : null
+      if (!token) {
+        sessionStorage.removeItem(STORAGE_KEY)
+        return null
+      }
       return { user: /** @type {AuthUser} */ (parsed.user), token }
     }
 
     if (isAuthUserShape(parsed)) {
-      return { user: /** @type {AuthUser} */ (parsed), token: null }
+      sessionStorage.removeItem(STORAGE_KEY)
+      return null
     }
   } catch {
     sessionStorage.removeItem(STORAGE_KEY)
@@ -53,17 +58,14 @@ function persistSession(session) {
 }
 
 export function AuthProvider({ children }) {
-  const api = isBackendEnabled()
   const [user, setUser] = React.useState(() => readStoredSession()?.user ?? null)
   const [token, setToken] = React.useState(() => readStoredSession()?.token ?? null)
   const [authReady, setAuthReady] = React.useState(() => {
-    if (!api) return true
     const s = readStoredSession()
     return !s?.token
   })
 
   React.useEffect(() => {
-    if (!api) return
     const session = readStoredSession()
     if (!session?.token) return
     let cancelled = false
@@ -84,84 +86,36 @@ export function AuthProvider({ children }) {
     return () => {
       cancelled = true
     }
-  }, [api])
+  }, [])
 
-  const login = React.useCallback(
-    async (email, password) => {
-      if (!api) {
-        if (import.meta.env.DEV) {
-          console.info(
-            "[StarExpress auth] Mock login — no HTTP request. Add VITE_USE_BACKEND=true (or VITE_USE_API=true) to Frontend/.env and restart Vite to call the API.",
-          )
-        }
-        if (!credentialsMatch(email, password)) return false
-        const next = {
-          name: "System Admin",
-          email: MOCK_LOGIN_EMAIL,
-          role: "Admin",
-        }
-        persistSession({ user: next, token: null })
-        setUser(next)
-        setToken(null)
-        return true
-      }
-      try {
-        const result = await authLogin(email, password)
-        if (!result.ok) return false
+  const login = React.useCallback(async (email, password) => {
+    try {
+      const result = await authLogin(email, password)
+      if (!result.ok) return { ok: false }
+      persistSession({ user: result.user, token: result.token })
+      setUser(result.user)
+      setToken(result.token)
+      return { ok: true, user: result.user }
+    } catch {
+      return { ok: false }
+    }
+  }, [])
+
+  const signup = React.useCallback(async (name, email, password) => {
+    try {
+      const result = await authSignup(name, email, password)
+      if (result.ok) {
         persistSession({ user: result.user, token: result.token })
         setUser(result.user)
         setToken(result.token)
-        return true
-      } catch {
-        return false
-      }
-    },
-    [api],
-  )
-
-  const signup = React.useCallback(
-    async (name, email, password) => {
-      if (!api) {
-        if (import.meta.env.DEV) {
-          console.info(
-            "[StarExpress auth] Mock signup — no POST /api/auth/signup. Add VITE_USE_BACKEND=true (or VITE_USE_API=true) to Frontend/.env and restart Vite.",
-          )
-        }
-        const trimmedName = name.trim()
-        const trimmedEmail = email.trim()
-        if (!trimmedName || trimmedName.length < 2) return "invalid"
-        if (!trimmedEmail || !trimmedEmail.includes("@")) return "invalid"
-        if (!password || password.length < 6) return "invalid"
-        const emailLower = trimmedEmail.toLowerCase()
-        if (emailLower === MOCK_LOGIN_EMAIL.toLowerCase() || trimmedEmail === MOCK_LOGIN_EMAIL_ALT) {
-          return "exists"
-        }
-        const next = {
-          name: trimmedName,
-          email: trimmedEmail,
-          role: "Admin",
-        }
-        persistSession({ user: next, token: null })
-        setUser(next)
-        setToken(null)
         return "ok"
       }
-      try {
-        const result = await authSignup(name, email, password)
-        if (result.ok) {
-          persistSession({ user: result.user, token: result.token })
-          setUser(result.user)
-          setToken(result.token)
-          return "ok"
-        }
-        if ("code" in result && result.code === "exists") return "exists"
-        return "invalid"
-      } catch {
-        return "network"
-      }
-    },
-    [api],
-  )
+      if ("code" in result && result.code === "exists") return "exists"
+      return "invalid"
+    } catch {
+      return "network"
+    }
+  }, [])
 
   const logout = React.useCallback(() => {
     sessionStorage.removeItem(STORAGE_KEY)

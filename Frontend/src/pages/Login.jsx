@@ -2,10 +2,8 @@ import * as React from "react"
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom"
 import { Lock, Loader2, Satellite } from "lucide-react"
 import { useAuth } from "@/context/AuthContext.jsx"
-import { MOCK_LOGIN_EMAIL, MOCK_LOGIN_PASSWORD } from "@/lib/authCredentials.js"
-import { isBackendEnabled } from "@/lib/env.js"
+import { postLoginPath } from "@/lib/roles.js"
 import { PasswordField } from "@/components/auth/PasswordField.jsx"
-import { ApiDisabledNotice } from "@/components/auth/ApiDisabledNotice.jsx"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -19,11 +17,10 @@ import {
 } from "@/components/ui/card"
 
 export default function Login() {
-  const { isAuthenticated, authReady, login } = useAuth()
+  const { isAuthenticated, authReady, login, user } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = typeof location.state?.from === "string" ? location.state.from : "/"
-  const useApi = isBackendEnabled()
 
   const [email, setEmail] = React.useState("")
   const [password, setPassword] = React.useState("")
@@ -38,8 +35,13 @@ export default function Login() {
     )
   }
 
+  if (isAuthenticated && user) {
+    const next = postLoginPath(user.role, from === "/login" ? undefined : from)
+    return <Navigate to={next} replace />
+  }
+
   if (isAuthenticated) {
-    return <Navigate to={from === "/login" ? "/" : from} replace />
+    return <Navigate to="/" replace />
   }
 
   const handleSubmit = async (e) => {
@@ -47,9 +49,9 @@ export default function Login() {
     setError(false)
     setSubmitting(true)
     try {
-      const ok = await login(email, password)
-      if (ok) {
-        navigate(from === "/login" || !from.startsWith("/") ? "/" : from, { replace: true })
+      const result = await login(email, password)
+      if (result.ok && result.user) {
+        navigate(postLoginPath(result.user.role, from), { replace: true })
       } else {
         setError(true)
       }
@@ -78,14 +80,12 @@ export default function Login() {
             StarExpress
           </p>
           <h1 className="text-foreground mt-2 text-2xl font-bold tracking-tight dark:text-foreground sm:mt-3 sm:text-[2rem] sm:leading-tight">
-            Admin console
+            Team sign-in
           </h1>
           <p className="text-muted-foreground mx-auto mt-1.5 max-w-[340px] text-xs leading-snug dark:text-muted-foreground sm:mt-2 sm:text-sm sm:leading-relaxed">
-            Secure access to sales, inventory, locations, and team tools.
+            Admins and sales agents use the same portal — your menu matches your role after you sign in.
           </p>
         </div>
-
-        <ApiDisabledNotice />
 
         <Card className="border-border/70 w-full gap-0 overflow-hidden rounded-xl border bg-card/90 py-0 shadow-[0_20px_60px_-24px_rgba(124,58,237,0.3),0_8px_28px_-14px_rgba(15,23,42,0.1)] ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-card/85 dark:shadow-[0_28px_90px_-32px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.06)] dark:ring-white/[0.08] sm:gap-4 sm:rounded-2xl sm:py-1 sm:shadow-[0_28px_90px_-28px_rgba(124,58,237,0.35),0_12px_40px_-18px_rgba(15,23,42,0.12)]">
           <div className="from-primary via-primary/90 to-primary/70 h-0.5 w-full bg-gradient-to-r sm:h-1" aria-hidden />
@@ -100,7 +100,7 @@ export default function Login() {
             <div className="space-y-0.5 sm:space-y-1.5">
               <CardTitle className="font-heading text-lg font-semibold tracking-tight sm:text-2xl">Sign in</CardTitle>
               <CardDescription className="text-muted-foreground text-xs leading-snug dark:text-muted-foreground sm:text-sm sm:leading-relaxed">
-                Use your administrator email and password.
+                Use the email and password issued by your administrator.
               </CardDescription>
             </div>
           </CardHeader>
@@ -118,7 +118,7 @@ export default function Login() {
                   autoComplete="username"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder={MOCK_LOGIN_EMAIL}
+                  placeholder="you@company.com"
                   className="border-border/80 bg-background/80 h-10 rounded-md text-sm shadow-none transition-shadow focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/25 dark:border-border dark:bg-background/50 dark:focus-visible:ring-primary/30 sm:h-11 sm:rounded-lg sm:text-base"
                   aria-invalid={error}
                   aria-describedby={error ? "login-error" : undefined}
@@ -142,9 +142,7 @@ export default function Login() {
               </div>
               {error ? (
                 <p id="login-error" className="text-destructive bg-destructive/8 rounded-md px-2.5 py-1.5 text-xs leading-snug dark:bg-destructive/15 sm:px-3 sm:py-2 sm:text-sm sm:leading-normal" role="alert">
-                  {useApi
-                    ? "Invalid email or password."
-                    : "Invalid email or password. Check the demo credentials below and try again."}
+                  Invalid email or password. Ensure the API is running and credentials match your Backend/.env.
                 </p>
               ) : null}
               <Button
@@ -161,26 +159,13 @@ export default function Login() {
           <CardFooter className="border-border/60 bg-muted/40 flex flex-col gap-1 rounded-b-xl border-t px-4 py-2.5 sm:gap-2 sm:rounded-b-2xl sm:px-8 sm:py-4 dark:border-border/60 dark:bg-muted/25">
             <div className="text-muted-foreground flex items-center justify-center gap-1.5 text-[11px] font-medium dark:text-muted-foreground sm:gap-2 sm:text-xs">
               <Lock className="size-3 shrink-0 opacity-70 sm:size-3.5" aria-hidden />
-              <span>{useApi ? "API environment" : "Mock environment"}</span>
+              <span>API sign-in</span>
             </div>
-            {useApi ? (
-              <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
-                Use the administrator email and password from your <code className="text-foreground bg-background/80 rounded px-1 font-mono dark:bg-background/60">Backend/.env</code> file (
-                <code className="text-foreground bg-background/80 rounded px-1 font-mono">ADMIN_EMAIL</code>,{" "}
-                <code className="text-foreground bg-background/80 rounded px-1 font-mono">ADMIN_PASSWORD</code>).
-              </p>
-            ) : (
-              <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
-                Demo sign-in — email{" "}
-                <code className="text-foreground bg-background/80 rounded px-1.5 py-0.5 font-mono text-[11px] font-medium dark:bg-background/60 dark:text-foreground">
-                  {MOCK_LOGIN_EMAIL}
-                </code>{" "}
-                · password{" "}
-                <code className="text-foreground bg-background/80 rounded px-1.5 py-0.5 font-mono text-[11px] font-medium dark:bg-background/60 dark:text-foreground">
-                  {MOCK_LOGIN_PASSWORD}
-                </code>
-              </p>
-            )}
+            <p className="text-muted-foreground text-center text-[10px] leading-snug dark:text-muted-foreground sm:text-[11px] sm:leading-relaxed">
+              For the first admin account, use <code className="text-foreground bg-background/80 rounded px-1 font-mono dark:bg-background/60">ADMIN_EMAIL</code> and{" "}
+              <code className="text-foreground bg-background/80 rounded px-1 font-mono">ADMIN_PASSWORD</code> from{" "}
+              <code className="text-foreground bg-background/80 rounded px-1 font-mono">Backend/.env</code>. Sales agents use credentials issued by an administrator.
+            </p>
           </CardFooter>
         </Card>
 
@@ -192,7 +177,7 @@ export default function Login() {
         </p>
 
         <p className="text-muted-foreground mt-2 max-w-sm text-center text-[10px] leading-snug dark:text-muted-foreground sm:mt-4 sm:text-[11px] sm:leading-relaxed">
-          This is a front-end demo. Do not reuse these credentials in production.
+          Run MongoDB and the Node API locally before signing in.
         </p>
       </div>
     </div>

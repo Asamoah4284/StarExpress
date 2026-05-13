@@ -1,6 +1,5 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { users as seedUsers } from "@/data/users.js"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Button } from "@/components/ui/button"
@@ -22,10 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useAuth } from "@/context/AuthContext.jsx"
-import { isBackendEnabled } from "@/lib/env.js"
 import { createTeamUser, fetchUsersList, setTeamUserActive } from "@/lib/api.js"
-
-let mockUid = 50
 
 /** @param {{ onDeactivate: (id: string) => void, pendingId: string | null, canManageUsers: boolean }} props */
 function useUserColumns({ onDeactivate, pendingId, canManageUsers }) {
@@ -75,54 +71,7 @@ function useUserColumns({ onDeactivate, pendingId, canManageUsers }) {
   )
 }
 
-function UsersMock() {
-  const [rows, setRows] = React.useState(() => seedUsers.map((u) => ({ ...u })))
-  const [open, setOpen] = React.useState(false)
-  const [form, setForm] = React.useState({ name: "", email: "", role: "Sales Agent" })
-  const [pendingId, setPendingId] = React.useState(null)
-
-  const deactivate = React.useCallback((id) => {
-    setPendingId(id)
-    setRows((prev) => prev.map((u) => (u.id === id ? { ...u, active: false } : u)))
-    setPendingId(null)
-  }, [])
-
-  const addUser = () => {
-    if (!form.name.trim() || !form.email.trim()) return
-    mockUid += 1
-    setRows((prev) => [
-      ...prev,
-      { id: `u${mockUid}`, name: form.name.trim(), email: form.email.trim(), role: form.role, active: true },
-    ])
-    setOpen(false)
-    setForm({ name: "", email: "", role: "Sales Agent" })
-  }
-
-  const columns = useUserColumns({ onDeactivate: deactivate, pendingId, canManageUsers: true })
-
-  return (
-    <div className="space-y-6">
-      <PageHeader title="Users" description="Admin and sales agent accounts (mock).">
-        <Button type="button" onClick={() => setOpen(true)}>
-          Add user
-        </Button>
-      </PageHeader>
-
-      <DataTable data={rows} columns={columns} searchPlaceholder="Search name, email, role…" pageSize={8} />
-
-      <UserAddDialog
-        open={open}
-        onOpenChange={setOpen}
-        form={form}
-        setForm={setForm}
-        onSave={addUser}
-        requirePassword={false}
-      />
-    </div>
-  )
-}
-
-function UsersFromApi() {
+export default function Users() {
   const { token, authReady, user } = useAuth()
   const queryClient = useQueryClient()
   const [open, setOpen] = React.useState(false)
@@ -148,6 +97,7 @@ function UsersFromApi() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teamUsers"] })
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
     },
   })
 
@@ -167,6 +117,7 @@ function UsersFromApi() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teamUsers"] })
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
       setOpen(false)
       setForm({ name: "", email: "", role: "Sales Agent", password: "" })
       setFormError(null)
@@ -213,7 +164,7 @@ function UsersFromApi() {
     <div className="space-y-6">
       <PageHeader
         title="Users"
-        description="Accounts from MongoDB (requires API). Add / deactivate: Admin only."
+        description="Team accounts from the API. Add and deactivate users: Admin only."
       >
         <Button type="button" onClick={() => setOpen(true)} disabled={!isAdmin}>
           Add user
@@ -221,11 +172,9 @@ function UsersFromApi() {
       </PageHeader>
 
       {authReady && !token ? (
-        <p className="text-muted-foreground text-sm">Sign in to load users from the API.</p>
+        <p className="text-muted-foreground text-sm">Sign in to load users.</p>
       ) : null}
-      {usersQuery.isLoading ? (
-        <p className="text-muted-foreground text-sm">Loading users…</p>
-      ) : null}
+      {usersQuery.isLoading ? <p className="text-muted-foreground text-sm">Loading users…</p> : null}
       {usersQuery.error ? (
         <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
           {usersQuery.error instanceof Error ? usersQuery.error.message : "Failed to load users"}
@@ -251,7 +200,6 @@ function UsersFromApi() {
         form={form}
         setForm={setForm}
         onSave={saveUser}
-        requirePassword
         formError={formError}
         saving={createMutation.isPending}
         saveDisabled={!isAdmin}
@@ -264,16 +212,15 @@ function UsersFromApi() {
  * @param {{
  *   open: boolean
  *   onOpenChange: (open: boolean) => void
- *   form: { name: string, email: string, role: string, password?: string }
- *   setForm: React.Dispatch<React.SetStateAction<{ name: string, email: string, role: string, password?: string }>>
+ *   form: { name: string, email: string, role: string, password: string }
+ *   setForm: React.Dispatch<React.SetStateAction<{ name: string, email: string, role: string, password: string }>>
  *   onSave: () => void
- *   requirePassword: boolean
  *   formError?: string | null
  *   saving?: boolean
  *   saveDisabled?: boolean
  * }} props
  */
-function UserAddDialog({ open, onOpenChange, form, setForm, onSave, requirePassword, formError, saving, saveDisabled }) {
+function UserAddDialog({ open, onOpenChange, form, setForm, onSave, formError, saving, saveDisabled }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -311,20 +258,18 @@ function UserAddDialog({ open, onOpenChange, form, setForm, onSave, requirePassw
               </SelectContent>
             </Select>
           </div>
-          {requirePassword ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="user-password">Temporary password</Label>
-              <Input
-                id="user-password"
-                type="password"
-                autoComplete="new-password"
-                value={form.password ?? ""}
-                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                placeholder="At least 6 characters"
-              />
-              <p className="text-muted-foreground text-xs">Share this with the user; they can change it after login flows exist.</p>
-            </div>
-          ) : null}
+          <div className="space-y-1.5">
+            <Label htmlFor="user-password">Temporary password</Label>
+            <Input
+              id="user-password"
+              type="password"
+              autoComplete="new-password"
+              value={form.password}
+              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+              placeholder="At least 6 characters"
+            />
+            <p className="text-muted-foreground text-xs">Share this with the new user.</p>
+          </div>
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
@@ -337,8 +282,4 @@ function UserAddDialog({ open, onOpenChange, form, setForm, onSave, requirePassw
       </DialogContent>
     </Dialog>
   )
-}
-
-export default function Users() {
-  return isBackendEnabled() ? <UsersFromApi /> : <UsersMock />
 }

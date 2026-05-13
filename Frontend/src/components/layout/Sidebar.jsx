@@ -13,7 +13,7 @@ import {
   Satellite,
   ScrollText,
   Settings,
-  ShieldAlert,
+  Table2,
   Ticket,
   Users,
 } from "lucide-react"
@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
+import { roleMayAccessNavPath } from "@/lib/roles.js"
 
 const items = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -29,9 +30,9 @@ const items = [
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/revenue-split", label: "Revenue split", icon: PieChart },
   { to: "/packages", label: "Packages", icon: Package },
-  { to: "/vouchers", label: "Vouchers", icon: Ticket },
+  { to: "/vouchers", label: "Upload vouchers", icon: Ticket },
+  { to: "/vouchers/uploaded", label: "Vouchers", icon: Table2 },
   { to: "/locations", label: "Locations", icon: MapPin },
-  { to: "/disputes", label: "Disputes", icon: ShieldAlert },
   { to: "/users", label: "Users", icon: Users },
   { to: "/audit-logs", label: "Audit Logs", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings },
@@ -57,7 +58,9 @@ export function Sidebar({ className, collapsed, onToggleCollapse, onLogout, onNa
           {!collapsed ? (
             <div className="min-w-0 leading-tight">
               <p className="truncate font-semibold tracking-tight">StarExpress</p>
-              <p className="text-muted-foreground text-xs font-medium">Console</p>
+              <p className="text-muted-foreground text-xs font-medium">
+                {user?.role === "Sales Agent" ? "Sales workspace" : "Console"}
+              </p>
             </div>
           ) : null}
         </div>
@@ -77,11 +80,13 @@ export function Sidebar({ className, collapsed, onToggleCollapse, onLogout, onNa
 
       <ScrollArea className="flex-1 px-3 py-4">
         <nav className="flex flex-col gap-0.5" aria-label="Main">
-          {items.map(({ to, label, icon: Icon }) => (
+          {items
+            .filter(({ to }) => roleMayAccessNavPath(user?.role, to))
+            .map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
               to={to}
-              end={to === "/"}
+              end={to === "/" || to === "/vouchers"}
               onClick={() => onNavigate?.()}
               className={({ isActive }) =>
                 cn(
@@ -106,6 +111,7 @@ export function Sidebar({ className, collapsed, onToggleCollapse, onLogout, onNa
           <div className="mb-3 space-y-0.5">
             <p className="text-muted-foreground text-xs">Signed in</p>
             <p className="truncate text-sm font-medium leading-snug">{user.email}</p>
+            <p className="text-muted-foreground truncate text-xs">{user.role}</p>
           </div>
         ) : null}
         <Button

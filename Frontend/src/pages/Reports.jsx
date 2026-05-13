@@ -1,9 +1,8 @@
 import * as React from "react"
 import { BarChart3, CalendarRange, MapPin, Package } from "lucide-react"
-import { sales } from "@/data/sales.js"
-import { locations } from "@/data/locations.js"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
+import { useCatalog } from "@/hooks/useCatalog.js"
 import { RevenueLineChart } from "@/components/charts/RevenueLineChart.jsx"
 import { SalesByLocationBarChart } from "@/components/charts/SalesByLocationBarChart.jsx"
 import { PackageTypePieChart } from "@/components/charts/PackageTypePieChart.jsx"
@@ -35,10 +34,29 @@ function ReportStat({ label, value, hint, icon: Icon, className }) {
 }
 
 export default function Reports() {
-  const revenue = React.useMemo(() => getRevenueLast30Days(sales), [])
-  const byLoc = React.useMemo(() => getSalesByLocation(sales, locations), [])
-  const byPkg = React.useMemo(() => getPackageTypeDistribution(sales), [])
-  const metrics = React.useMemo(() => getDashboardMetrics(sales), [])
+  const catalog = useCatalog()
+
+  const revenue = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    return getRevenueLast30Days(sales)
+  }, [catalog.data])
+
+  const byLoc = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    const locations = catalog.data?.locations ?? []
+    return getSalesByLocation(sales, locations)
+  }, [catalog.data])
+
+  const byPkg = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    return getPackageTypeDistribution(sales)
+  }, [catalog.data])
+
+  const metrics = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    const packages = catalog.data?.packages ?? []
+    return getDashboardMetrics(sales, packages)
+  }, [catalog.data])
 
   const revenue30Total = React.useMemo(() => revenue.reduce((sum, d) => sum + d.revenue, 0), [revenue])
   const avgCompleted = React.useMemo(
@@ -46,10 +64,11 @@ export default function Reports() {
     [metrics.sold, metrics.totalRevenue],
   )
   const dateExtent = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
     const dates = sales.map((s) => s.date).sort()
     if (!dates.length) return null
     return { from: dates[0], to: dates[dates.length - 1] }
-  }, [])
+  }, [catalog.data])
   const topLocation = React.useMemo(() => {
     if (!byLoc.length) return null
     return [...byLoc].sort((a, b) => b.total - a.total)[0]
@@ -58,9 +77,16 @@ export default function Reports() {
 
   return (
     <div className="space-y-8">
+      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading reports…</p> : null}
+      {catalog.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {catalog.error instanceof Error ? catalog.error.message : "Failed to load"}
+        </p>
+      ) : null}
+
       <PageHeader
         title="Reports"
-        description="Revenue, location mix, and package mix from the mock sales ledger. Use tooltips on charts for exact values."
+        description="Revenue, location mix, and package mix from the API. Use tooltips on charts for exact values."
       >
         {dateExtent ? (
           <div className="text-muted-foreground flex items-center gap-2 text-xs font-medium tabular-nums">
@@ -104,7 +130,7 @@ export default function Reports() {
           <CardHeader className="pb-2">
             <CardTitle className="text-base font-semibold tracking-tight">Revenue (last 30 days)</CardTitle>
             <CardDescription>
-              Daily completed revenue ending on the latest sale date in mock data. Axis ticks are evenly spaced (GH₵
+              Daily completed revenue ending on the latest sale date in the dataset. Axis ticks are evenly spaced (GH₵
               thousands).
             </CardDescription>
           </CardHeader>

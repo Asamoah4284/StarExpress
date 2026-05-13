@@ -1,5 +1,3 @@
-import { packages } from "@/data/packages.js"
-
 /**
  * Filter sales by location id or null for all.
  * @param {object[]} allSales
@@ -12,9 +10,10 @@ export function filterSalesByLocation(allSales, locationId) {
 
 /**
  * Total inventory units across catalog (active + inactive stock).
+ * @param {{ stockUnits: number }[]} packageList
  */
-export function totalPackageUnits() {
-  return packages.reduce((sum, p) => sum + p.stockUnits, 0)
+export function totalPackageUnits(packageList) {
+  return packageList.reduce((sum, p) => sum + p.stockUnits, 0)
 }
 
 /** Latest calendar date present in `rows` (any status), ISO `YYYY-MM-DD`. */
@@ -66,9 +65,11 @@ function getReportingDate(rows) {
 /**
  * Dashboard metrics from filtered sales.
  * utilizationRate = sold / totalInventory * 100 (sold = completed count).
+ * @param {object[]} filteredSales
+ * @param {{ stockUnits: number }[]} packageList
  */
-export function getDashboardMetrics(filteredSales) {
-  const totalInventory = totalPackageUnits()
+export function getDashboardMetrics(filteredSales, packageList) {
+  const totalInventory = totalPackageUnits(packageList)
   const completed = filteredSales.filter((s) => s.status === "Completed")
   const sold = completed.length
   const pending = filteredSales.filter((s) => s.status === "Pending").length

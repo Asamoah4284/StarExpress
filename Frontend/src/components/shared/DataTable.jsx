@@ -89,22 +89,6 @@ function getMobileHero(record) {
       skipIds: new Set(["name", "address", "id"]),
     }
   }
-  if (
-    typeof r.customer === "string" &&
-    typeof r.issue === "string" &&
-    typeof r.date === "string" &&
-    typeof r.status === "string" &&
-    (r.status === "Open" || r.status === "Resolved")
-  ) {
-    const title = r.customer.trim()
-    if (!title) return null
-    const id = r.id != null ? String(r.id) : null
-    return {
-      title,
-      subtitle: id ? `Dispute · ${id}` : null,
-      skipIds: new Set(["customer", "id"]),
-    }
-  }
   if (typeof r.action === "string" && typeof r.actor === "string" && typeof r.at === "string") {
     const title = r.action.trim()
     if (!title) return null

@@ -19,6 +19,7 @@ export function createVerifyJwt(jwtSecret) {
       req.auth = {
         userId: decoded.sub,
         email: typeof decoded.email === "string" ? decoded.email : "",
+        name: typeof decoded.name === "string" ? decoded.name : "",
         role: typeof decoded.role === "string" ? decoded.role : "",
       }
       next()

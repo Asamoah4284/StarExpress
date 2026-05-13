@@ -1,8 +1,7 @@
 import * as React from "react"
-import { sales } from "@/data/sales.js"
-import { locations } from "@/data/locations.js"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
+import { useCatalog } from "@/hooks/useCatalog.js"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -22,19 +21,23 @@ function inDateRange(dateStr, start, end) {
 }
 
 export default function Sales() {
+  const catalog = useCatalog()
   const [locationId, setLocationId] = React.useState("all")
   const [start, setStart] = React.useState("")
   const [end, setEnd] = React.useState("")
 
   const rows = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
     return sales
       .filter((s) => (locationId === "all" ? true : s.locationId === locationId))
       .filter((s) => inDateRange(s.date, start, end))
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
-  }, [locationId, start, end])
+  }, [catalog.data, locationId, start, end])
 
   const columns = React.useMemo(
-    () => [
+    () => {
+      const locations = catalog.data?.locations ?? []
+      return [
       { accessorKey: "customerName", header: "Customer Name" },
       { accessorKey: "packageType", header: "Package Type" },
       {
@@ -58,14 +61,23 @@ export default function Sales() {
           return <Badge variant={variant}>{v}</Badge>
         },
       },
-    ],
-    [],
+    ]
+    },
+    [catalog.data],
   )
+
+  const locations = catalog.data?.locations ?? []
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Sales" description="Recent sales with filters (mock data)." />
+      <PageHeader title="Sales" description="Recent sales with filters (from the API)." />
 
+      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {catalog.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {catalog.error instanceof Error ? catalog.error.message : "Failed to load"}
+        </p>
+      ) : null}
       <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end">
         <div className="grid flex-1 gap-3 sm:grid-cols-2 lg:max-w-xl">
           <div className="space-y-1.5">

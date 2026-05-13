@@ -1,11 +1,29 @@
 import "dotenv/config"
 import cors from "cors"
 import express from "express"
-import { connectMongo, getUsersCollection } from "./db/mongo.js"
+import {
+  connectMongo,
+  getUsersCollection,
+  getLocationsCollection,
+  getPackagesCollection,
+  getSalesCollection,
+  getDisputesCollection,
+  getAuditLogsCollection,
+  getVouchersCollection,
+} from "./db/mongo.js"
 import { UserStore } from "./userStore.js"
 import { createAuthRouter } from "./routes/auth.js"
 import { mountHealthRoutes } from "./routes/health.js"
 import { createUsersRouter } from "./routes/users.js"
+import { createCatalogRouter } from "./routes/catalog.js"
+import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
+
+/** @param {string} key */
+function envTruthy(key) {
+  const v = process.env[key]
+  if (v == null || String(v).trim() === "") return false
+  return ["1", "true", "yes", "on"].includes(String(v).trim().toLowerCase())
+}
 
 const PORT = Number(process.env.PORT) || 4000
 const JWT_SECRET = process.env.JWT_SECRET
@@ -32,6 +50,18 @@ async function main() {
   await connectMongo(MONGODB_URI)
   const userStore = new UserStore(getUsersCollection())
 
+  if (envTruthy("CATALOG_SEED_ON_STARTUP")) {
+    await seedCatalogIfEmpty({
+      locations: getLocationsCollection(),
+      packages: getPackagesCollection(),
+      sales: getSalesCollection(),
+      disputes: getDisputesCollection(),
+      auditLogs: getAuditLogsCollection(),
+    })
+  } else {
+    console.info("Catalog seed skipped (set CATALOG_SEED_ON_STARTUP=true to seed empty collections, or run npm run seed:catalog).")
+  }
+
   if (ADMIN_EMAIL && ADMIN_PASSWORD) {
     await userStore.seedAdmin(ADMIN_EMAIL, ADMIN_PASSWORD, "System Admin", BCRYPT_SALT_ROUNDS)
     console.log(`Seeded admin user for email: ${ADMIN_EMAIL}`)
@@ -41,11 +71,32 @@ async function main() {
 
   const app = express()
   app.use(cors({ origin: CORS_ORIGIN, credentials: false }))
-  app.use(express.json({ limit: "64kb" }))
+  app.use(express.json({ limit: "5mb" }))
 
   mountHealthRoutes(app)
 
-  app.use("/api/users", createUsersRouter({ userStore, jwtSecret: JWT_SECRET }))
+  app.use(
+    "/api/catalog",
+    createCatalogRouter({
+      locations: getLocationsCollection(),
+      packages: getPackagesCollection(),
+      sales: getSalesCollection(),
+      disputes: getDisputesCollection(),
+      auditLogs: getAuditLogsCollection(),
+      vouchers: getVouchersCollection(),
+      users: getUsersCollection(),
+      jwtSecret: JWT_SECRET,
+    }),
+  )
+
+  app.use(
+    "/api/users",
+    createUsersRouter({
+      userStore,
+      jwtSecret: JWT_SECRET,
+      auditLogs: getAuditLogsCollection(),
+    }),
+  )
 
   const authRouter = createAuthRouter({
     userStore,

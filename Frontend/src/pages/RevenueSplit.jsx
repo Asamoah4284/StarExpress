@@ -9,8 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
-import { sales } from "@/data/sales.js"
-import { locations } from "@/data/locations.js"
+import { useCatalog } from "@/hooks/useCatalog.js"
 import {
   filterSalesByLocation,
   getCompletedRevenueByPackageType,
@@ -18,17 +17,23 @@ import {
 } from "@/lib/aggregations.js"
 
 export default function RevenueSplit() {
+  const catalog = useCatalog()
   const [locationId, setLocationId] = React.useState("all")
-  const filtered = React.useMemo(() => filterSalesByLocation(sales, locationId), [locationId])
+
+  const filtered = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    return filterSalesByLocation(sales, locationId)
+  }, [catalog.data, locationId])
 
   const revenueSplit = React.useMemo(() => {
+    const locations = catalog.data?.locations ?? []
     if (locationId === "all") {
       return getSalesByLocation(filtered, locations)
         .map(({ name, total }) => ({ name, revenue: total }))
         .sort((a, b) => b.revenue - a.revenue)
     }
     return getCompletedRevenueByPackageType(filtered)
-  }, [locationId, filtered])
+  }, [locationId, filtered, catalog.data])
 
   const splitTitle =
     locationId === "all" ? "By outlet (completed GH₵)" : "By package type (completed GH₵)"
@@ -37,11 +42,20 @@ export default function RevenueSplit() {
     [revenueSplit.length],
   )
 
+  const locations = catalog.data?.locations ?? []
+
   return (
     <div className="space-y-8">
+      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {catalog.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {catalog.error instanceof Error ? catalog.error.message : "Failed to load"}
+        </p>
+      ) : null}
+
       <PageHeader
         title="Revenue split"
-        description="Completed revenue share by outlet (all locations) or by package type (single outlet). Mock data only."
+        description="Completed revenue share by outlet (all locations) or by package type (single outlet), from the API."
       >
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
           <span className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">Location</span>

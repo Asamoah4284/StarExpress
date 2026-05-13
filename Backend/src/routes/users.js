@@ -1,10 +1,15 @@
 import express from "express"
+import { appendAuditLog } from "../lib/appendAuditLog.js"
 import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
 
 /**
- * @param {{ userStore: import("../userStore.js").UserStore, jwtSecret: string }} deps
+ * @param {{
+ *   userStore: import("../userStore.js").UserStore
+ *   jwtSecret: string
+ *   auditLogs: import("mongodb").Collection
+ * }} deps
  */
-export function createUsersRouter({ userStore, jwtSecret }) {
+export function createUsersRouter({ userStore, jwtSecret, auditLogs }) {
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
 
@@ -43,6 +48,11 @@ export function createUsersRouter({ userStore, jwtSecret }) {
       if (created === "exists") {
         return res.status(409).json({ error: "An account with this email already exists." })
       }
+      await appendAuditLog(
+        auditLogs,
+        req.auth,
+        `Created user ${created.email} (${created.role})`,
+      )
       res.status(201).json({ user: created })
     } catch (err) {
       console.error(err)
@@ -62,10 +72,17 @@ export function createUsersRouter({ userStore, jwtSecret }) {
       if (active === null) {
         return res.status(400).json({ error: "Body must include active as a boolean." })
       }
+      const target = await userStore.getPublicUserById(id)
       const ok = await userStore.setUserActive(id, active)
       if (!ok) {
         return res.status(404).json({ error: "User not found." })
       }
+      const label = target?.email || id
+      await appendAuditLog(
+        auditLogs,
+        req.auth,
+        active ? `Activated user ${label}` : `Deactivated user ${label}`,
+      )
       res.json({ ok: true, id, active })
     } catch (err) {
       console.error(err)

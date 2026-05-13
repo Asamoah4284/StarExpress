@@ -1,8 +1,8 @@
 import * as React from "react"
-import { auditLogs } from "@/data/auditLogs.js"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Badge } from "@/components/ui/badge"
+import { useAuditLogs } from "@/hooks/useAuditLogs.js"
 
 function formatAt(iso) {
   try {
@@ -27,10 +27,12 @@ function auditKind(action) {
 }
 
 export default function AuditLogs() {
-  const sorted = React.useMemo(
-    () => [...auditLogs].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)),
-    [],
-  )
+  const auditQuery = useAuditLogs()
+
+  const sorted = React.useMemo(() => {
+    const logs = auditQuery.data ?? []
+    return [...logs].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+  }, [auditQuery.data])
 
   const columns = React.useMemo(
     () => [
@@ -65,7 +67,17 @@ export default function AuditLogs() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Audit logs" description="Recent administrative actions (mock)." />
+      <PageHeader
+        title="Audit logs"
+        description="Administrative actions stored in MongoDB. The list refreshes every few seconds while this page is open."
+      />
+
+      {auditQuery.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {auditQuery.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {auditQuery.error instanceof Error ? auditQuery.error.message : "Failed to load"}
+        </p>
+      ) : null}
 
       <DataTable
         data={sorted}

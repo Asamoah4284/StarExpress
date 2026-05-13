@@ -1,22 +1,25 @@
 import * as React from "react"
-import { sales } from "@/data/sales.js"
-import { locations } from "@/data/locations.js"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { useCatalog } from "@/hooks/useCatalog.js"
 import { locationNameById } from "@/lib/locations.js"
 import { formatCedis } from "@/lib/utils"
 import { salesToCsv } from "@/lib/aggregations.js"
 
 export default function SalesHistory() {
-  const sorted = React.useMemo(
-    () => [...sales].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
-    [],
-  )
+  const catalog = useCatalog()
+
+  const sorted = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    return [...sales].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+  }, [catalog.data])
 
   const columns = React.useMemo(
-    () => [
+    () => {
+      const locations = catalog.data?.locations ?? []
+      return [
       { accessorKey: "id", header: "Sale ID" },
       { accessorKey: "customerName", header: "Customer Name" },
       { accessorKey: "packageType", header: "Package Type" },
@@ -41,8 +44,9 @@ export default function SalesHistory() {
           return <Badge variant={variant}>{v}</Badge>
         },
       },
-    ],
-    [],
+    ]
+    },
+    [catalog.data],
   )
 
   const exportCsv = () => {
@@ -58,11 +62,18 @@ export default function SalesHistory() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Sales History" description="Full paginated history of all sales (mock data).">
+      <PageHeader title="Sales History" description="Full paginated history from the API.">
         <Button type="button" onClick={exportCsv}>
           Export to CSV
         </Button>
       </PageHeader>
+
+      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {catalog.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {catalog.error instanceof Error ? catalog.error.message : "Failed to load"}
+        </p>
+      ) : null}
 
       <DataTable data={sorted} columns={columns} pageSize={10} searchPlaceholder="Search all columns…" />
     </div>

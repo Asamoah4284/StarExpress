@@ -14,8 +14,8 @@ import {
 } from "@/components/ui/select"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { StatCard } from "@/components/shared/StatCard.jsx"
-import { sales } from "@/data/sales.js"
-import { locations } from "@/data/locations.js"
+import { useAuth } from "@/context/AuthContext.jsx"
+import { useCatalog } from "@/hooks/useCatalog.js"
 import {
   filterSalesByLocation,
   getCompletedRevenueByWeekday,
@@ -45,9 +45,20 @@ function countDayTrend(delta) {
 const SALES_BREAKDOWN_CHART_HEIGHT = 340
 
 export default function Dashboard() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === "Admin"
+  const catalog = useCatalog()
   const [locationId, setLocationId] = React.useState("all")
-  const filtered = React.useMemo(() => filterSalesByLocation(sales, locationId), [locationId])
-  const m = React.useMemo(() => getDashboardMetrics(filtered), [filtered])
+
+  const filtered = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    return filterSalesByLocation(sales, locationId)
+  }, [catalog.data, locationId])
+
+  const m = React.useMemo(() => {
+    const packages = catalog.data?.packages ?? []
+    return getDashboardMetrics(filtered, packages)
+  }, [catalog.data, filtered])
 
   const sparkTotalRevenue = React.useMemo(() => getSparklineCumulativeRevenue(filtered, 14), [filtered])
   const sparkTodayRevenue = React.useMemo(() => getSparklineDailyCompletedRevenue(filtered, 14), [filtered])
@@ -57,11 +68,20 @@ export default function Dashboard() {
   const revenueByWeekday = React.useMemo(() => getCompletedRevenueByWeekday(filtered), [filtered])
   const dod = React.useMemo(() => getDayOverDaySummary(filtered), [filtered])
 
+  const locations = catalog.data?.locations ?? []
+
   return (
     <div className="space-y-8">
+      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading dashboard data…</p> : null}
+      {catalog.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {catalog.error instanceof Error ? catalog.error.message : "Failed to load data"}
+        </p>
+      ) : null}
+
       <PageHeader
         title="Overview"
-        description="Key revenue and sales totals for the selected location (mock data)."
+        description="Key revenue and sales totals for the selected location (live data from the API)."
       >
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
           <span className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">Location</span>
@@ -160,15 +180,23 @@ export default function Dashboard() {
           <CardDescription className="text-sm">Shortcuts to common workflows.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2 pt-0">
-          <Button asChild className="font-medium">
-            <Link to="/packages">Add package</Link>
-          </Button>
+          {isAdmin ? (
+            <Button asChild className="font-medium">
+              <Link to="/packages">Add package</Link>
+            </Button>
+          ) : (
+            <Button asChild variant="outline" className="border-border bg-card font-medium shadow-none">
+              <Link to="/packages">View packages</Link>
+            </Button>
+          )}
           <Button asChild variant="outline" className="border-border bg-card font-medium shadow-none">
             <Link to="/sales">Record sale</Link>
           </Button>
-          <Button asChild variant="outline" className="border-border bg-card font-medium shadow-none">
-            <Link to="/locations">Manage locations</Link>
-          </Button>
+          {isAdmin ? (
+            <Button asChild variant="outline" className="border-border bg-card font-medium shadow-none">
+              <Link to="/locations">Manage locations</Link>
+            </Button>
+          ) : null}
           <Button asChild variant="outline" className="border-border bg-card font-medium shadow-none">
             <Link to="/sales-history">Sales history</Link>
           </Button>
