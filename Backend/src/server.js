@@ -25,10 +25,27 @@ function envTruthy(key) {
   return ["1", "true", "yes", "on"].includes(String(v).trim().toLowerCase())
 }
 
+/**
+ * Comma- or newline-separated browser origins (scheme + host + port).
+ * @param {string | undefined} raw
+ * @returns {string | string[]}
+ */
+function parseCorsOrigins(raw) {
+  const fallback = "http://localhost:5173"
+  if (raw == null || String(raw).trim() === "") return fallback
+  const list = String(raw)
+    .split(/[,;\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+  if (list.length === 0) return fallback
+  if (list.length === 1) return list[0]
+  return list
+}
+
 const PORT = Number(process.env.PORT) || 4000
 const JWT_SECRET = process.env.JWT_SECRET
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d"
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173"
+const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN)
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const BCRYPT_SALT_ROUNDS = Number(process.env.BCRYPT_SALT_ROUNDS) || 10
@@ -70,7 +87,11 @@ async function main() {
   }
 
   const app = express()
-  app.use(cors({ origin: CORS_ORIGIN, credentials: false }))
+  app.use(cors({ origin: corsOrigins, credentials: false }))
+  console.info(
+    "CORS origins:",
+    Array.isArray(corsOrigins) ? corsOrigins.join(" | ") : corsOrigins,
+  )
   app.use(express.json({ limit: "5mb" }))
 
   mountHealthRoutes(app)
