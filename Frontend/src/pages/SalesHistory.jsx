@@ -22,6 +22,22 @@ export default function SalesHistory() {
       return [
       { accessorKey: "id", header: "Sale ID" },
       { accessorKey: "customerName", header: "Customer Name" },
+      {
+        accessorKey: "customerPhone",
+        header: "Phone",
+        cell: ({ getValue }) => {
+          const v = getValue()
+          return v ? String(v) : "—"
+        },
+      },
+      {
+        accessorKey: "paymentNumber",
+        header: "Payment #",
+        cell: ({ getValue }) => {
+          const v = getValue()
+          return v ? String(v) : "—"
+        },
+      },
       { accessorKey: "packageType", header: "Package Type" },
       {
         accessorKey: "amount",

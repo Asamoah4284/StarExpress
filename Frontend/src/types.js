@@ -19,6 +19,8 @@
  * @typedef {Object} Sale
  * @property {string} id
  * @property {string} customerName
+ * @property {string} [customerPhone]
+ * @property {string} [paymentNumber]
  * @property {string} packageType
  * @property {number} amount
  * @property {string} locationId

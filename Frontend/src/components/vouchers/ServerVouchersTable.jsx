@@ -6,6 +6,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Button } from "@/components/ui/button"
+import { Trash2 } from "lucide-react"
 import { isHiddenVoucherThroughputColumnKey } from "@/lib/voucherColumnDisplay.js"
 
 const MAX_SERVER_COLUMN_KEYS = 28
@@ -46,11 +48,19 @@ function formatUploadedAt(v) {
 
 /**
  * @param {{
- *   vouchers: Array<{ id: string, columns?: Record<string, string>, uploadedAt?: string }>
+ *   vouchers: Array<{
+ *     id: string
+ *     columns?: Record<string, string>
+ *     uploadedAt?: string
+ *     locationId?: string
+ *     locationName?: string
+ *   }>
  *   emptyMessage?: string
+ *   onDelete?: (id: string) => void
+ *   deletingId?: string | null
  * }} props
  */
-export function ServerVouchersTable({ vouchers, emptyMessage }) {
+export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deletingId }) {
   if (!vouchers.length) {
     return (
       <p className="text-muted-foreground rounded-md border border-dashed border-border px-3 py-6 text-center text-sm">
@@ -60,6 +70,14 @@ export function ServerVouchersTable({ vouchers, emptyMessage }) {
     )
   }
   const keys = dynamicColumnKeys(vouchers)
+
+  /** @param {{ locationName?: string, locationId?: string }} v */
+  function locationLabel(v) {
+    const n = typeof v.locationName === "string" && v.locationName.trim() ? v.locationName.trim() : ""
+    if (n) return n
+    const id = typeof v.locationId === "string" && v.locationId.trim() ? v.locationId.trim() : ""
+    return id || "—"
+  }
 
   return (
     <div className="w-full min-w-0 space-y-3">
@@ -86,6 +104,9 @@ export function ServerVouchersTable({ vouchers, emptyMessage }) {
                     Uploaded · {uploaded}
                   </p>
                 ) : null}
+                <p className="text-muted-foreground mt-1.5 text-sm font-normal leading-relaxed break-words">
+                  Location · {locationLabel(v)}
+                </p>
               </div>
               <div className="divide-border/60 divide-y px-4 py-1">
                 {keys.map((k) => (
@@ -102,6 +123,22 @@ export function ServerVouchersTable({ vouchers, emptyMessage }) {
                   </div>
                 ))}
               </div>
+              {onDelete ? (
+                <div className="border-border flex justify-end border-t px-4 py-2">
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="destructive"
+                    className="size-8 shrink-0"
+                    disabled={deletingId === v.id}
+                    onClick={() => onDelete(v.id)}
+                    aria-label={`Delete voucher ${v.id}`}
+                    title="Delete voucher"
+                  >
+                    <Trash2 className="size-4" aria-hidden />
+                  </Button>
+                </div>
+              ) : null}
             </div>
           )
         })}
@@ -117,18 +154,25 @@ export function ServerVouchersTable({ vouchers, emptyMessage }) {
           <TableHeader>
             <TableRow>
               <TableHead className="whitespace-nowrap px-2">Voucher ID</TableHead>
+              <TableHead className="whitespace-nowrap px-2">Location</TableHead>
               {keys.map((k) => (
                 <TableHead key={k} className="whitespace-nowrap px-2 sm:max-w-[200px]">
                   {k}
                 </TableHead>
               ))}
               <TableHead className="whitespace-nowrap px-2">Uploaded</TableHead>
+              {onDelete ? (
+                <TableHead className="text-foreground w-[4.5rem] whitespace-nowrap px-2 text-right">Actions</TableHead>
+              ) : null}
             </TableRow>
           </TableHeader>
           <TableBody>
             {vouchers.map((v) => (
               <TableRow key={v.id}>
                 <TableCell className="whitespace-nowrap px-2 font-medium tabular-nums">{v.id}</TableCell>
+                <TableCell className="max-w-[10rem] truncate px-2 text-sm" title={locationLabel(v)}>
+                  {locationLabel(v)}
+                </TableCell>
                 {keys.map((k) => (
                   <TableCell key={k} className="max-w-[12rem] truncate px-2 sm:max-w-[220px]" title={v.columns?.[k] ?? ""}>
                     {v.columns?.[k] ?? "—"}
@@ -137,6 +181,22 @@ export function ServerVouchersTable({ vouchers, emptyMessage }) {
                 <TableCell className="text-muted-foreground whitespace-nowrap px-2 text-xs tabular-nums">
                   {formatUploadedAt(v)}
                 </TableCell>
+                {onDelete ? (
+                  <TableCell className="px-2 text-right">
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="destructive"
+                      className="size-8 shrink-0"
+                      disabled={deletingId === v.id}
+                      onClick={() => onDelete(v.id)}
+                      aria-label={`Delete voucher ${v.id}`}
+                      title="Delete voucher"
+                    >
+                      <Trash2 className="size-4" aria-hidden />
+                    </Button>
+                  </TableCell>
+                ) : null}
               </TableRow>
             ))}
           </TableBody>

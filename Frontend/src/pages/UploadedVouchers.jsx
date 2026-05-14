@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { ServerVouchersTable } from "@/components/vouchers/ServerVouchersTable.jsx"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { fetchVouchers } from "@/lib/api.js"
+import { deleteAllVouchers, deleteVoucher, fetchVouchers } from "@/lib/api.js"
 import { ROLE_ADMIN } from "@/lib/roles.js"
 
 /** @typedef {"all" | "unused" | "used"} StatusFilter */
@@ -56,7 +56,28 @@ function voucherMatchesStatusFilter(v, filter) {
 export default function UploadedVouchers() {
   const { token, user, authReady } = useAuth()
   const isAdmin = user?.role === ROLE_ADMIN
+  const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = React.useState(/** @type {StatusFilter} */ ("all"))
+
+  const deleteMutation = useMutation({
+    mutationFn: async (/** @type {string} */ id) => {
+      if (!token) throw new Error("Not signed in")
+      const r = await deleteVoucher(token, id)
+      if (!r.ok) throw new Error(r.error || "Delete failed")
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["vouchers", token] })
+      void queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
+    },
+  })
+
+  const confirmDelete = React.useCallback(
+    (id) => {
+      if (!window.confirm(`Delete voucher ${id}? This cannot be undone.`)) return
+      deleteMutation.mutate(id)
+    },
+    [deleteMutation],
+  )
 
   const vouchersQuery = useQuery({
     queryKey: ["vouchers", token],
@@ -68,6 +89,33 @@ export default function UploadedVouchers() {
     },
     enabled: authReady && Boolean(token) && isAdmin,
   })
+
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const r = await deleteAllVouchers(token)
+      if (!r.ok) throw new Error(r.error || "Bulk delete failed")
+      return r.deleted
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["vouchers", token] })
+      void queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
+    },
+  })
+
+  const confirmDeleteAll = React.useCallback(() => {
+    const n = vouchersQuery.data?.length ?? 0
+    if (n === 0) return
+    if (
+      !window.confirm(
+        "Delete EVERY voucher in the database? This removes all locations and all statuses — not only the rows or filter you see here. This cannot be undone.",
+      )
+    ) {
+      return
+    }
+    if (!window.confirm(`Final confirmation: permanently remove all voucher documents (at least ${n} loaded in this view).`)) return
+    deleteAllMutation.mutate()
+  }, [deleteAllMutation, vouchersQuery.data?.length])
 
   const filteredVouchers = React.useMemo(() => {
     const list = vouchersQuery.data ?? []
@@ -103,16 +151,34 @@ export default function UploadedVouchers() {
                     </SelectContent>
                   </Select>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 w-full shrink-0 text-xs sm:w-auto"
-                  onClick={() => void vouchersQuery.refetch()}
-                  disabled={vouchersQuery.isFetching}
-                >
-                  {vouchersQuery.isFetching ? "Refreshing…" : "Refresh"}
-                </Button>
+                <div className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:flex-shrink-0 sm:flex-row sm:items-center">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-full shrink-0 text-xs sm:w-auto"
+                    onClick={() => void vouchersQuery.refetch()}
+                    disabled={vouchersQuery.isFetching || deleteAllMutation.isPending}
+                  >
+                    {vouchersQuery.isFetching ? "Refreshing…" : "Refresh"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-full shrink-0 border-destructive/50 text-xs text-destructive hover:bg-destructive/10 sm:w-auto"
+                    onClick={confirmDeleteAll}
+                    disabled={
+                      totalCount === 0 ||
+                      vouchersQuery.isLoading ||
+                      vouchersQuery.isFetching ||
+                      deleteMutation.isPending ||
+                      deleteAllMutation.isPending
+                    }
+                  >
+                    {deleteAllMutation.isPending ? "Deleting…" : "Delete all vouchers"}
+                  </Button>
+                </div>
               </div>
               {vouchersQuery.isLoading ? (
                 <p className="text-muted-foreground text-sm">Loading vouchers from server…</p>
@@ -121,7 +187,28 @@ export default function UploadedVouchers() {
                   {vouchersQuery.error instanceof Error ? vouchersQuery.error.message : "Could not load vouchers."}
                 </p>
               ) : (
-                <ServerVouchersTable vouchers={filteredVouchers} emptyMessage={emptyFilterMessage} />
+                <>
+                  {deleteMutation.isError ? (
+                    <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+                      {deleteMutation.error instanceof Error ? deleteMutation.error.message : "Delete failed."}
+                    </p>
+                  ) : null}
+                  {deleteAllMutation.isError ? (
+                    <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+                      {deleteAllMutation.error instanceof Error ? deleteAllMutation.error.message : "Bulk delete failed."}
+                    </p>
+                  ) : null}
+                  <ServerVouchersTable
+                    vouchers={filteredVouchers}
+                    emptyMessage={emptyFilterMessage}
+                    onDelete={confirmDelete}
+                    deletingId={
+                      deleteMutation.isPending && typeof deleteMutation.variables === "string"
+                        ? deleteMutation.variables
+                        : null
+                    }
+                  />
+                </>
               )}
             </>
           ) : (

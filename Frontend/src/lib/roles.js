@@ -4,7 +4,6 @@ export const ROLE_SALES_AGENT = "Sales Agent"
 /** Sidebar `to` values a sales agent may open (read / day-to-day work; no user admin). */
 export const SALES_AGENT_NAV_PATHS = [
   "/",
-  "/sales",
   "/sales-history",
   "/reports",
   "/packages",
@@ -17,7 +16,7 @@ export function isAdminRole(role) {
 
 /**
  * @param {string | undefined} role
- * @param {string} to NavLink `to` (e.g. `/sales`, `/`)
+ * @param {string} to NavLink `to` (e.g. `/packages`, `/`)
  */
 export function roleMayAccessNavPath(role, to) {
   if (isAdminRole(role)) return true
@@ -27,7 +26,7 @@ export function roleMayAccessNavPath(role, to) {
 
 /** Default landing path after sign-in. */
 export function defaultHomePathForRole(role) {
-  return role === ROLE_SALES_AGENT ? "/sales" : "/"
+  return role === ROLE_SALES_AGENT ? "/packages" : "/"
 }
 
 /**
@@ -42,11 +41,11 @@ export function postLoginPath(role, fromPath) {
   }
   if (role === ROLE_SALES_AGENT) {
     if (!fromPath || fromPath === "/login" || fromPath === "/signup" || !fromPath.startsWith("/")) {
-      return "/sales"
+      return "/packages"
     }
-    if (fromPath === "/") return "/sales"
+    if (fromPath === "/") return "/packages"
     if (roleMayAccessNavPath(role, fromPath)) return fromPath
-    return "/sales"
+    return "/packages"
   }
   return "/"
 }

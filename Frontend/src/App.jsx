@@ -6,7 +6,6 @@ import { MainLayout } from "@/components/layout/MainLayout.jsx"
 import Login from "@/pages/Login.jsx"
 import Signup from "@/pages/Signup.jsx"
 import Dashboard from "@/pages/Dashboard.jsx"
-import Sales from "@/pages/Sales.jsx"
 import SalesHistory from "@/pages/SalesHistory.jsx"
 import Reports from "@/pages/Reports.jsx"
 import Packages from "@/pages/Packages.jsx"
@@ -26,7 +25,6 @@ export default function App() {
       <Route element={<ProtectedRoute />}>
         <Route element={<MainLayout />}>
           <Route index element={<Dashboard />} />
-          <Route path="sales" element={<Sales />} />
           <Route path="sales-history" element={<SalesHistory />} />
           <Route path="reports" element={<Reports />} />
           <Route path="packages" element={<Packages />} />

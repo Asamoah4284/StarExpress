@@ -198,14 +198,18 @@ export async function fetchCatalog(token) {
 
 /**
  * @param {string} token
- * @param {{ fileName: string, rows: string[][] }} body
+ * @param {{ fileName: string, rows: string[][], locationId: string }} body
  */
 export async function importVouchersBatch(token, body) {
   const rows = body.rows.map((line) => line.map((cell) => String(cell ?? "")))
   const { res, data } = await parseJsonResponse("/api/catalog/vouchers/batch", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ fileName: body.fileName, rows }),
+    body: JSON.stringify({
+      fileName: body.fileName,
+      rows,
+      locationId: String(body.locationId ?? "").trim(),
+    }),
   })
   if (!res.ok) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
@@ -244,6 +248,45 @@ export async function fetchVouchers(token) {
     return { ok: false, error: "Unexpected response from server." }
   }
   return { ok: true, vouchers: data.vouchers }
+}
+
+/**
+ * @param {string} token
+ * @param {string} voucherId
+ */
+export async function deleteVoucher(token, voucherId) {
+  const path = `/api/catalog/vouchers/${encodeURIComponent(voucherId)}`
+  const { res, data } = await parseJsonResponse(path, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (res.status === 204) return { ok: true }
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  return { ok: true }
+}
+
+/**
+ * @param {string} token
+ * @param {{ locationId?: string }} [opts] If `locationId` is set, only vouchers for that location are removed.
+ */
+export async function deleteAllVouchers(token, opts = {}) {
+  const lid = typeof opts.locationId === "string" && opts.locationId.trim() ? opts.locationId.trim() : ""
+  const qs = lid ? `?locationId=${encodeURIComponent(lid)}` : ""
+  const { res, data } = await parseJsonResponse(`/api/catalog/vouchers${qs}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.deleted !== "number") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, deleted: data.deleted }
 }
 
 /** @param {string} token */
@@ -378,6 +421,32 @@ export async function deleteCatalogPackage(token, id) {
     return { ok: false, error: msg }
   }
   return { ok: true }
+}
+
+/**
+ * @param {string} token
+ * @param {{
+ *   packageId: string
+ *   customerName: string
+ *   customerPhone: string
+ *   paymentNumber: string
+ *   locationId?: string
+ * }} body
+ */
+export async function createCatalogSale(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/sales", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.sale !== "object" || data.sale === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, sale: data.sale }
 }
 
 /** @param {string} token @param {string} id */

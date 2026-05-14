@@ -98,6 +98,39 @@ export function getDashboardMetrics(filteredSales, packageList) {
   }
 }
 
+/**
+ * @param {{ columns?: Record<string, string> } | undefined} v
+ * @returns {string} lowercased status cell from CSV columns, or "" if missing
+ */
+export function voucherStatusNormalized(v) {
+  const cols = v?.columns
+  if (!cols || typeof cols !== "object") return ""
+  for (const k of Object.keys(cols)) {
+    const normalized = String(k).replace(/·/g, ".").trim()
+    if (/^status$/i.test(normalized)) return String(cols[k] ?? "").trim().toLowerCase()
+  }
+  return ""
+}
+
+/**
+ * Vouchers not marked as used (remaining inventory). Unknown / blank status counts as remaining.
+ * @param {Array<{ columns?: Record<string, string> }>} vouchers
+ */
+export function countRemainingVouchers(vouchers) {
+  if (!Array.isArray(vouchers)) return 0
+  return vouchers.filter((v) => voucherStatusNormalized(v) !== "used").length
+}
+
+/**
+ * @param {Array<{ locationId?: string }>} vouchers
+ * @param {string} locationId `"all"` or a location id
+ */
+export function filterVouchersByLocation(vouchers, locationId) {
+  if (!Array.isArray(vouchers)) return []
+  if (!locationId || locationId === "all") return vouchers
+  return vouchers.filter((v) => v.locationId === locationId)
+}
+
 /** Last 30 days daily revenue by day for line chart (anchored to latest sale date in data). */
 export function getRevenueLast30Days(allSales) {
   const completed = allSales.filter((s) => s.status === "Completed")
@@ -284,13 +317,25 @@ export function getSparklineDailySoldCount(filteredSales, dayCount = 14) {
 
 /** Export CSV rows from sales */
 export function salesToCsv(rows) {
-  const header = ["id", "customerName", "packageType", "amount", "locationId", "date", "status"]
+  const header = [
+    "id",
+    "customerName",
+    "customerPhone",
+    "paymentNumber",
+    "packageType",
+    "amount",
+    "locationId",
+    "date",
+    "status",
+  ]
   const lines = [header.join(",")]
   for (const r of rows) {
     lines.push(
       [
         r.id,
         `"${String(r.customerName).replace(/"/g, '""')}"`,
+        `"${String(r.customerPhone ?? "").replace(/"/g, '""')}"`,
+        `"${String(r.paymentNumber ?? "").replace(/"/g, '""')}"`,
         `"${String(r.packageType).replace(/"/g, '""')}"`,
         r.amount,
         r.locationId,

@@ -42,6 +42,12 @@ function toVoucher(d) {
     columns: d.columns,
     uploadedBy: d.uploadedBy,
     uploadedAt: d.uploadedAt,
+    ...(d.locationId != null && String(d.locationId).trim()
+      ? {
+          locationId: String(d.locationId),
+          locationName: typeof d.locationName === "string" ? d.locationName : "",
+        }
+      : {}),
   }
 }
 
@@ -80,6 +86,8 @@ function toSale(d) {
   return {
     id: d._id,
     customerName: d.customerName,
+    customerPhone: typeof d.customerPhone === "string" ? d.customerPhone : "",
+    paymentNumber: typeof d.paymentNumber === "string" ? d.paymentNumber : "",
     packageType: d.packageType,
     amount: d.amount,
     locationId: d.locationId,
@@ -171,6 +179,13 @@ async function findConflictingLocationForSalesAgent(locations, users, agentUserI
   return null
 }
 
+/** @type {import("express").RequestHandler} */
+function requireSalesAgentOrAdmin(req, res, next) {
+  const r = req.auth?.role
+  if (r === "Admin" || r === ROLE_SALES_AGENT) return next()
+  return res.status(403).json({ error: "Administrator or sales agent access required." })
+}
+
 /**
  * @param {{
  *   locations: import("mongodb").Collection
@@ -212,6 +227,19 @@ export function createCatalogRouter(deps) {
 
   router.post("/vouchers/batch", requireAdmin, async (req, res) => {
     try {
+      const locationIdRaw = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+      if (!locationIdRaw) {
+        return res.status(400).json({
+          error: "locationId is required — pick a location to assign these vouchers.",
+        })
+      }
+      const locationDoc = await locations.findOne({ _id: locationIdRaw })
+      if (!locationDoc) {
+        return res.status(400).json({ error: "Unknown location — refresh the page and pick a valid location." })
+      }
+      const locationName =
+        typeof locationDoc.name === "string" && locationDoc.name.trim() ? locationDoc.name.trim() : locationIdRaw
+
       const fileName =
         typeof req.body?.fileName === "string" ? req.body.fileName.trim().slice(0, 240) : "upload.csv"
       const rows = req.body?.rows
@@ -278,6 +306,8 @@ export function createCatalogRouter(deps) {
           batchId,
           sourceFileName: fileName,
           columns,
+          locationId: locationIdRaw,
+          locationName,
           uploadedBy: req.auth.userId,
           uploadedAt,
         })
@@ -295,7 +325,7 @@ export function createCatalogRouter(deps) {
         inserted = ins.insertedCount
       }
 
-      const summary = `Imported voucher batch "${fileName}" (${batchId}): ${inserted} new, ${skippedAlreadyInDb} already in database, ${skippedDuplicateInFile} duplicate in file, ${skippedNoId} row(s) without id.`
+      const summary = `Imported voucher batch "${fileName}" (${batchId}) → ${locationName}: ${inserted} new, ${skippedAlreadyInDb} already in database, ${skippedDuplicateInFile} duplicate in file, ${skippedNoId} row(s) without id.`
       await appendAuditLog(auditLogs, req.auth, summary)
 
       res.status(201).json({
@@ -306,6 +336,62 @@ export function createCatalogRouter(deps) {
         skippedNoId,
         totalRowsInFile: dataRows.length,
       })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.delete("/vouchers", requireAdmin, async (req, res) => {
+    try {
+      const locParam = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
+      /** @type {import("mongodb").Document | null} */
+      let locationDoc = null
+      /** @type {import("mongodb").Document} */
+      let filter = {}
+      if (locParam) {
+        locationDoc = await locations.findOne({ _id: locParam })
+        if (!locationDoc) return res.status(400).json({ error: "Unknown location for bulk delete." })
+        filter = { locationId: locParam }
+      }
+
+      const result = await vouchers.deleteMany(filter)
+      const locName = locationDoc && typeof locationDoc.name === "string" ? locationDoc.name : locParam
+      const scopeLabel = locParam ? `location "${locName}" (${locParam})` : "entire inventory"
+      await appendAuditLog(
+        auditLogs,
+        req.auth,
+        `Bulk deleted vouchers (${scopeLabel}): ${result.deletedCount} document(s) removed`,
+      )
+      res.json({ deleted: result.deletedCount })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.delete("/vouchers/:voucherId", requireAdmin, async (req, res) => {
+    try {
+      const raw = typeof req.params?.voucherId === "string" ? req.params.voucherId : ""
+      let voucherId = ""
+      try {
+        voucherId = decodeURIComponent(raw).trim()
+      } catch {
+        voucherId = raw.trim()
+      }
+      if (!voucherId || voucherId.length > 128) {
+        return res.status(400).json({ error: "Invalid voucher id." })
+      }
+
+      const result = await vouchers.deleteOne({ _id: voucherId })
+      if (result.deletedCount === 0) {
+        return res.status(404).json({ error: "Voucher not found." })
+      }
+
+      await appendAuditLog(auditLogs, req.auth, `Deleted voucher "${voucherId}"`)
+      res.status(204).end()
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
@@ -329,6 +415,96 @@ export function createCatalogRouter(deps) {
         disputes: disputeDocs.map(toDispute),
         auditLogs: auditDocs.map(toAudit),
       })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.post("/sales", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const customerName = typeof req.body?.customerName === "string" ? req.body.customerName.trim() : ""
+      const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
+      const paymentNumberRaw = typeof req.body?.paymentNumber === "string" ? req.body.paymentNumber.trim() : ""
+      const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
+      const paymentNumber = paymentNumberRaw
+      const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
+      if (!packageId) return res.status(400).json({ error: "packageId is required." })
+      if (customerName.length < 2) {
+        return res.status(400).json({ error: "Customer name must be at least 2 characters." })
+      }
+      const phoneDigits = customerPhone.replace(/\D/g, "")
+      if (customerPhone.length < 7 || customerPhone.length > 32) {
+        return res.status(400).json({ error: "Customer phone must be between 7 and 32 characters." })
+      }
+      if (phoneDigits.length < 7) {
+        return res.status(400).json({ error: "Customer phone must include at least 7 digits." })
+      }
+      if (paymentNumber.length < 2 || paymentNumber.length > 64) {
+        return res.status(400).json({ error: "Payment number must be between 2 and 64 characters." })
+      }
+
+      const pkg = await packages.findOne({ _id: packageId })
+      if (!pkg) return res.status(400).json({ error: "Unknown package." })
+      if (pkg.status !== "Active") {
+        return res.status(400).json({ error: "Only active packages can be sold." })
+      }
+      const stock = typeof pkg.stockUnits === "number" ? pkg.stockUnits : 0
+      if (stock <= 0) return res.status(400).json({ error: "This package is out of stock." })
+
+      const priceGHS = Number(pkg.priceGHS)
+      if (!Number.isFinite(priceGHS) || priceGHS < 0) {
+        return res.status(400).json({ error: "Invalid package price." })
+      }
+
+      let locationId = ""
+      if (req.auth.role === "Admin") {
+        locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+        if (!locationId) {
+          return res.status(400).json({ error: "locationId is required when recording a sale as administrator." })
+        }
+        const loc = await locations.findOne({ _id: locationId })
+        if (!loc) return res.status(400).json({ error: "Unknown location." })
+      } else {
+        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        if (!loc) {
+          return res.status(403).json({
+            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
+          })
+        }
+        locationId = String(loc._id)
+      }
+
+      const packageType = typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : packageId
+      const date = new Date().toISOString().slice(0, 10)
+      const saleId = `sale-${randomUUID().slice(0, 12)}`
+
+      const saleDoc = {
+        _id: saleId,
+        customerName,
+        customerPhone,
+        paymentNumber,
+        packageType,
+        amount: priceGHS,
+        locationId,
+        date,
+        status: "Completed",
+      }
+
+      await sales.insertOne(saleDoc)
+      const dec = await packages.updateOne({ _id: packageId, stockUnits: { $gt: 0 } }, { $inc: { stockUnits: -1 } })
+      if (dec.modifiedCount === 0) {
+        await sales.deleteOne({ _id: saleId })
+        return res.status(409).json({ error: "Could not decrement stock — package may have sold out. Try again." })
+      }
+
+      await appendAuditLog(
+        auditLogs,
+        req.auth,
+        `Sale ${saleId}: ${customerName} · ${customerPhone} · pay ${paymentNumber} · ${packageType} · ${priceGHS} GHS · ${locationId}`,
+      )
+      res.status(201).json({ sale: toSale(saleDoc) })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)

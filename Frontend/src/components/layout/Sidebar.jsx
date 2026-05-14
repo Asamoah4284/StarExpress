@@ -1,6 +1,5 @@
 import { NavLink } from "react-router-dom"
 import {
-  Activity,
   BarChart3,
   PieChart,
   ChevronsLeft,
@@ -25,11 +24,10 @@ import { roleMayAccessNavPath } from "@/lib/roles.js"
 
 const items = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/sales", label: "Sales", icon: Activity },
+  { to: "/packages", label: "Packages", icon: Package },
   { to: "/sales-history", label: "Sales History", icon: History },
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/revenue-split", label: "Revenue split", icon: PieChart },
-  { to: "/packages", label: "Packages", icon: Package },
   { to: "/vouchers", label: "Upload vouchers", icon: Ticket },
   { to: "/vouchers/uploaded", label: "Vouchers", icon: Table2 },
   { to: "/locations", label: "Locations", icon: MapPin },
