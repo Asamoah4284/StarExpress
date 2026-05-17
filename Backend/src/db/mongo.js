@@ -17,6 +17,8 @@ let disputesCollection = null
 let auditLogsCollection = null
 /** @type {import("mongodb").Collection | null} */
 let vouchersCollection = null
+/** @type {import("mongodb").Collection | null} */
+let appSettingsCollection = null
 
 /** @param {string | undefined} value */
 function parseMongoFamilyEnv(value) {
@@ -84,6 +86,7 @@ export async function connectMongo(uri) {
   disputesCollection = db.collection("disputes")
   auditLogsCollection = db.collection("audit_logs")
   vouchersCollection = db.collection("vouchers")
+  appSettingsCollection = db.collection("app_settings")
   await usersCollection.createIndex({ email_normalized: 1 }, { unique: true })
   try {
     await locationsCollection.createIndex({ managerUserId: 1 }, { unique: true, sparse: true })
@@ -131,6 +134,11 @@ export function getVouchersCollection() {
   return vouchersCollection
 }
 
+export function getAppSettingsCollection() {
+  if (!appSettingsCollection) throw new Error("MongoDB not connected. Call connectMongo first.")
+  return appSettingsCollection
+}
+
 export async function closeMongo() {
   if (client) {
     await client.close()
@@ -142,6 +150,7 @@ export async function closeMongo() {
   disputesCollection = null
   auditLogsCollection = null
   vouchersCollection = null
+  appSettingsCollection = null
 }
 }
 

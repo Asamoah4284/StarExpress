@@ -184,6 +184,9 @@ export async function fetchCatalog(token) {
   ) {
     return { ok: false, error: "Unexpected response from server." }
   }
+  const packageVoucherInventory = Array.isArray(data.packageVoucherInventory)
+    ? data.packageVoucherInventory
+    : []
   return {
     ok: true,
     catalog: {
@@ -192,6 +195,7 @@ export async function fetchCatalog(token) {
       sales: data.sales,
       disputes: data.disputes,
       auditLogs: data.auditLogs,
+      packageVoucherInventory,
     },
   }
 }
@@ -330,6 +334,62 @@ export async function fetchVoucherStats(token, opts = {}) {
 }
 
 /**
+ * Total and remaining voucher counts per package (optional location scope for admins).
+ * @param {string} token
+ * @param {{ locationId?: string }} [opts]
+ */
+export async function fetchPackageVoucherInventory(token, opts = {}) {
+  const params = new URLSearchParams()
+  const lid = typeof opts.locationId === "string" ? opts.locationId.trim() : ""
+  if (lid && lid !== "all") params.set("locationId", lid)
+  const qs = params.toString() ? `?${params.toString()}` : ""
+  const { res, data } = await parseJsonResponse(`/api/catalog/packages/voucher-inventory${qs}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.packages)) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return {
+    ok: true,
+    locationId: typeof data.locationId === "string" ? data.locationId : null,
+    packages: data.packages,
+  }
+}
+
+/**
+ * Remaining unused vouchers for a package at a wifi location.
+ * @param {string} token
+ * @param {{ packageId: string, locationId: string }} opts
+ */
+export async function fetchPackageStock(token, opts) {
+  const packageId = typeof opts.packageId === "string" ? opts.packageId.trim() : ""
+  const locationId = typeof opts.locationId === "string" ? opts.locationId.trim() : ""
+  const params = new URLSearchParams()
+  if (locationId) params.set("locationId", locationId)
+  const qs = params.toString() ? `?${params.toString()}` : ""
+  const { res, data } = await parseJsonResponse(
+    `/api/catalog/packages/${encodeURIComponent(packageId)}/stock${qs}`,
+    {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  )
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.remaining !== "number") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, remaining: data.remaining }
+}
+
+/**
  * @param {string} token
  * @param {string} voucherId
  */
@@ -452,7 +512,7 @@ export async function deleteCatalogLocation(token, id) {
 
 /**
  * @param {string} token
- * @param {{ name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number }} body
+ * @param {{ name: string, priceGHS: number, dataLimit: string, status: string }} body
  */
 export async function createCatalogPackage(token, body) {
   const { res, data } = await parseJsonResponse("/api/catalog/packages", {
@@ -473,7 +533,7 @@ export async function createCatalogPackage(token, body) {
 /**
  * @param {string} token
  * @param {string} id
- * @param {{ name?: string, priceGHS?: number, dataLimit?: string, status?: string, stockUnits?: number }} body
+ * @param {{ name?: string, priceGHS?: number, dataLimit?: string, status?: string }} body
  */
 export async function updateCatalogPackage(token, id, body) {
   const path = `/api/catalog/packages/${encodeURIComponent(id)}`
@@ -510,9 +570,9 @@ export async function deleteCatalogPackage(token, id) {
  * @param {string} token
  * @param {{
  *   packageId: string
- *   customerName: string
  *   customerPhone: string
- *   paymentNumber: string
+ *   customerName?: string
+ *   paymentNumber?: string
  *   locationId?: string
  * }} body
  */
@@ -548,4 +608,48 @@ export async function resolveCatalogDispute(token, id) {
     return { ok: false, error: "Unexpected response from server." }
   }
   return { ok: true, dispute: data.dispute }
+}
+
+/** @param {string} token */
+export async function fetchAppSettings(token) {
+  const { res, data } = await parseJsonResponse("/api/settings", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    typeof data.salesAgentCommissionRate !== "number"
+  ) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, salesAgentCommissionRate: data.salesAgentCommissionRate }
+}
+
+/**
+ * @param {string} token
+ * @param {{ salesAgentCommissionPercent: number }} body Percent 0–100
+ */
+export async function updateAppSettingsCommission(token, body) {
+  const { res, data } = await parseJsonResponse("/api/settings", {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    typeof data.salesAgentCommissionRate !== "number"
+  ) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, salesAgentCommissionRate: data.salesAgentCommissionRate }
 }

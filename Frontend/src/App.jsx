@@ -16,6 +16,7 @@ import Settings from "@/pages/Settings.jsx"
 import UploadedVouchers from "@/pages/UploadedVouchers.jsx"
 import Vouchers from "@/pages/Vouchers.jsx"
 import RevenueSplit from "@/pages/RevenueSplit.jsx"
+import AgentCommissions from "@/pages/AgentCommissions.jsx"
 
 export default function App() {
   return (
@@ -26,9 +27,9 @@ export default function App() {
         <Route element={<MainLayout />}>
           <Route index element={<Dashboard />} />
           <Route path="sales-history" element={<SalesHistory />} />
-          <Route path="reports" element={<Reports />} />
           <Route path="packages" element={<Packages />} />
           <Route element={<BlockSalesAgentRoute />}>
+            <Route path="reports" element={<Reports />} />
             <Route path="locations" element={<Locations />} />
             <Route path="settings" element={<Settings />} />
             <Route path="revenue-split" element={<RevenueSplit />} />
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="vouchers" element={<Vouchers />} />
           </Route>
           <Route element={<AdminOnlyRoute />}>
+            <Route path="agent-commissions" element={<AgentCommissions />} />
             <Route path="users" element={<Users />} />
             <Route path="audit-logs" element={<AuditLogs />} />
           </Route>

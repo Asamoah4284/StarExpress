@@ -42,7 +42,11 @@ export default function AuditLogs() {
         header: "Type",
         enableSorting: false,
         enableGlobalFilter: false,
-        meta: { headerClassName: "w-[7.5rem]", cellClassName: "w-[7.5rem] align-top" },
+        meta: {
+          wrap: false,
+          headerClassName: "w-[6.5rem]",
+          cellClassName: "w-[6.5rem] align-top",
+        },
         cell: ({ row }) => {
           const { variant, label } = auditKind(row.original.action)
           return <Badge variant={variant}>{label}</Badge>
@@ -51,14 +55,32 @@ export default function AuditLogs() {
       {
         accessorKey: "action",
         header: "Action",
-        meta: { cellClassName: "min-w-0 max-w-xl align-top" },
-        cell: ({ getValue }) => <span className="break-words">{getValue()}</span>,
+        meta: {
+          wrap: true,
+          headerClassName: "min-w-0",
+          cellClassName: "min-w-0 align-top",
+        },
+        cell: ({ getValue }) => (
+          <p className="text-sm leading-relaxed break-words [overflow-wrap:anywhere]">{String(getValue() ?? "")}</p>
+        ),
       },
-      { accessorKey: "actor", header: "Actor", meta: { cellClassName: "whitespace-nowrap align-top" } },
+      {
+        accessorKey: "actor",
+        header: "Actor",
+        meta: {
+          wrap: false,
+          headerClassName: "w-[9rem]",
+          cellClassName: "w-[9rem] align-top",
+        },
+      },
       {
         accessorKey: "at",
         header: "When",
-        meta: { headerClassName: "text-right", cellClassName: "text-right whitespace-nowrap align-top" },
+        meta: {
+          wrap: false,
+          headerClassName: "w-[10.5rem] text-right",
+          cellClassName: "w-[10.5rem] text-right align-top",
+        },
         cell: ({ getValue }) => formatAt(getValue()),
       },
     ],
@@ -85,6 +107,7 @@ export default function AuditLogs() {
         searchPlaceholder="Search action, actor, date…"
         pageSize={12}
         initialSorting={[{ id: "at", desc: true }]}
+        fixedLayout
       />
     </div>
   )

@@ -81,6 +81,7 @@ export default function UploadedVouchers() {
       void queryClient.invalidateQueries({ queryKey: ["vouchers"] })
       void queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
       void queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+      void queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
       void queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
     },
   })
@@ -130,6 +131,7 @@ export default function UploadedVouchers() {
       void queryClient.invalidateQueries({ queryKey: ["vouchers"] })
       void queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
       void queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+      void queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
       void queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
       if (scope?.packageId) setPackageFilter("all")
       setPage(1)

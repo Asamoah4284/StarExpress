@@ -15,6 +15,7 @@ import {
   Table2,
   Ticket,
   Users,
+  Wallet,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -31,6 +32,7 @@ const items = [
   { to: "/vouchers", label: "Upload vouchers", icon: Ticket },
   { to: "/vouchers/uploaded", label: "Vouchers", icon: Table2 },
   { to: "/locations", label: "Locations", icon: MapPin },
+  { to: "/agent-commissions", label: "Agent commissions", icon: Wallet },
   { to: "/users", label: "Users", icon: Users },
   { to: "/audit-logs", label: "Audit Logs", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings },

@@ -27,17 +27,6 @@ function mobileFieldLabel(header) {
   return flexRender(header.column.columnDef.header, header.getContext())
 }
 
-/** @param {unknown} iso */
-function formatAuditLogAt(iso) {
-  if (typeof iso !== "string") return String(iso)
-  try {
-    const d = new Date(iso)
-    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
-  } catch {
-    return iso
-  }
-}
-
 /**
  * @param {unknown} record
  * @returns {{ title: string, subtitle: string | null, skipIds: Set<string> } | null}
@@ -89,15 +78,6 @@ function getMobileHero(record) {
       skipIds: new Set(["name", "address", "id"]),
     }
   }
-  if (typeof r.action === "string" && typeof r.actor === "string" && typeof r.at === "string") {
-    const title = r.action.trim()
-    if (!title) return null
-    return {
-      title,
-      subtitle: `${String(r.actor).trim()} · ${formatAuditLogAt(r.at)}`,
-      skipIds: new Set(["action", "actor", "at", "id"]),
-    }
-  }
   return null
 }
 
@@ -111,6 +91,8 @@ export function DataTable({
   /** @type {import("@tanstack/react-table").SortingState | undefined} */
   initialSorting,
   className,
+  /** When true, columns respect width constraints and long text wraps instead of overlapping. */
+  fixedLayout = false,
 }) {
   const [internalFilter, setInternalFilter] = React.useState("")
   const globalFilter = controlledFilter ?? internalFilter
@@ -147,7 +129,7 @@ export function DataTable({
       </div>
       {/* Desktop: table */}
       <ScrollArea className="hidden w-full rounded-lg border border-border bg-card shadow-none md:block">
-        <Table>
+        <Table className={cn(fixedLayout && "table-fixed min-w-[52rem]")}>
           <TableHeader>
             {table.getHeaderGroups().map((hg) => (
               <TableRow key={hg.id} className="hover:bg-transparent">
@@ -190,6 +172,11 @@ export function DataTable({
                       key={cell.id}
                       className={cn(
                         "align-middle",
+                        /** @type {{ cellClassName?: string, wrap?: boolean } | undefined} */ (
+                          cell.column.columnDef.meta
+                        )?.wrap === false
+                          ? "whitespace-nowrap"
+                          : "whitespace-normal",
                         /** @type {{ cellClassName?: string } | undefined} */ (cell.column.columnDef.meta)?.cellClassName,
                       )}
                     >

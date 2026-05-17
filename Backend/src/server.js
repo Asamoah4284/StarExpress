@@ -10,12 +10,14 @@ import {
   getDisputesCollection,
   getAuditLogsCollection,
   getVouchersCollection,
+  getAppSettingsCollection,
 } from "./db/mongo.js"
 import { UserStore } from "./userStore.js"
 import { createAuthRouter } from "./routes/auth.js"
 import { mountHealthRoutes } from "./routes/health.js"
 import { createUsersRouter } from "./routes/users.js"
 import { createCatalogRouter } from "./routes/catalog.js"
+import { createSettingsRouter } from "./routes/settings.js"
 import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
 
 /** @param {string} key */
@@ -158,6 +160,15 @@ async function main() {
       userStore,
       jwtSecret: JWT_SECRET,
       auditLogs: getAuditLogsCollection(),
+    }),
+  )
+
+  app.use(
+    "/api/settings",
+    createSettingsRouter({
+      appSettings: getAppSettingsCollection(),
+      auditLogs: getAuditLogsCollection(),
+      jwtSecret: JWT_SECRET,
     }),
   )
 

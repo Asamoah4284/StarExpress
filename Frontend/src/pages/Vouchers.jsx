@@ -262,6 +262,7 @@ export default function Vouchers() {
         await queryClient.invalidateQueries({ queryKey: ["vouchers"] })
         await queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
         await queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+        await queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
         navigate("/vouchers/uploaded")
       }
     },
@@ -311,6 +312,7 @@ export default function Vouchers() {
       await queryClient.invalidateQueries({ queryKey: ["vouchers"] })
       await queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
       await queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+      await queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
     } catch (e) {
       setSingleFeedback({
         kind: "error",

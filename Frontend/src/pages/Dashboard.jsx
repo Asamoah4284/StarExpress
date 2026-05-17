@@ -1,7 +1,7 @@
 import * as React from "react"
 import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
-import { Calendar, DollarSign, ShoppingCart, Wallet } from "lucide-react"
+import { Calendar, DollarSign, Percent, ShoppingCart, Wallet } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { GrossRevenueTrendChart } from "@/components/charts/GrossRevenueTrendChart.jsx"
@@ -20,16 +20,22 @@ import { useCatalog } from "@/hooks/useCatalog.js"
 import { fetchVoucherStats } from "@/lib/api.js"
 import {
   filterSalesByLocation,
+  getAgentCommissionMetrics,
   getCompletedRevenueByWeekday,
   getDashboardMetrics,
   getDayOverDaySummary,
+  getDayOverDaySummaryForAgent,
   getMonthlyGrossRevenueTrend,
+  getSparklineCumulativeCommission,
   getSparklineCumulativeRevenue,
+  getSparklineCumulativeSoldCount,
+  getSparklineDailyCommission,
   getSparklineDailyCompletedRevenue,
   getSparklineDailySalesCount,
   getSparklineDailySoldCount,
 } from "@/lib/aggregations.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
+import { useSalesAgentCommissionRate } from "@/hooks/useAppSettings.js"
 import { ROLE_SALES_AGENT } from "@/lib/roles.js"
 import { formatCedis } from "@/lib/utils"
 
@@ -89,26 +95,48 @@ export default function Dashboard() {
   const totalVouchersInScope = voucherStatsQuery.data?.total ?? 0
   const remainingVouchers = voucherStatsQuery.data?.remaining ?? 0
 
+  const commissionRate = useSalesAgentCommissionRate()
+
   const m = React.useMemo(() => {
     const packages = catalog.data?.packages ?? []
     return getDashboardMetrics(filtered, packages)
   }, [catalog.data, filtered])
 
+  const agentKpi = React.useMemo(
+    () => (isSalesAgent ? getAgentCommissionMetrics(filtered, commissionRate) : null),
+    [isSalesAgent, filtered, commissionRate],
+  )
+
   const sparkTotalRevenue = React.useMemo(() => getSparklineCumulativeRevenue(filtered, 14), [filtered])
   const sparkTodayRevenue = React.useMemo(() => getSparklineDailyCompletedRevenue(filtered, 14), [filtered])
   const sparkTotalSales = React.useMemo(() => getSparklineDailySalesCount(filtered, 14), [filtered])
   const sparkSold = React.useMemo(() => getSparklineDailySoldCount(filtered, 14), [filtered])
+  const sparkTotalCommission = React.useMemo(
+    () => getSparklineCumulativeCommission(filtered, commissionRate, 14),
+    [filtered, commissionRate],
+  )
+  const sparkTodayCommission = React.useMemo(
+    () => getSparklineDailyCommission(filtered, commissionRate, 14),
+    [filtered, commissionRate],
+  )
+  const sparkCumulativeSales = React.useMemo(() => getSparklineCumulativeSoldCount(filtered, 14), [filtered])
   const grossRevenueTrend = React.useMemo(() => getMonthlyGrossRevenueTrend(filtered, 6), [filtered])
   const revenueByWeekday = React.useMemo(() => getCompletedRevenueByWeekday(filtered), [filtered])
   const dod = React.useMemo(() => getDayOverDaySummary(filtered), [filtered])
+  const agentDod = React.useMemo(
+    () => (isSalesAgent ? getDayOverDaySummaryForAgent(filtered, commissionRate) : null),
+    [isSalesAgent, filtered, commissionRate],
+  )
+
+  const commissionPercentLabel = `${Math.round(commissionRate * 1000) / 10}% of completed sales`
 
   const overviewDescription = isAdmin
     ? "Key revenue and sales totals for the selected location (live data from the API)."
-    : "Revenue and sales totals for your assigned store (live data from the API)."
+    : `Commission and sale counts for your wifi location (${commissionPercentLabel}).`
 
   const salesBreakdownHint = isAdmin
     ? "Six-month completed gross revenue trend and completed revenue by day of week (Mon–Sun). Respects the location filter above."
-    : "Six-month completed gross revenue trend and completed revenue by day of week (Mon–Sun), scoped to your store."
+    : "Six-month completed gross revenue trend and completed revenue by day of week (Mon–Sun), scoped to your wifi location."
 
   return (
     <div className="space-y-8">
@@ -122,7 +150,7 @@ export default function Dashboard() {
       <PageHeader title="Overview" description={overviewDescription}>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
           <span className="text-muted-foreground shrink-0 text-xs font-semibold uppercase tracking-wider">
-            Location
+            {isSalesAgent ? "Wifi location" : "Location"}
           </span>
           {isAdmin ? (
             <Select value={locationId} onValueChange={setLocationId}>
@@ -158,64 +186,101 @@ export default function Dashboard() {
       </PageHeader>
 
       <div className="grid auto-rows-auto grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
-        <StatCard
-          tone="violet"
-          icon={DollarSign}
-          label="Total Revenue"
-          value={formatCedis(m.totalRevenue)}
-          subline={`${m.sold} completed`}
-          trend={{ text: `${m.utilizationRate}% utilized`, positive: true }}
-          sparkline={{ data: sparkTotalRevenue, variant: "area" }}
-        />
-        <StatCard
-          tone="emerald"
-          icon={Calendar}
-          label="Today's Revenue"
-          value={formatCedis(m.todaysRevenue)}
-          subline={`Yesterday ${formatCedis(dod.prevDayCompletedRevenue)}`}
-          trend={moneyDayTrend(dod.revenueDelta)}
-          sparkline={{ data: sparkTodayRevenue, variant: "bar" }}
-        />
-        <StatCard
-          tone="amber"
-          icon={ShoppingCart}
-          label="Total Vouchers"
-          value={
-            isAdmin
-              ? voucherStatsQuery.isLoading
-                ? "…"
-                : voucherStatsQuery.isError
-                  ? "—"
-                  : String(totalVouchersInScope)
-              : String(m.totalSales)
-          }
-          subline={
-            isAdmin
-              ? voucherStatsQuery.isError
-                ? "Could not load vouchers"
-                : `${remainingVouchers} remaining`
-              : `${m.pending} pending`
-          }
-          trend={countDayTrend(dod.salesDelta)}
-          sparkline={{ data: sparkTotalSales, variant: "bar" }}
-        />
-        <StatCard
-          tone="sky"
-          icon={Wallet}
-          label="Sold Vouchers"
-          value={String(m.sold)}
-          subline={
-            isAdmin
-              ? voucherStatsQuery.isLoading
-                ? "…"
-                : voucherStatsQuery.isError
+        {isSalesAgent && agentKpi && agentDod ? (
+          <>
+            <StatCard
+              tone="violet"
+              icon={Percent}
+              label="Total Commission"
+              value={formatCedis(agentKpi.totalCommission)}
+              subline={`${agentKpi.totalSales} completed sale${agentKpi.totalSales === 1 ? "" : "s"}`}
+              trend={{ text: commissionPercentLabel, positive: true }}
+              sparkline={{ data: sparkTotalCommission, variant: "area" }}
+            />
+            <StatCard
+              tone="emerald"
+              icon={DollarSign}
+              label="Today's Commission"
+              value={formatCedis(agentKpi.todayCommission)}
+              subline={`Yesterday ${formatCedis(agentDod.prevDayCommission)}`}
+              trend={moneyDayTrend(agentDod.commissionDelta)}
+              sparkline={{ data: sparkTodayCommission, variant: "bar" }}
+            />
+            <StatCard
+              tone="amber"
+              icon={ShoppingCart}
+              label="Total Sales"
+              value={String(agentKpi.totalSales)}
+              subline={agentKpi.pending > 0 ? `${agentKpi.pending} pending` : "All completed"}
+              trend={countDayTrend(agentDod.soldDelta)}
+              sparkline={{ data: sparkCumulativeSales, variant: "bar" }}
+            />
+            <StatCard
+              tone="sky"
+              icon={Calendar}
+              label="Today's Sales"
+              value={String(agentKpi.todaySales)}
+              subline={`${agentKpi.totalSales} total completed`}
+              trend={countDayTrend(agentDod.soldDelta)}
+              sparkline={{ data: sparkSold, variant: "area" }}
+            />
+          </>
+        ) : (
+          <>
+            <StatCard
+              tone="violet"
+              icon={DollarSign}
+              label="Total Revenue"
+              value={formatCedis(m.totalRevenue)}
+              subline={`${m.sold} completed`}
+              trend={{ text: `${m.utilizationRate}% utilized`, positive: true }}
+              sparkline={{ data: sparkTotalRevenue, variant: "area" }}
+            />
+            <StatCard
+              tone="emerald"
+              icon={Calendar}
+              label="Today's Revenue"
+              value={formatCedis(m.todaysRevenue)}
+              subline={`Yesterday ${formatCedis(dod.prevDayCompletedRevenue)}`}
+              trend={moneyDayTrend(dod.revenueDelta)}
+              sparkline={{ data: sparkTodayRevenue, variant: "bar" }}
+            />
+            <StatCard
+              tone="amber"
+              icon={ShoppingCart}
+              label="Total Vouchers"
+              value={
+                voucherStatsQuery.isLoading
+                  ? "…"
+                  : voucherStatsQuery.isError
+                    ? "—"
+                    : String(totalVouchersInScope)
+              }
+              subline={
+                voucherStatsQuery.isError
                   ? "Could not load vouchers"
                   : `${remainingVouchers} remaining`
-              : null
-          }
-          trend={countDayTrend(dod.soldDelta)}
-          sparkline={{ data: sparkSold, variant: "area" }}
-        />
+              }
+              trend={countDayTrend(dod.salesDelta)}
+              sparkline={{ data: sparkTotalSales, variant: "bar" }}
+            />
+            <StatCard
+              tone="sky"
+              icon={Wallet}
+              label="Sold Vouchers"
+              value={String(m.sold)}
+              subline={
+                voucherStatsQuery.isLoading
+                  ? "…"
+                  : voucherStatsQuery.isError
+                    ? "Could not load vouchers"
+                    : `${remainingVouchers} remaining`
+              }
+              trend={countDayTrend(dod.soldDelta)}
+              sparkline={{ data: sparkSold, variant: "area" }}
+            />
+          </>
+        )}
       </div>
 
       <Card className="border-border bg-card shadow-none ring-0">

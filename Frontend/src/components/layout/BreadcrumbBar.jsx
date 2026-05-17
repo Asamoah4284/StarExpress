@@ -11,6 +11,7 @@ const ROUTE_TITLES = {
   "/vouchers": "Upload vouchers",
   "/vouchers/uploaded": "Uploaded vouchers",
   "/locations": "Locations",
+  "/agent-commissions": "Agent commissions",
   "/users": "Users",
   "/audit-logs": "Audit Logs",
   "/settings": "Settings",

@@ -269,6 +269,140 @@ function buildVoucherMongoFilter(q) {
   return { $and: and }
 }
 
+/**
+ * Unused vouchers for a package at a wifi location (sellable inventory).
+ * @param {string} packageId
+ * @param {string} locationId
+ * @returns {import("mongodb").Document}
+ */
+function buildPackageAvailabilityFilter(packageId, locationId) {
+  return {
+    packageId,
+    locationId,
+    $nor: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }],
+  }
+}
+
+/** MongoDB aggregation expression: voucher CSV row marked as used. */
+function voucherRowIsUsedExpr() {
+  return {
+    $or: [
+      {
+        $regexMatch: {
+          input: { $toString: { $ifNull: ["$columns.Status", ""] } },
+          regex: "^used$",
+          options: "i",
+        },
+      },
+      {
+        $regexMatch: {
+          input: { $toString: { $ifNull: ["$columns.status", ""] } },
+          regex: "^used$",
+          options: "i",
+        },
+      },
+    ],
+  }
+}
+
+/**
+ * @param {import("mongodb").Collection} vouchersCol
+ * @param {string} [locationId] When set, scope counts to one wifi location.
+ */
+/**
+ * Remove "Used" from voucher CSV status columns so the row is sellable again.
+ * @param {Record<string, unknown> | undefined} columns
+ */
+function clearVoucherUsedColumns(columns) {
+  if (!columns || typeof columns !== "object" || Array.isArray(columns)) return {}
+  /** @type {Record<string, unknown>} */
+  const next = { ...columns }
+  for (const key of Object.keys(next)) {
+    if (/^status$/i.test(key) && /^used$/i.test(String(next[key] ?? "").trim())) {
+      delete next[key]
+    }
+  }
+  return next
+}
+
+/**
+ * When all sales are gone, vouchers marked Used no longer have backing sales — release them.
+ * @param {import("mongodb").Collection} vouchersCol
+ */
+async function releaseOrphanedUsedVouchers(vouchersCol) {
+  const used = await vouchersCol
+    .find({
+      $or: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }],
+    })
+    .toArray()
+  if (!used.length) return 0
+  let released = 0
+  for (const doc of used) {
+    const columns = clearVoucherUsedColumns(
+      doc.columns && typeof doc.columns === "object" && !Array.isArray(doc.columns) ? doc.columns : {},
+    )
+    const r = await vouchersCol.updateOne({ _id: doc._id }, { $set: { columns } })
+    if (r.modifiedCount > 0) released += 1
+  }
+  return released
+}
+
+/**
+ * Set each package's stockUnits to unused voucher count (all wifi locations).
+ * @param {import("mongodb").Collection} vouchersCol
+ * @param {import("mongodb").Collection} packagesCol
+ */
+async function syncPackageStockUnitsFromVouchers(vouchersCol, packagesCol) {
+  const inventory = await aggregatePackageVoucherInventory(vouchersCol, "")
+  const remainingByPackageId = new Map(inventory.map((row) => [row.id, row.remaining]))
+  const pkgDocs = await packagesCol.find({}).project({ _id: 1, stockUnits: 1 }).toArray()
+  const ops = []
+  for (const pkg of pkgDocs) {
+    const id = String(pkg._id)
+    const remaining = remainingByPackageId.get(id) ?? 0
+    if (pkg.stockUnits !== remaining) {
+      ops.push({
+        updateOne: {
+          filter: { _id: pkg._id },
+          update: { $set: { stockUnits: remaining } },
+        },
+      })
+    }
+  }
+  if (ops.length > 0) await packagesCol.bulkWrite(ops)
+}
+
+async function aggregatePackageVoucherInventory(vouchersCol, locationId = "") {
+  /** @type {import("mongodb").Document} */
+  const match = { packageId: { $exists: true, $ne: "" } }
+  if (locationId) match.locationId = locationId
+  const rows = await vouchersCol
+    .aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$packageId",
+          name: { $first: "$packageName" },
+          total: { $sum: 1 },
+          remaining: {
+            $sum: {
+              $cond: [{ $not: voucherRowIsUsedExpr() }, 1, 0],
+            },
+          },
+        },
+      },
+      { $sort: { name: 1 } },
+    ])
+    .toArray()
+  return rows.map((p) => ({
+    id: String(p._id),
+    name: typeof p.name === "string" && p.name.trim() ? p.name.trim() : String(p._id),
+    total: p.total,
+    remaining: p.remaining,
+    count: p.total,
+  }))
+}
+
 /** @type {import("express").RequestHandler} */
 function requireSalesAgentOrAdmin(req, res, next) {
   const r = req.auth?.role
@@ -328,6 +462,57 @@ export function createCatalogRouter(deps) {
           count: p.count,
         })),
       })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.get("/packages/voucher-inventory", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      let locationId = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
+      if (req.auth.role !== "Admin") {
+        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        if (!loc) {
+          return res.status(403).json({
+            error: "No wifi location is assigned to your sales account. Ask an administrator to link you to a location.",
+          })
+        }
+        locationId = String(loc._id)
+      }
+      const packageRows = await aggregatePackageVoucherInventory(vouchers, locationId)
+      res.json({ locationId: locationId || null, packages: packageRows })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.get("/packages/:packageId/stock", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const packageId = typeof req.params?.packageId === "string" ? req.params.packageId.trim() : ""
+      const locationId = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
+      if (!packageId) return res.status(400).json({ error: "packageId is required." })
+      if (!locationId) return res.status(400).json({ error: "locationId is required." })
+
+      const pkg = await packages.findOne({ _id: packageId })
+      if (!pkg) return res.status(404).json({ error: "Unknown package." })
+
+      if (req.auth.role !== "Admin") {
+        const agentLoc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        if (!agentLoc || String(agentLoc._id) !== locationId) {
+          return res.status(403).json({ error: "You can only view stock for your assigned wifi location." })
+        }
+      } else {
+        const loc = await locations.findOne({ _id: locationId })
+        if (!loc) return res.status(404).json({ error: "Unknown location." })
+      }
+
+      const filter = buildPackageAvailabilityFilter(packageId, locationId)
+      const remaining = await vouchers.countDocuments(filter)
+      res.json({ packageId, locationId, remaining })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
@@ -510,6 +695,7 @@ export function createCatalogRouter(deps) {
 
       const summary = `Imported voucher batch "${fileName}" (${batchId}) → ${locationName} · ${packageName}: ${inserted} new, ${skippedAlreadyInDb} already on this package, ${skippedDuplicateInFile} duplicate in file, ${skippedNoId} row(s) without id.`
       await appendAuditLog(auditLogs, req.auth, summary)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
 
       res.status(201).json({
         batchId,
@@ -562,6 +748,7 @@ export function createCatalogRouter(deps) {
         req.auth,
         `Bulk deleted vouchers (${scopeLabel}): ${result.deletedCount} document(s) removed`,
       )
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
       res.json({ deleted: result.deletedCount })
     } catch (err) {
       console.error(err)
@@ -590,6 +777,7 @@ export function createCatalogRouter(deps) {
 
       const label = voucherDisplayCode({ _id: voucherId })
       await appendAuditLog(auditLogs, req.auth, `Deleted voucher "${label}"`)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
       res.status(204).end()
     } catch (err) {
       console.error(err)
@@ -598,21 +786,48 @@ export function createCatalogRouter(deps) {
     }
   })
 
-  router.get("/", async (_req, res) => {
+  router.get("/", async (req, res) => {
     try {
-      const [locDocs, pkgDocs, saleDocs, disputeDocs, auditDocs] = await Promise.all([
+      const [locDocs, saleDocs, disputeDocs, auditDocs, saleCount] = await Promise.all([
         locations.find({}).sort({ name: 1 }).toArray(),
-        packages.find({}).sort({ name: 1 }).toArray(),
         sales.find({}).sort({ date: -1 }).toArray(),
         disputes.find({}).sort({ date: -1 }).toArray(),
         auditLogs.find({}).sort({ at: -1 }).toArray(),
+        sales.countDocuments({}),
       ])
+
+      if (saleCount === 0) {
+        await releaseOrphanedUsedVouchers(vouchers)
+      }
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      const pkgDocs = await packages.find({}).sort({ name: 1 }).toArray()
+
+      /** @type {Awaited<ReturnType<typeof aggregatePackageVoucherInventory>>} */
+      let packageVoucherInventory = []
+      const role = req.auth?.role
+      if (role === "Admin" || role === ROLE_SALES_AGENT) {
+        let inventoryLocationId = ""
+        if (role === ROLE_SALES_AGENT) {
+          const agentLoc = await findConflictingLocationForSalesAgent(
+            locations,
+            users,
+            req.auth.userId,
+            undefined,
+          )
+          inventoryLocationId = agentLoc ? String(agentLoc._id) : ""
+        }
+        if (role === "Admin" || inventoryLocationId) {
+          packageVoucherInventory = await aggregatePackageVoucherInventory(vouchers, inventoryLocationId)
+        }
+      }
+
       res.json({
         locations: locDocs.map(toLocation),
         packages: pkgDocs.map(toPackage),
         sales: saleDocs.map(toSale),
         disputes: disputeDocs.map(toDispute),
         auditLogs: auditDocs.map(toAudit),
+        packageVoucherInventory,
       })
     } catch (err) {
       console.error(err)
@@ -623,16 +838,13 @@ export function createCatalogRouter(deps) {
 
   router.post("/sales", requireSalesAgentOrAdmin, async (req, res) => {
     try {
-      const customerName = typeof req.body?.customerName === "string" ? req.body.customerName.trim() : ""
+      const customerNameRaw = typeof req.body?.customerName === "string" ? req.body.customerName.trim() : ""
       const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
       const paymentNumberRaw = typeof req.body?.paymentNumber === "string" ? req.body.paymentNumber.trim() : ""
       const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
       const paymentNumber = paymentNumberRaw
       const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
-      if (customerName.length < 2) {
-        return res.status(400).json({ error: "Customer name must be at least 2 characters." })
-      }
       const phoneDigits = customerPhone.replace(/\D/g, "")
       if (customerPhone.length < 7 || customerPhone.length > 32) {
         return res.status(400).json({ error: "Customer phone must be between 7 and 32 characters." })
@@ -640,8 +852,9 @@ export function createCatalogRouter(deps) {
       if (phoneDigits.length < 7) {
         return res.status(400).json({ error: "Customer phone must include at least 7 digits." })
       }
-      if (paymentNumber.length < 2 || paymentNumber.length > 64) {
-        return res.status(400).json({ error: "Payment number must be between 2 and 64 characters." })
+      const customerName = customerNameRaw.length >= 2 ? customerNameRaw : customerPhone
+      if (paymentNumber.length > 64) {
+        return res.status(400).json({ error: "Payment number must be at most 64 characters." })
       }
 
       const pkg = await packages.findOne({ _id: packageId })
@@ -649,9 +862,6 @@ export function createCatalogRouter(deps) {
       if (pkg.status !== "Active") {
         return res.status(400).json({ error: "Only active packages can be sold." })
       }
-      const stock = typeof pkg.stockUnits === "number" ? pkg.stockUnits : 0
-      if (stock <= 0) return res.status(400).json({ error: "This package is out of stock." })
-
       const priceGHS = Number(pkg.priceGHS)
       if (!Number.isFinite(priceGHS) || priceGHS < 0) {
         return res.status(400).json({ error: "Invalid package price." })
@@ -675,6 +885,14 @@ export function createCatalogRouter(deps) {
         locationId = String(loc._id)
       }
 
+      const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
+      const voucherToUse = await vouchers.findOne(availFilter)
+      if (!voucherToUse) {
+        return res.status(400).json({
+          error: "No vouchers available for this package at this wifi location.",
+        })
+      }
+
       const packageType = typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : packageId
       const date = new Date().toISOString().slice(0, 10)
       const saleId = `sale-${randomUUID().slice(0, 12)}`
@@ -685,25 +903,78 @@ export function createCatalogRouter(deps) {
         customerPhone,
         paymentNumber,
         packageType,
+        packageId,
         amount: priceGHS,
         locationId,
         date,
         status: "Completed",
+        voucherId: String(voucherToUse._id),
       }
 
       await sales.insertOne(saleDoc)
-      const dec = await packages.updateOne({ _id: packageId, stockUnits: { $gt: 0 } }, { $inc: { stockUnits: -1 } })
-      if (dec.modifiedCount === 0) {
+      const columns =
+        voucherToUse.columns && typeof voucherToUse.columns === "object" && !Array.isArray(voucherToUse.columns)
+          ? { ...voucherToUse.columns }
+          : {}
+      const statusKey =
+        "Status" in columns ? "Status" : "status" in columns ? "status" : Object.keys(columns).find((k) => /^status$/i.test(k)) ?? "Status"
+      columns[statusKey] = "Used"
+      const marked = await vouchers.updateOne(
+        { _id: voucherToUse._id, ...availFilter },
+        { $set: { columns } },
+      )
+      if (marked.modifiedCount === 0) {
         await sales.deleteOne({ _id: saleId })
-        return res.status(409).json({ error: "Could not decrement stock — package may have sold out. Try again." })
+        return res.status(409).json({
+          error: "Could not reserve a voucher — inventory may have changed. Try again.",
+        })
       }
+
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
 
       await appendAuditLog(
         auditLogs,
         req.auth,
-        `Sale ${saleId}: ${customerName} · ${customerPhone} · pay ${paymentNumber} · ${packageType} · ${priceGHS} GHS · ${locationId}`,
+        `Sale ${saleId}: ${customerPhone}${paymentNumber ? ` · pay ${paymentNumber}` : ""} · ${packageType} · ${priceGHS} GHS · ${locationId}`,
       )
       res.status(201).json({ sale: toSale(saleDoc) })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.delete("/sales/:saleId", requireAdmin, async (req, res) => {
+    try {
+      const saleId = typeof req.params?.saleId === "string" ? req.params.saleId.trim() : ""
+      if (!saleId) return res.status(400).json({ error: "Missing sale id." })
+
+      const sale = await sales.findOne({ _id: saleId })
+      if (!sale) return res.status(404).json({ error: "Sale not found." })
+
+      const voucherId = typeof sale.voucherId === "string" ? sale.voucherId.trim() : ""
+      if (voucherId) {
+        const voucher = await vouchers.findOne({ _id: voucherId })
+        if (voucher) {
+          const columns = clearVoucherUsedColumns(
+            voucher.columns && typeof voucher.columns === "object" && !Array.isArray(voucher.columns)
+              ? voucher.columns
+              : {},
+          )
+          await vouchers.updateOne({ _id: voucherId }, { $set: { columns } })
+        }
+      }
+
+      await sales.deleteOne({ _id: saleId })
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+
+      const label =
+        typeof sale.customerPhone === "string" && sale.customerPhone.trim()
+          ? sale.customerPhone.trim()
+          : saleId
+      await appendAuditLog(auditLogs, req.auth, `Deleted sale ${saleId} (${label}) and restored voucher inventory`)
+      res.json({ ok: true })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
@@ -888,16 +1159,16 @@ export function createCatalogRouter(deps) {
       const dataLimit = typeof req.body?.dataLimit === "string" ? req.body.dataLimit.trim() : ""
       const status = typeof req.body?.status === "string" ? req.body.status.trim() : "Active"
       const priceGHS = Number(req.body?.priceGHS)
-      const stockUnits = Number(req.body?.stockUnits)
       if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
       if (!dataLimit) return res.status(400).json({ error: "Data limit is required." })
       if (!Number.isFinite(priceGHS) || priceGHS < 0) return res.status(400).json({ error: "Invalid price." })
-      if (!Number.isFinite(stockUnits) || stockUnits < 0) return res.status(400).json({ error: "Invalid stock." })
       const id = `pkg-${randomUUID().slice(0, 8)}`
-      const doc = { _id: id, name, priceGHS, dataLimit, status, stockUnits }
+      const doc = { _id: id, name, priceGHS, dataLimit, status, stockUnits: 0 }
       await packages.insertOne(doc)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      const saved = await packages.findOne({ _id: id })
       await appendAuditLog(auditLogs, req.auth, `Created package "${name}" (${id})`)
-      res.status(201).json({ package: toPackage(doc) })
+      res.status(201).json({ package: toPackage(saved ?? doc) })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
@@ -922,16 +1193,12 @@ export function createCatalogRouter(deps) {
         if (!Number.isFinite(priceGHS) || priceGHS < 0) return res.status(400).json({ error: "Invalid price." })
         $set.priceGHS = priceGHS
       }
-      if (req.body?.stockUnits !== undefined) {
-        const stockUnits = Number(req.body.stockUnits)
-        if (!Number.isFinite(stockUnits) || stockUnits < 0) return res.status(400).json({ error: "Invalid stock." })
-        $set.stockUnits = stockUnits
-      }
       if (Object.keys($set).length === 0) {
         return res.status(400).json({ error: "No valid fields to update." })
       }
       const r = await packages.updateOne({ _id: id }, { $set })
       if (r.matchedCount === 0) return res.status(404).json({ error: "Package not found." })
+      await syncPackageStockUnitsFromVouchers(vouchers, packages)
       const doc = await packages.findOne({ _id: id })
       if (!doc) return res.status(404).json({ error: "Package not found." })
       await appendAuditLog(auditLogs, req.auth, `Updated package "${doc.name}" (${id})`)

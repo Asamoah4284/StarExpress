@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Trash2 } from "lucide-react"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Button } from "@/components/ui/button"
@@ -27,6 +27,8 @@ import {
   createCatalogPackage,
   createCatalogSale,
   deleteCatalogPackage,
+  fetchPackageStock,
+  fetchPackageVoucherInventory,
   updateCatalogPackage,
 } from "@/lib/api.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
@@ -53,7 +55,6 @@ export default function Packages() {
     priceGHS: "",
     dataLimit: "",
     status: "Active",
-    stockUnits: "",
   })
   const [formError, setFormError] = React.useState(null)
 
@@ -61,9 +62,7 @@ export default function Packages() {
   const [sellPkg, setSellPkg] = React.useState(
     /** @type {{ id: string, name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number } | null} */ (null),
   )
-  const [sellCustomer, setSellCustomer] = React.useState("")
   const [sellCustomerPhone, setSellCustomerPhone] = React.useState("")
-  const [sellPaymentNumber, setSellPaymentNumber] = React.useState("")
   const [sellLocationId, setSellLocationId] = React.useState("")
   const [sellError, setSellError] = React.useState(null)
 
@@ -75,14 +74,12 @@ export default function Packages() {
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
       const price = Number(form.priceGHS)
-      const stock = Number(form.stockUnits)
       if (editing) {
         const r = await updateCatalogPackage(token, editing.id, {
           name: form.name.trim(),
           priceGHS: price,
           dataLimit: form.dataLimit.trim(),
           status: form.status,
-          stockUnits: stock,
         })
         if (!r.ok) throw new Error(r.error || "Update failed")
       } else {
@@ -91,7 +88,6 @@ export default function Packages() {
           priceGHS: price,
           dataLimit: form.dataLimit.trim(),
           status: form.status,
-          stockUnits: stock,
         })
         if (!r.ok) throw new Error(r.error || "Create failed")
       }
@@ -99,9 +95,10 @@ export default function Packages() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
       setOpen(false)
       setEditing(null)
-      setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active", stockUnits: "" })
+      setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
       setFormError(null)
     },
     onError: (err) => {
@@ -118,8 +115,48 @@ export default function Packages() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
     },
   })
+
+  const inventoryLocationId = isAdmin ? "" : (agentStore?.id ?? "")
+
+  const packageInventoryQuery = useQuery({
+    queryKey: ["package-voucher-inventory", token, inventoryLocationId],
+    queryFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const r = await fetchPackageVoucherInventory(
+        token,
+        inventoryLocationId ? { locationId: inventoryLocationId } : {},
+      )
+      if (!r.ok) throw new Error(r.error || "Failed to load voucher inventory")
+      return r.packages
+    },
+    enabled:
+      Boolean(token) &&
+      (isAdmin || Boolean(inventoryLocationId)) &&
+      !Array.isArray(catalog.data?.packageVoucherInventory),
+    staleTime: 30_000,
+  })
+
+  const inventoryByPackageId = React.useMemo(() => {
+    const map = new Map()
+    const rows =
+      catalog.data?.packageVoucherInventory ?? packageInventoryQuery.data ?? []
+    for (const row of rows) {
+      if (row && typeof row.id === "string") {
+        map.set(row.id, {
+          total: typeof row.total === "number" ? row.total : typeof row.count === "number" ? row.count : 0,
+          remaining: typeof row.remaining === "number" ? row.remaining : 0,
+        })
+      }
+    }
+    return map
+  }, [catalog.data?.packageVoucherInventory, packageInventoryQuery.data])
+
+  const inventoryLoading =
+    (catalog.isLoading && !catalog.data?.packageVoucherInventory) || packageInventoryQuery.isLoading
+  const inventoryError = catalog.error ?? packageInventoryQuery.error
 
   const sellPhoneValid = React.useMemo(() => {
     const t = sellCustomerPhone.trim().replace(/\s+/g, " ")
@@ -127,36 +164,49 @@ export default function Packages() {
     return t.replace(/\D/g, "").length >= 7
   }, [sellCustomerPhone])
 
-  const sellPaymentValid = React.useMemo(() => {
-    const t = sellPaymentNumber.trim()
-    return t.length >= 2 && t.length <= 64
-  }, [sellPaymentNumber])
+  const sellStockLocationId = isAdmin ? sellLocationId : (agentStore?.id ?? "")
+
+  const sellStockQuery = useQuery({
+    queryKey: ["package-stock", token, sellPkg?.id, sellStockLocationId],
+    queryFn: async () => {
+      if (!token || !sellPkg?.id || !sellStockLocationId) throw new Error("Missing package or location")
+      const r = await fetchPackageStock(token, {
+        packageId: sellPkg.id,
+        locationId: sellStockLocationId,
+      })
+      if (!r.ok) throw new Error(r.error || "Failed to load stock")
+      return r.remaining
+    },
+    enabled: sellOpen && Boolean(token) && Boolean(sellPkg?.id) && Boolean(sellStockLocationId),
+    staleTime: 10_000,
+  })
+
+  const sellStockRemaining = sellStockQuery.data
+  const sellStockLabel = !sellStockLocationId
+    ? "—"
+    : sellStockQuery.isLoading
+      ? "…"
+      : sellStockQuery.isError
+        ? "—"
+        : String(sellStockRemaining ?? 0)
 
   const sellMutation = useMutation({
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
       const row = sellRowRef.current
       if (!row) throw new Error("No package selected")
-      const customerName = sellCustomer.trim()
       const customerPhone = sellCustomerPhone.trim().replace(/\s+/g, " ")
-      const paymentNumber = sellPaymentNumber.trim()
-      if (customerName.length < 2) throw new Error("Customer name must be at least 2 characters.")
       if (customerPhone.length < 7 || customerPhone.length > 32) {
         throw new Error("Customer phone must be between 7 and 32 characters.")
       }
       if (customerPhone.replace(/\D/g, "").length < 7) {
         throw new Error("Customer phone must include at least 7 digits.")
       }
-      if (paymentNumber.length < 2 || paymentNumber.length > 64) {
-        throw new Error("Payment number must be between 2 and 64 characters.")
-      }
       if (isAdmin) {
-        if (!sellLocationId) throw new Error("Choose a store location for this sale.")
+        if (!sellLocationId) throw new Error("Choose a wifi location for this sale.")
         const r = await createCatalogSale(token, {
           packageId: row.id,
-          customerName,
           customerPhone,
-          paymentNumber,
           locationId: sellLocationId,
         })
         if (!r.ok) throw new Error(r.error || "Sale failed")
@@ -164,26 +214,27 @@ export default function Packages() {
       }
       if (!agentStore) {
         throw new Error(
-          "No store is linked to your account. Ask an administrator to assign you to a location.",
+          "No wifi location is linked to your account. Ask an administrator to assign you to a location.",
         )
       }
       const r = await createCatalogSale(token, {
         packageId: row.id,
-        customerName,
         customerPhone,
-        paymentNumber,
       })
       if (!r.ok) throw new Error(r.error || "Sale failed")
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      queryClient.invalidateQueries({ queryKey: ["package-stock"] })
+      queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
+      queryClient.invalidateQueries({ queryKey: ["vouchers"] })
+      queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
+      queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
       setSellOpen(false)
       sellRowRef.current = null
       setSellPkg(null)
-      setSellCustomer("")
       setSellCustomerPhone("")
-      setSellPaymentNumber("")
       setSellLocationId(locations[0]?.id ?? "")
       setSellError(null)
     },
@@ -193,7 +244,7 @@ export default function Packages() {
   })
 
   const resetForm = () => {
-    setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active", stockUnits: "" })
+    setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
     setEditing(null)
     setFormError(null)
   }
@@ -210,7 +261,6 @@ export default function Packages() {
       priceGHS: String(row.priceGHS),
       dataLimit: row.dataLimit,
       status: row.status,
-      stockUnits: String(row.stockUnits),
     })
     setFormError(null)
     setOpen(true)
@@ -220,9 +270,7 @@ export default function Packages() {
     (row) => {
       sellRowRef.current = row
       setSellPkg(row)
-      setSellCustomer("")
       setSellCustomerPhone("")
-      setSellPaymentNumber("")
       setSellLocationId(locations[0]?.id ?? "")
       setSellError(null)
       setSellOpen(true)
@@ -245,9 +293,8 @@ export default function Packages() {
       return
     }
     const price = Number(form.priceGHS)
-    const stock = Number(form.stockUnits)
-    if (!form.name.trim() || Number.isNaN(price) || Number.isNaN(stock)) {
-      setFormError("Valid name, price, and stock are required.")
+    if (!form.name.trim() || Number.isNaN(price)) {
+      setFormError("Valid name and price are required.")
       return
     }
     saveMutation.mutate()
@@ -268,6 +315,35 @@ export default function Packages() {
       },
       { accessorKey: "dataLimit", header: "Data limit" },
       {
+        id: "voucherTotal",
+        accessorFn: (row) => inventoryByPackageId.get(row.id)?.total ?? null,
+        header: "Total vouchers",
+        cell: ({ getValue }) => {
+          const v = getValue()
+          if (inventoryLoading) return <span className="text-muted-foreground tabular-nums">…</span>
+          if (inventoryError) return <span className="text-muted-foreground">—</span>
+          if (v == null) return <span className="text-muted-foreground tabular-nums">—</span>
+          return <span className="tabular-nums">{Number(v).toLocaleString()}</span>
+        },
+      },
+      {
+        id: "voucherRemaining",
+        accessorFn: (row) => inventoryByPackageId.get(row.id)?.remaining ?? null,
+        header: "Remaining",
+        cell: ({ getValue }) => {
+          const v = getValue()
+          if (inventoryLoading) return <span className="text-muted-foreground tabular-nums">…</span>
+          if (inventoryError) return <span className="text-muted-foreground">—</span>
+          if (v == null) return <span className="text-muted-foreground tabular-nums">—</span>
+          const n = v == null ? 0 : Number(v)
+          return (
+            <span className={n === 0 ? "text-destructive font-medium tabular-nums" : "tabular-nums"}>
+              {n.toLocaleString()}
+            </span>
+          )
+        },
+      },
+      {
         accessorKey: "status",
         header: "Status",
         cell: ({ getValue }) => {
@@ -284,7 +360,9 @@ export default function Packages() {
         meta: { headerClassName: "text-right", cellClassName: "text-right" },
         cell: ({ row }) => {
           const pkg = row.original
-          const canSellThis = pkg.status === "Active" && pkg.stockUnits > 0
+          const inv = inventoryByPackageId.get(pkg.id)
+          const remaining = inv?.remaining ?? (inventoryLoading ? 1 : 0)
+          const canSellThis = pkg.status === "Active" && remaining > 0
           const agentBlocked = isSalesAgent && !agentStore
 
           return (
@@ -334,12 +412,15 @@ export default function Packages() {
       remove,
       deleteMutation.isPending,
       sellMutation.isPending,
+      inventoryByPackageId,
+      inventoryLoading,
+      inventoryError,
     ],
   )
 
   const pageDescription = isAdmin
-    ? "Starlink package catalog stored in MongoDB."
-    : "Choose a package, tap Sell, and enter the customer name to record a sale for your store."
+    ? "Package catalog with live voucher inventory (total uploaded and remaining unused across all wifi locations)."
+    : "Packages at your wifi location with voucher totals and remaining stock. Tap Sell to record a sale."
 
   return (
     <div className="space-y-6">
@@ -362,11 +443,22 @@ export default function Packages() {
       ) : null}
       {isSalesAgent && !agentStore ? (
         <p className="text-amber-800 dark:text-amber-200 bg-amber-500/15 rounded-md px-3 py-2 text-sm" role="status">
-          You are not linked to a store location yet. Sales stay disabled until an administrator assigns you.
+          You are not linked to a WIfi location yet. Sales stay disabled until an administrator assigns you.
         </p>
       ) : null}
 
-      <DataTable data={rows} columns={columns} searchPlaceholder="Search name, price, data limit, status…" pageSize={8} />
+      {inventoryError ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {inventoryError instanceof Error ? inventoryError.message : "Could not load voucher counts."}
+        </p>
+      ) : null}
+
+      <DataTable
+        data={rows}
+        columns={columns}
+        searchPlaceholder="Search name, price, data limit, status, vouchers…"
+        pageSize={8}
+      />
 
       <Dialog
         open={open}
@@ -393,25 +485,17 @@ export default function Packages() {
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               />
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="pkg-price">Price (GH₵)</Label>
-                <Input
-                  id="pkg-price"
-                  inputMode="decimal"
-                  value={form.priceGHS}
-                  onChange={(e) => setForm((f) => ({ ...f, priceGHS: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="pkg-stock">Stock units</Label>
-                <Input
-                  id="pkg-stock"
-                  inputMode="numeric"
-                  value={form.stockUnits}
-                  onChange={(e) => setForm((f) => ({ ...f, stockUnits: e.target.value }))}
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pkg-price">Price (GH₵)</Label>
+              <Input
+                id="pkg-price"
+                inputMode="decimal"
+                value={form.priceGHS}
+                onChange={(e) => setForm((f) => ({ ...f, priceGHS: e.target.value }))}
+              />
+              <p className="text-muted-foreground text-xs">
+                Remaining stock is calculated from uploaded vouchers, not entered here.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="pkg-limit">Data limit</Label>
@@ -449,9 +533,7 @@ export default function Packages() {
           if (!o) {
             sellRowRef.current = null
             setSellPkg(null)
-            setSellCustomer("")
             setSellCustomerPhone("")
-            setSellPaymentNumber("")
             setSellError(null)
           }
         }}
@@ -470,18 +552,11 @@ export default function Packages() {
               <div className="bg-muted/50 space-y-1 rounded-md border px-3 py-2 text-sm">
                 <p className="font-medium">{sellPkg.name}</p>
                 <p className="text-muted-foreground">
-                  {formatCedis(sellPkg.priceGHS)} · {sellPkg.dataLimit} · Stock: {sellPkg.stockUnits}
+                  {formatCedis(sellPkg.priceGHS)} · {sellPkg.dataLimit} · Stock: {sellStockLabel}
+                  {sellStockQuery.isError ? (
+                    <span className="text-destructive"> (could not load stock)</span>
+                  ) : null}
                 </p>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="sell-customer">Customer name</Label>
-                <Input
-                  id="sell-customer"
-                  value={sellCustomer}
-                  onChange={(e) => setSellCustomer(e.target.value)}
-                  placeholder="Full name"
-                  autoComplete="name"
-                />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="sell-phone">Customer phone</Label>
@@ -495,25 +570,15 @@ export default function Packages() {
                   autoComplete="tel"
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="sell-payment">Payment number</Label>
-                <Input
-                  id="sell-payment"
-                  value={sellPaymentNumber}
-                  onChange={(e) => setSellPaymentNumber(e.target.value)}
-                  placeholder="Transaction / reference ID"
-                  autoComplete="off"
-                />
-              </div>
               {isAdmin ? (
                 <div className="space-y-1.5">
-                  <Label htmlFor="sell-location">Store location</Label>
+                  <Label htmlFor="sell-location">Wifi location</Label>
                   {locations.length === 0 ? (
-                    <p className="text-muted-foreground text-sm">No locations in the catalog. Add a store first.</p>
+                    <p className="text-muted-foreground text-sm">No wifi locations in the catalog. Add one first.</p>
                   ) : (
                     <Select value={sellLocationId} onValueChange={setSellLocationId}>
                       <SelectTrigger id="sell-location" className="w-full">
-                        <SelectValue placeholder="Select location" />
+                        <SelectValue placeholder="Select wifi location" />
                       </SelectTrigger>
                       <SelectContent>
                         {locations.map((loc) => (
@@ -527,7 +592,7 @@ export default function Packages() {
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  <Label>Your store</Label>
+                  <Label>Wifi location</Label>
                   <p className="text-muted-foreground text-sm">
                     {agentStore ? `${agentStore.name} (${agentStore.address})` : "—"}
                   </p>
@@ -544,11 +609,13 @@ export default function Packages() {
               onClick={confirmSell}
               disabled={
                 sellMutation.isPending ||
-                sellCustomer.trim().length < 2 ||
                 !sellPhoneValid ||
-                !sellPaymentValid ||
                 (isAdmin && (!sellLocationId || locations.length === 0)) ||
-                (isSalesAgent && !agentStore)
+                (isSalesAgent && !agentStore) ||
+                !sellStockLocationId ||
+                sellStockQuery.isLoading ||
+                sellStockQuery.isError ||
+                sellStockRemaining === 0
               }
             >
               {sellMutation.isPending ? "Recording…" : "Confirm sale"}

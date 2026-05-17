@@ -8,6 +8,75 @@ export function filterSalesByLocation(allSales, locationId) {
   return allSales.filter((s) => s.locationId === locationId)
 }
 
+/** ISO `YYYY-MM-DD` for Monday of the week containing `isoDate`. */
+export function getWeekStartFromDate(isoDate) {
+  const d = new Date(`${isoDate}T12:00:00Z`)
+  if (Number.isNaN(d.getTime())) return isoDate
+  const day = d.getUTCDay()
+  const diff = day === 0 ? -6 : 1 - day
+  d.setUTCDate(d.getUTCDate() + diff)
+  return d.toISOString().slice(0, 10)
+}
+
+/** ISO `YYYY-MM-DD` for Sunday of the week that starts on `weekStart` (Monday). */
+export function getWeekEndFromStart(weekStart) {
+  const d = new Date(`${weekStart}T12:00:00Z`)
+  if (Number.isNaN(d.getTime())) return weekStart
+  d.setUTCDate(d.getUTCDate() + 6)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * @param {object[]} sales
+ * @param {string} startInclusive ISO date
+ * @param {string} endInclusive ISO date
+ */
+export function filterSalesByDateRange(sales, startInclusive, endInclusive) {
+  if (!Array.isArray(sales) || !startInclusive || !endInclusive) return sales ?? []
+  return sales.filter((s) => typeof s.date === "string" && s.date >= startInclusive && s.date <= endInclusive)
+}
+
+/**
+ * @param {string} weekStart
+ * @param {string} weekEnd
+ */
+export function formatWeekRangeLabel(weekStart, weekEnd) {
+  const s = new Date(`${weekStart}T12:00:00Z`)
+  const e = new Date(`${weekEnd}T12:00:00Z`)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return `${weekStart} – ${weekEnd}`
+  const dayMonth = { day: "numeric", month: "short" }
+  const dayMonthYear = { day: "numeric", month: "short", year: "numeric" }
+  if (s.getUTCFullYear() === e.getUTCFullYear() && s.getUTCMonth() === e.getUTCMonth()) {
+    return `${s.getUTCDate()}–${e.toLocaleDateString(undefined, dayMonthYear)}`
+  }
+  if (s.getUTCFullYear() === e.getUTCFullYear()) {
+    return `${s.toLocaleDateString(undefined, dayMonth)} – ${e.toLocaleDateString(undefined, dayMonthYear)}`
+  }
+  return `${s.toLocaleDateString(undefined, dayMonthYear)} – ${e.toLocaleDateString(undefined, dayMonthYear)}`
+}
+
+/**
+ * Distinct weeks (Mon–Sun) that have at least one sale, newest first.
+ * @param {object[]} sales
+ * @param {number} [maxWeeks]
+ * @returns {{ weekStart: string, weekEnd: string, label: string }[]}
+ */
+export function getWeekOptionsFromSales(sales, maxWeeks = 52) {
+  if (!Array.isArray(sales)) return []
+  const weekStarts = new Set()
+  for (const sale of sales) {
+    if (typeof sale.date !== "string" || !sale.date) continue
+    weekStarts.add(getWeekStartFromDate(sale.date))
+  }
+  return [...weekStarts]
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, maxWeeks)
+    .map((weekStart) => {
+      const weekEnd = getWeekEndFromStart(weekStart)
+      return { weekStart, weekEnd, label: formatWeekRangeLabel(weekStart, weekEnd) }
+    })
+}
+
 /**
  * Total inventory units across catalog (active + inactive stock).
  * @param {{ stockUnits: number }[]} packageList
@@ -40,6 +109,10 @@ function completedCountOnDate(rows, dateStr) {
   return rows.filter((s) => s.date === dateStr && s.status === "Completed").length
 }
 
+function completedCommissionOnDate(rows, dateStr, rate) {
+  return completedRevenueOnDate(rows, dateStr) * rate
+}
+
 /**
  * Day-over-day changes on the latest data date vs the previous calendar day.
  * @param {object[]} filteredSales
@@ -54,6 +127,47 @@ export function getDayOverDaySummary(filteredSales) {
     salesDelta: salesCountOnDate(filteredSales, latestDate) - salesCountOnDate(filteredSales, prevDate),
     soldDelta: completedCountOnDate(filteredSales, latestDate) - completedCountOnDate(filteredSales, prevDate),
     prevDayCompletedRevenue: completedRevenueOnDate(filteredSales, prevDate),
+  }
+}
+
+/**
+ * Day-over-day summary including commission deltas for sales agents.
+ * @param {object[]} filteredSales
+ * @param {number} commissionRate 0–1
+ */
+export function getDayOverDaySummaryForAgent(filteredSales, commissionRate) {
+  const base = getDayOverDaySummary(filteredSales)
+  const rate = Number.isFinite(commissionRate) && commissionRate >= 0 ? commissionRate : 0
+  return {
+    ...base,
+    commissionDelta:
+      completedCommissionOnDate(filteredSales, base.latestDate, rate) -
+      completedCommissionOnDate(filteredSales, base.prevDate, rate),
+    prevDayCommission: completedCommissionOnDate(filteredSales, base.prevDate, rate),
+  }
+}
+
+/**
+ * Commission and sale-count KPIs for a sales agent's store.
+ * @param {object[]} filteredSales
+ * @param {number} commissionRate 0–1 share of completed sale amount
+ */
+export function getAgentCommissionMetrics(filteredSales, commissionRate) {
+  const rate = Number.isFinite(commissionRate) && commissionRate >= 0 ? commissionRate : 0
+  const completed = filteredSales.filter((s) => s.status === "Completed")
+  const todayStr = getReportingDate(filteredSales)
+  const todayCompleted = completed.filter((s) => s.date === todayStr)
+  const pending = filteredSales.filter((s) => s.status === "Pending").length
+
+  const totalCommission = completed.reduce((sum, s) => sum + s.amount * rate, 0)
+  const todayCommission = todayCompleted.reduce((sum, s) => sum + s.amount * rate, 0)
+
+  return {
+    totalCommission,
+    todayCommission,
+    totalSales: completed.length,
+    todaySales: todayCompleted.length,
+    pending,
   }
 }
 
@@ -312,6 +426,20 @@ export function getSparklineDailySalesCount(filteredSales, dayCount = 14) {
   return keys.map((date) => ({ x: date, y: map[date] }))
 }
 
+/** Daily commission (completed revenue × rate) per day — for sparklines. */
+export function getSparklineDailyCommission(filteredSales, commissionRate, dayCount = 14) {
+  const rate = Number.isFinite(commissionRate) && commissionRate >= 0 ? commissionRate : 0
+  const daily = getSparklineDailyCompletedRevenue(filteredSales, dayCount)
+  return daily.map((d) => ({ x: d.x, y: d.y * rate }))
+}
+
+/** Cumulative commission over the same window. */
+export function getSparklineCumulativeCommission(filteredSales, commissionRate, dayCount = 14) {
+  const daily = getSparklineDailyCommission(filteredSales, commissionRate, dayCount)
+  let run = 0
+  return daily.map((d) => ({ x: d.x, y: (run += d.y) }))
+}
+
 /** Count of completed sales per day. */
 export function getSparklineDailySoldCount(filteredSales, dayCount = 14) {
   const endStr = getSparklineEndDate(filteredSales)
@@ -323,6 +451,13 @@ export function getSparklineDailySoldCount(filteredSales, dayCount = 14) {
       if (map[s.date] !== undefined) map[s.date] += 1
     })
   return keys.map((date) => ({ x: date, y: map[date] }))
+}
+
+/** Cumulative completed sale count over the sparkline window. */
+export function getSparklineCumulativeSoldCount(filteredSales, dayCount = 14) {
+  const daily = getSparklineDailySoldCount(filteredSales, dayCount)
+  let run = 0
+  return daily.map((d) => ({ x: d.x, y: (run += d.y) }))
 }
 
 /** Export CSV rows from sales */
@@ -355,4 +490,93 @@ export function salesToCsv(rows) {
     )
   }
   return lines.join("\n")
+}
+
+/**
+ * @param {{ id: string, name: string, role: string, active?: boolean }[]} users
+ */
+function activeSalesAgents(users) {
+  if (!Array.isArray(users)) return []
+  return users.filter((u) => u.role === "Sales Agent")
+}
+
+/**
+ * @param {{ id: string, manager?: string, managerUserId?: string, name?: string }} loc
+ * @param {{ id: string, name: string }[]} agents
+ */
+function resolveLocationAgentId(loc, agents) {
+  if (loc.managerUserId && typeof loc.managerUserId === "string") {
+    return loc.managerUserId
+  }
+  const key = String(loc.manager ?? "").trim().toLowerCase()
+  if (!key) return null
+  const matches = agents.filter((a) => a.name.trim().toLowerCase() === key)
+  return matches.length === 1 ? matches[0].id : null
+}
+
+/**
+ * Per sales agent: completed sale count, gross revenue, and commission (from assigned wifi location).
+ * @param {object[]} sales
+ * @param {Array<{ id: string, name?: string, manager?: string, managerUserId?: string }>} locations
+ * @param {{ id: string, name: string, email: string, role: string, active?: boolean }[]} users
+ * @param {number} commissionRate 0–1
+ */
+export function getAgentSalesCommissionRows(sales, locations, users, commissionRate) {
+  const rate = Number.isFinite(commissionRate) && commissionRate >= 0 ? commissionRate : 0
+  const agents = activeSalesAgents(users)
+  const agentById = new Map(
+    agents.map((a) => [
+      a.id,
+      {
+        id: a.id,
+        name: a.name,
+        email: a.email,
+        active: a.active !== false,
+        locationName: "—",
+        completedSales: 0,
+        grossRevenue: 0,
+        commission: 0,
+      },
+    ]),
+  )
+
+  const agentIdByLocationId = new Map()
+  for (const loc of locations ?? []) {
+    const agentId = resolveLocationAgentId(loc, agents)
+    if (!agentId || !agentById.has(agentId)) continue
+    agentIdByLocationId.set(loc.id, agentId)
+    const row = agentById.get(agentId)
+    if (row && (!row.locationName || row.locationName === "—")) {
+      row.locationName = typeof loc.name === "string" && loc.name.trim() ? loc.name.trim() : loc.id
+    }
+  }
+
+  for (const sale of sales ?? []) {
+    if (sale.status !== "Completed") continue
+    const agentId = agentIdByLocationId.get(sale.locationId)
+    if (!agentId || !agentById.has(agentId)) continue
+    const row = agentById.get(agentId)
+    if (!row) continue
+    const amount = Number(sale.amount)
+    if (!Number.isFinite(amount) || amount < 0) continue
+    row.completedSales += 1
+    row.grossRevenue += amount
+    row.commission += amount * rate
+  }
+
+  return Array.from(agentById.values()).sort((a, b) => b.commission - a.commission || b.grossRevenue - a.grossRevenue)
+}
+
+/**
+ * @param {ReturnType<typeof getAgentSalesCommissionRows>} rows
+ */
+export function sumAgentSalesCommissionRows(rows) {
+  return rows.reduce(
+    (acc, r) => ({
+      completedSales: acc.completedSales + r.completedSales,
+      grossRevenue: acc.grossRevenue + r.grossRevenue,
+      commission: acc.commission + r.commission,
+    }),
+    { completedSales: 0, grossRevenue: 0, commission: 0 },
+  )
 }
