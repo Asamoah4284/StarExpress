@@ -131,6 +131,16 @@ export function filterVouchersByLocation(vouchers, locationId) {
   return vouchers.filter((v) => v.locationId === locationId)
 }
 
+/**
+ * @param {Array<{ packageId?: string }>} vouchers
+ * @param {string} packageId
+ */
+export function filterVouchersByPackage(vouchers, packageId) {
+  if (!Array.isArray(vouchers)) return []
+  if (!packageId || packageId === "all") return vouchers
+  return vouchers.filter((v) => v.packageId === packageId)
+}
+
 /** Last 30 days daily revenue by day for line chart (anchored to latest sale date in data). */
 export function getRevenueLast30Days(allSales) {
   const completed = allSales.filter((s) => s.status === "Completed")

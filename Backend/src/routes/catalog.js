@@ -32,11 +32,37 @@ function buildUniqueSafeKeys(rawHeaders) {
 }
 
 /**
+ * Human-facing voucher code (CSV id), even when Mongo `_id` is scoped per package.
+ * @param {import("mongodb").Document} d
+ */
+function voucherDisplayCode(d) {
+  if (typeof d.voucherCode === "string" && d.voucherCode.trim()) return d.voucherCode.trim()
+  const id = String(d._id ?? "")
+  const pkg = typeof d.packageId === "string" ? d.packageId.trim() : ""
+  if (pkg) {
+    const prefix = `v:${pkg}:`
+    if (id.startsWith(prefix)) return id.slice(prefix.length)
+  }
+  return id
+}
+
+/**
+ * @param {string} packageId
+ * @param {string} voucherCode
+ */
+function buildVoucherDocumentId(packageId, voucherCode) {
+  return `v:${packageId}:${voucherCode}`
+}
+
+/**
  * @param {import("mongodb").Document} d
  */
 function toVoucher(d) {
+  const displayId = voucherDisplayCode(d)
   return {
-    id: d._id,
+    id: displayId,
+    documentId: String(d._id),
+    voucherCode: displayId,
     batchId: d.batchId,
     sourceFileName: d.sourceFileName,
     columns: d.columns,
@@ -48,7 +74,27 @@ function toVoucher(d) {
           locationName: typeof d.locationName === "string" ? d.locationName : "",
         }
       : {}),
+    ...(d.packageId != null && String(d.packageId).trim()
+      ? {
+          packageId: String(d.packageId),
+          packageName: typeof d.packageName === "string" ? d.packageName : "",
+        }
+      : {}),
   }
+}
+
+/**
+ * @param {import("mongodb").Collection} packages
+ * @param {string} packageId
+ */
+async function getActivePackageForVoucherAssign(packages, packageId) {
+  const pkg = await packages.findOne({ _id: packageId })
+  if (!pkg) return { ok: false, error: "Unknown package — refresh the page and pick a valid package." }
+  if (pkg.status !== "Active") {
+    return { ok: false, error: "Only active packages can receive vouchers. Activate the package or pick another." }
+  }
+  const name = typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : packageId
+  return { ok: true, package: pkg, packageName: name }
 }
 
 /**
@@ -216,7 +262,7 @@ export function createCatalogRouter(deps) {
 
   router.get("/vouchers", requireAdmin, async (_req, res) => {
     try {
-      const docs = await vouchers.find({}).sort({ uploadedAt: -1 }).limit(500).toArray()
+      const docs = await vouchers.find({}).sort({ uploadedAt: -1 }).limit(10_000).toArray()
       res.json({ vouchers: docs.map(toVoucher) })
     } catch (err) {
       console.error(err)
@@ -239,6 +285,16 @@ export function createCatalogRouter(deps) {
       }
       const locationName =
         typeof locationDoc.name === "string" && locationDoc.name.trim() ? locationDoc.name.trim() : locationIdRaw
+
+      const packageIdRaw = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
+      if (!packageIdRaw) {
+        return res.status(400).json({
+          error: "packageId is required — pick a package to assign these vouchers.",
+        })
+      }
+      const pkgResult = await getActivePackageForVoucherAssign(packages, packageIdRaw)
+      if (!pkgResult.ok) return res.status(400).json({ error: pkgResult.error })
+      const packageName = pkgResult.packageName
 
       const fileName =
         typeof req.body?.fileName === "string" ? req.body.fileName.trim().slice(0, 240) : "upload.csv"
@@ -302,21 +358,41 @@ export function createCatalogRouter(deps) {
         }
 
         docs.push({
-          _id: voucherId,
+          _id: buildVoucherDocumentId(packageIdRaw, voucherId),
+          voucherCode: voucherId,
           batchId,
           sourceFileName: fileName,
           columns,
           locationId: locationIdRaw,
           locationName,
+          packageId: packageIdRaw,
+          packageName,
           uploadedBy: req.auth.userId,
           uploadedAt,
         })
       }
 
-      const ids = docs.map((d) => d._id)
-      const existing = ids.length ? await vouchers.find({ _id: { $in: ids } }).project({ _id: 1 }).toArray() : []
-      const existSet = new Set(existing.map((e) => String(e._id)))
-      const toInsert = docs.filter((d) => !existSet.has(d._id))
+      const codesInBatch = docs.map((d) => d.voucherCode)
+      /** @type {import("mongodb").Document[]} */
+      const existingInPackage =
+        codesInBatch.length > 0
+          ? await vouchers
+              .find({
+                packageId: packageIdRaw,
+                $or: [
+                  { voucherCode: { $in: codesInBatch } },
+                  { voucherCode: { $exists: false }, _id: { $in: codesInBatch } },
+                ],
+              })
+              .project({ _id: 1, voucherCode: 1 })
+              .toArray()
+          : []
+      const takenCodes = new Set(
+        existingInPackage.map((e) =>
+          typeof e.voucherCode === "string" && e.voucherCode.trim() ? e.voucherCode.trim() : String(e._id),
+        ),
+      )
+      const toInsert = docs.filter((d) => !takenCodes.has(d.voucherCode))
       const skippedAlreadyInDb = docs.length - toInsert.length
 
       let inserted = 0
@@ -325,7 +401,7 @@ export function createCatalogRouter(deps) {
         inserted = ins.insertedCount
       }
 
-      const summary = `Imported voucher batch "${fileName}" (${batchId}) → ${locationName}: ${inserted} new, ${skippedAlreadyInDb} already in database, ${skippedDuplicateInFile} duplicate in file, ${skippedNoId} row(s) without id.`
+      const summary = `Imported voucher batch "${fileName}" (${batchId}) → ${locationName} · ${packageName}: ${inserted} new, ${skippedAlreadyInDb} already on this package, ${skippedDuplicateInFile} duplicate in file, ${skippedNoId} row(s) without id.`
       await appendAuditLog(auditLogs, req.auth, summary)
 
       res.status(201).json({
@@ -346,19 +422,34 @@ export function createCatalogRouter(deps) {
   router.delete("/vouchers", requireAdmin, async (req, res) => {
     try {
       const locParam = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
+      const pkgParam = typeof req.query?.packageId === "string" ? req.query.packageId.trim() : ""
       /** @type {import("mongodb").Document | null} */
       let locationDoc = null
+      /** @type {import("mongodb").Document | null} */
+      let packageDoc = null
       /** @type {import("mongodb").Document} */
       let filter = {}
       if (locParam) {
         locationDoc = await locations.findOne({ _id: locParam })
         if (!locationDoc) return res.status(400).json({ error: "Unknown location for bulk delete." })
-        filter = { locationId: locParam }
+        filter.locationId = locParam
+      }
+      if (pkgParam) {
+        packageDoc = await packages.findOne({ _id: pkgParam })
+        if (!packageDoc) return res.status(400).json({ error: "Unknown package for bulk delete." })
+        filter.packageId = pkgParam
       }
 
       const result = await vouchers.deleteMany(filter)
       const locName = locationDoc && typeof locationDoc.name === "string" ? locationDoc.name : locParam
-      const scopeLabel = locParam ? `location "${locName}" (${locParam})` : "entire inventory"
+      const pkgName =
+        packageDoc && typeof packageDoc.name === "string" && packageDoc.name.trim()
+          ? packageDoc.name.trim()
+          : pkgParam
+      const scopeParts = []
+      if (locParam) scopeParts.push(`location "${locName}" (${locParam})`)
+      if (pkgParam) scopeParts.push(`package "${pkgName}" (${pkgParam})`)
+      const scopeLabel = scopeParts.length ? scopeParts.join(", ") : "entire inventory"
       await appendAuditLog(
         auditLogs,
         req.auth,
@@ -381,7 +472,7 @@ export function createCatalogRouter(deps) {
       } catch {
         voucherId = raw.trim()
       }
-      if (!voucherId || voucherId.length > 128) {
+      if (!voucherId || voucherId.length > 256) {
         return res.status(400).json({ error: "Invalid voucher id." })
       }
 
@@ -390,7 +481,8 @@ export function createCatalogRouter(deps) {
         return res.status(404).json({ error: "Voucher not found." })
       }
 
-      await appendAuditLog(auditLogs, req.auth, `Deleted voucher "${voucherId}"`)
+      const label = voucherDisplayCode({ _id: voucherId })
+      await appendAuditLog(auditLogs, req.auth, `Deleted voucher "${label}"`)
       res.status(204).end()
     } catch (err) {
       console.error(err)

@@ -168,6 +168,7 @@ export default function Vouchers() {
   const [dragOver, setDragOver] = React.useState(false)
   const [parsing, setParsing] = React.useState(false)
   const [selectedLocationId, setSelectedLocationId] = React.useState("")
+  const [selectedPackageId, setSelectedPackageId] = React.useState("")
   const [singleVoucherId, setSingleVoucherId] = React.useState("")
   const [singleSaving, setSingleSaving] = React.useState(false)
   const [singleFeedback, setSingleFeedback] = React.useState(/** @type {{ kind: "success" | "error"; text: string } | null} */ (null))
@@ -178,7 +179,16 @@ export default function Vouchers() {
     return [...list].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")))
   }, [catalog.data?.locations])
 
+  const activePackages = React.useMemo(() => {
+    const list = catalog.data?.packages ?? []
+    return list
+      .filter((p) => p.status === "Active")
+      .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")))
+  }, [catalog.data?.packages])
+
   const locationReady = Boolean(selectedLocationId.trim())
+  const packageReady = Boolean(selectedPackageId.trim())
+  const assignReady = locationReady && packageReady
 
   React.useEffect(() => {
     cancelledRef.current = false
@@ -221,7 +231,8 @@ export default function Vouchers() {
       if (!token || upload.kind !== "csv" || !upload.matrix?.length || upload.parseError) return
       if (upload.matrix.length < 2) return
       const locId = selectedLocationId.trim()
-      if (!locId) return
+      const pkgId = selectedPackageId.trim()
+      if (!locId || !pkgId) return
 
       setRows((prev) =>
         prev.map((x) => (x.id === upload.id ? { ...x, importState: "loading", importMessage: "" } : x)),
@@ -231,6 +242,7 @@ export default function Vouchers() {
         fileName: upload.name,
         rows: upload.matrix,
         locationId: locId,
+        packageId: pkgId,
       })
 
       setRows((prev) =>
@@ -240,7 +252,7 @@ export default function Vouchers() {
           return {
             ...x,
             importState: "success",
-            importMessage: `Saved ${out.inserted} new voucher(s). Skipped ${out.skippedAlreadyInDb} already in database, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} row(s) without id (batch ${out.batchId}).`,
+            importMessage: `Saved ${out.inserted} new voucher(s) for this package. Skipped ${out.skippedAlreadyInDb} already on this package, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} row(s) without id (batch ${out.batchId}). Other packages are unchanged.`,
           }
         }),
       )
@@ -251,14 +263,19 @@ export default function Vouchers() {
         navigate("/vouchers/uploaded")
       }
     },
-    [token, queryClient, navigate, selectedLocationId],
+    [token, queryClient, navigate, selectedLocationId, selectedPackageId],
   )
 
   const saveSingleVoucher = React.useCallback(async () => {
     if (!token || !isAdmin) return
     const locId = selectedLocationId.trim()
+    const pkgId = selectedPackageId.trim()
     if (!locId) {
       setSingleFeedback({ kind: "error", text: "Select a location first." })
+      return
+    }
+    if (!pkgId) {
+      setSingleFeedback({ kind: "error", text: "Select a package first." })
       return
     }
     const id = singleVoucherId.trim()
@@ -277,6 +294,7 @@ export default function Vouchers() {
         fileName: `single-voucher-${Date.now()}.csv`,
         rows: [["Voucher ID"], [id]],
         locationId: locId,
+        packageId: pkgId,
       })
       if (!out.ok) {
         setSingleFeedback({ kind: "error", text: out.error })
@@ -285,7 +303,7 @@ export default function Vouchers() {
       setSingleVoucherId("")
       setSingleFeedback({
         kind: "success",
-        text: `Saved ${out.inserted} new voucher(s). Skipped ${out.skippedAlreadyInDb} already in database, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} without id (batch ${out.batchId}).`,
+        text: `Saved ${out.inserted} new voucher(s) for this package. Skipped ${out.skippedAlreadyInDb} already on this package, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} without id (batch ${out.batchId}).`,
       })
       await queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
       await queryClient.invalidateQueries({ queryKey: ["vouchers", token] })
@@ -297,27 +315,32 @@ export default function Vouchers() {
     } finally {
       setSingleSaving(false)
     }
-  }, [token, isAdmin, selectedLocationId, singleVoucherId, queryClient])
+  }, [token, isAdmin, selectedLocationId, selectedPackageId, singleVoucherId, queryClient])
 
   return (
     <div className="space-y-8">
       <PageHeader
         title="Upload vouchers"
-        description="Choose a location, then add one voucher by ID or import a CSV in bulk (admin). PDF and images are not sent to the server yet."
+        description="Choose a location and an active package, then add one voucher by ID or import a CSV in bulk (admin). PDF and images are not sent to the server yet."
       />
 
       <Card className="border-border bg-card shadow-none ring-1 ring-border">
         <CardHeader className="pb-2">
           <CardTitle className="text-base font-semibold tracking-tight">Assign & import</CardTitle>
           <CardDescription>
-            Every import is tied to a <strong>location</strong>. Use <strong>Single voucher</strong> for one ID or <strong>Bulk (CSV)</strong> for
-            many rows. Open <strong>Vouchers</strong> in the sidebar to review saved rows.
+            Every import is tied to a <strong>location</strong> and an <strong>active package</strong>. Use{" "}
+            <strong>Single voucher</strong> for one ID or <strong>Bulk (CSV)</strong> for many rows. Open{" "}
+            <strong>Vouchers</strong> in the sidebar to review saved rows.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6 pt-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-muted-foreground text-xs">
-              {catalog.isLoading ? <span>Loading locations…</span> : <span>Pick a location before importing.</span>}
+              {catalog.isLoading ? (
+                <span>Loading catalog…</span>
+              ) : (
+                <span>Pick a location and package before importing.</span>
+              )}
             </p>
             <Button type="button" variant="outline" size="sm" className="h-8 text-xs" asChild>
               <Link to="/vouchers/uploaded">View uploaded vouchers</Link>
@@ -360,6 +383,35 @@ export default function Vouchers() {
             ) : null}
           </div>
 
+          <div className="space-y-2">
+            <Label htmlFor="voucher-assign-package" className="text-muted-foreground text-xs font-medium">
+              Package
+            </Label>
+            <Select
+              value={selectedPackageId || undefined}
+              onValueChange={(v) => setSelectedPackageId(v)}
+              disabled={!authReady || !token || !isAdmin || catalog.isLoading || activePackages.length === 0}
+            >
+              <SelectTrigger id="voucher-assign-package" className="h-9 w-full max-w-md">
+                <SelectValue placeholder={activePackages.length === 0 ? "No active packages" : "Select package…"} />
+              </SelectTrigger>
+              <SelectContent>
+                {activePackages.map((pkg) => (
+                  <SelectItem key={pkg.id} value={pkg.id}>
+                    {pkg.name}
+                    {pkg.dataLimit ? ` · ${pkg.dataLimit}` : ""}
+                    {typeof pkg.priceGHS === "number" ? ` · GH₵ ${pkg.priceGHS}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!catalog.isLoading && activePackages.length === 0 && isAdmin ? (
+              <p className="text-muted-foreground text-xs">
+                Add an <strong>Active</strong> package under <strong>Packages</strong> before importing vouchers.
+              </p>
+            ) : null}
+          </div>
+
           <Tabs defaultValue="bulk" className="w-full min-w-0">
             <TabsList className="grid h-9 w-full max-w-md grid-cols-2">
               <TabsTrigger value="single">Single voucher</TabsTrigger>
@@ -397,7 +449,14 @@ export default function Vouchers() {
               <Button
                 type="button"
                 disabled={
-                  !authReady || !token || !isAdmin || !locationReady || singleSaving || locations.length === 0 || !singleVoucherId.trim()
+                  !authReady ||
+                  !token ||
+                  !isAdmin ||
+                  !assignReady ||
+                  singleSaving ||
+                  locations.length === 0 ||
+                  activePackages.length === 0 ||
+                  !singleVoucherId.trim()
                 }
                 onClick={() => void saveSingleVoucher()}
               >
@@ -442,10 +501,18 @@ export default function Vouchers() {
                               size="sm"
                               className="h-8"
                               disabled={
-                                !authReady || !token || !isAdmin || r.importState === "loading" || !locationReady || locations.length === 0
+                                !authReady ||
+                                !token ||
+                                !isAdmin ||
+                                r.importState === "loading" ||
+                                !assignReady ||
+                                locations.length === 0 ||
+                                activePackages.length === 0
                               }
                               onClick={() => void importCsv(r)}
-                              title={!locationReady ? "Select a location first" : undefined}
+                              title={
+                                !assignReady ? "Select a location and package first" : undefined
+                              }
                             >
                               {r.importState === "loading" ? "Importing…" : "Import to server"}
                             </Button>

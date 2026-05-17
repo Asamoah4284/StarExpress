@@ -46,17 +46,25 @@ function formatUploadedAt(v) {
   return typeof v.uploadedAt === "string" ? v.uploadedAt.slice(0, 19).replace("T", " ") : "—"
 }
 
+/** @param {{ id: string, documentId?: string }} v */
+function voucherRowKey(v) {
+  return v.documentId ?? v.id
+}
+
 /**
  * @param {{
  *   vouchers: Array<{
  *     id: string
+ *     documentId?: string
  *     columns?: Record<string, string>
  *     uploadedAt?: string
  *     locationId?: string
  *     locationName?: string
+ *     packageId?: string
+ *     packageName?: string
  *   }>
  *   emptyMessage?: string
- *   onDelete?: (id: string) => void
+ *   onDelete?: (voucher: { id: string, documentId?: string }) => void
  *   deletingId?: string | null
  * }} props
  */
@@ -79,6 +87,14 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
     return id || "—"
   }
 
+  /** @param {{ packageName?: string, packageId?: string }} v */
+  function packageLabel(v) {
+    const n = typeof v.packageName === "string" && v.packageName.trim() ? v.packageName.trim() : ""
+    if (n) return n
+    const id = typeof v.packageId === "string" && v.packageId.trim() ? v.packageId.trim() : ""
+    return id || "—"
+  }
+
   return (
     <div className="w-full min-w-0 space-y-3">
       <p className="text-muted-foreground hidden px-0.5 text-xs md:block">
@@ -89,9 +105,10 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
       <div className="space-y-3 md:hidden" role="list" aria-label="Voucher list">
         {vouchers.map((v) => {
           const uploaded = formatUploadedAt(v)
+          const rowKey = voucherRowKey(v)
           return (
             <div
-              key={v.id}
+              key={rowKey}
               role="listitem"
               className="border-border bg-card overflow-hidden rounded-lg border shadow-none"
             >
@@ -106,6 +123,9 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
                 ) : null}
                 <p className="text-muted-foreground mt-1.5 text-sm font-normal leading-relaxed break-words">
                   Location · {locationLabel(v)}
+                </p>
+                <p className="text-muted-foreground mt-1.5 text-sm font-normal leading-relaxed break-words">
+                  Package · {packageLabel(v)}
                 </p>
               </div>
               <div className="divide-border/60 divide-y px-4 py-1">
@@ -130,8 +150,8 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
                     size="icon"
                     variant="destructive"
                     className="size-8 shrink-0"
-                    disabled={deletingId === v.id}
-                    onClick={() => onDelete(v.id)}
+                    disabled={deletingId === rowKey}
+                    onClick={() => onDelete(v)}
                     aria-label={`Delete voucher ${v.id}`}
                     title="Delete voucher"
                   >
@@ -155,6 +175,7 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
             <TableRow>
               <TableHead className="whitespace-nowrap px-2">Voucher ID</TableHead>
               <TableHead className="whitespace-nowrap px-2">Location</TableHead>
+              <TableHead className="whitespace-nowrap px-2">Package</TableHead>
               {keys.map((k) => (
                 <TableHead key={k} className="whitespace-nowrap px-2 sm:max-w-[200px]">
                   {k}
@@ -167,11 +188,16 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
             </TableRow>
           </TableHeader>
           <TableBody>
-            {vouchers.map((v) => (
-              <TableRow key={v.id}>
+            {vouchers.map((v) => {
+              const rowKey = voucherRowKey(v)
+              return (
+              <TableRow key={rowKey}>
                 <TableCell className="whitespace-nowrap px-2 font-medium tabular-nums">{v.id}</TableCell>
                 <TableCell className="max-w-[10rem] truncate px-2 text-sm" title={locationLabel(v)}>
                   {locationLabel(v)}
+                </TableCell>
+                <TableCell className="max-w-[10rem] truncate px-2 text-sm" title={packageLabel(v)}>
+                  {packageLabel(v)}
                 </TableCell>
                 {keys.map((k) => (
                   <TableCell key={k} className="max-w-[12rem] truncate px-2 sm:max-w-[220px]" title={v.columns?.[k] ?? ""}>
@@ -188,8 +214,8 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
                       size="icon"
                       variant="destructive"
                       className="size-8 shrink-0"
-                      disabled={deletingId === v.id}
-                      onClick={() => onDelete(v.id)}
+                      disabled={deletingId === rowKey}
+                      onClick={() => onDelete(v)}
                       aria-label={`Delete voucher ${v.id}`}
                       title="Delete voucher"
                     >
@@ -198,7 +224,7 @@ export function ServerVouchersTable({ vouchers, emptyMessage, onDelete, deleting
                   </TableCell>
                 ) : null}
               </TableRow>
-            ))}
+            )})}
           </TableBody>
         </Table>
       </div>

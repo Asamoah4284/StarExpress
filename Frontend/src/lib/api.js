@@ -198,7 +198,7 @@ export async function fetchCatalog(token) {
 
 /**
  * @param {string} token
- * @param {{ fileName: string, rows: string[][], locationId: string }} body
+ * @param {{ fileName: string, rows: string[][], locationId: string, packageId: string }} body
  */
 export async function importVouchersBatch(token, body) {
   const rows = body.rows.map((line) => line.map((cell) => String(cell ?? "")))
@@ -209,6 +209,7 @@ export async function importVouchersBatch(token, body) {
       fileName: body.fileName,
       rows,
       locationId: String(body.locationId ?? "").trim(),
+      packageId: String(body.packageId ?? "").trim(),
     }),
   })
   if (!res.ok) {
@@ -270,11 +271,15 @@ export async function deleteVoucher(token, voucherId) {
 
 /**
  * @param {string} token
- * @param {{ locationId?: string }} [opts] If `locationId` is set, only vouchers for that location are removed.
+ * @param {{ locationId?: string, packageId?: string }} [opts] Scope bulk delete by location and/or package.
  */
 export async function deleteAllVouchers(token, opts = {}) {
   const lid = typeof opts.locationId === "string" && opts.locationId.trim() ? opts.locationId.trim() : ""
-  const qs = lid ? `?locationId=${encodeURIComponent(lid)}` : ""
+  const pid = typeof opts.packageId === "string" && opts.packageId.trim() ? opts.packageId.trim() : ""
+  const params = new URLSearchParams()
+  if (lid) params.set("locationId", lid)
+  if (pid) params.set("packageId", pid)
+  const qs = params.toString() ? `?${params.toString()}` : ""
   const { res, data } = await parseJsonResponse(`/api/catalog/vouchers${qs}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
