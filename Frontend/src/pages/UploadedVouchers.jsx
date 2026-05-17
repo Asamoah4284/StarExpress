@@ -14,77 +14,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { deleteAllVouchers, deleteVoucher, fetchVouchers } from "@/lib/api.js"
-import { filterVouchersByPackage } from "@/lib/aggregations.js"
+import {
+  deleteAllVouchers,
+  deleteVoucher,
+  fetchVouchers,
+  fetchVouchersSummary,
+} from "@/lib/api.js"
 import { ROLE_ADMIN } from "@/lib/roles.js"
 
 /** @typedef {"all" | "unused" | "used"} StatusFilter */
 /** @typedef {"all" | "unassigned" | string} PackageFilter */
 
-/**
- * @param {Record<string, string> | undefined} columns
- * @returns {string | null}
- */
-function statusColumnKey(columns) {
-  if (!columns || typeof columns !== "object") return null
-  for (const k of Object.keys(columns)) {
-    const normalized = String(k).replace(/·/g, ".").trim()
-    if (/^status$/i.test(normalized)) return k
-  }
-  return null
-}
-
-/**
- * @param {{ columns?: Record<string, string> }} v
- */
-function voucherStatusRaw(v) {
-  const key = statusColumnKey(v.columns)
-  if (!key) return ""
-  return String(v.columns?.[key] ?? "").trim()
-}
-
-/**
- * @param {{ columns?: Record<string, string> }} v
- * @param {StatusFilter} filter
- */
-function voucherMatchesStatusFilter(v, filter) {
-  if (filter === "all") return true
-  const raw = voucherStatusRaw(v)
-  const s = raw.toLowerCase()
-  if (filter === "unused") return s === "unused"
-  if (filter === "used") return s === "used"
-  return true
-}
-
-/**
- * @param {{ packageId?: string }} v
- * @param {PackageFilter} filter
- */
-function voucherMatchesPackageFilter(v, filter) {
-  if (filter === "all") return true
-  if (filter === "unassigned") {
-    return !v.packageId || !String(v.packageId).trim()
-  }
-  return v.packageId === filter
-}
-
-/**
- * @param {Array<{ packageId?: string, packageName?: string }>} vouchers
- */
-function packageFilterOptions(vouchers) {
-  /** @type {Map<string, string>} */
-  const byId = new Map()
-  for (const v of vouchers) {
-    const id = typeof v.packageId === "string" ? v.packageId.trim() : ""
-    if (!id) continue
-    const name =
-      typeof v.packageName === "string" && v.packageName.trim() ? v.packageName.trim() : id
-    if (!byId.has(id)) byId.set(id, name)
-  }
-  return [...byId.entries()]
-    .sort((a, b) => a[1].localeCompare(b[1]))
-    .map(([id, name]) => ({ id, name }))
-}
+const DEFAULT_PAGE_SIZE = 25
 
 export default function UploadedVouchers() {
   const { token, user, authReady } = useAuth()
@@ -93,6 +34,42 @@ export default function UploadedVouchers() {
   const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = React.useState(/** @type {StatusFilter} */ ("all"))
   const [packageFilter, setPackageFilter] = React.useState(/** @type {PackageFilter} */ ("all"))
+  const [page, setPage] = React.useState(1)
+  const [pageSize, setPageSize] = React.useState(DEFAULT_PAGE_SIZE)
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [packageFilter, statusFilter, pageSize])
+
+  const summaryQuery = useQuery({
+    queryKey: ["vouchers-summary", token],
+    queryFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const r = await fetchVouchersSummary(token)
+      if (!r.ok) throw new Error(r.error || "Failed to load voucher summary")
+      return r
+    },
+    enabled: authReady && Boolean(token) && isAdmin,
+    staleTime: 60_000,
+  })
+
+  const vouchersQuery = useQuery({
+    queryKey: ["vouchers", token, packageFilter, statusFilter, page, pageSize],
+    queryFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const r = await fetchVouchers(token, {
+        page,
+        limit: pageSize,
+        packageId: packageFilter,
+        status: statusFilter,
+      })
+      if (!r.ok) throw new Error(r.error || "Failed to load vouchers")
+      return r
+    },
+    enabled: authReady && Boolean(token) && isAdmin,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  })
 
   const deleteMutation = useMutation({
     mutationFn: async (/** @type {string} */ id) => {
@@ -101,7 +78,9 @@ export default function UploadedVouchers() {
       if (!r.ok) throw new Error(r.error || "Delete failed")
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["vouchers", token] })
+      void queryClient.invalidateQueries({ queryKey: ["vouchers"] })
+      void queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
+      void queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
       void queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
     },
   })
@@ -115,38 +94,23 @@ export default function UploadedVouchers() {
     [deleteMutation],
   )
 
-  const vouchersQuery = useQuery({
-    queryKey: ["vouchers", token],
-    queryFn: async () => {
-      if (!token) throw new Error("Not signed in")
-      const r = await fetchVouchers(token)
-      if (!r.ok) throw new Error(r.error || "Failed to load vouchers")
-      return r.vouchers
-    },
-    enabled: authReady && Boolean(token) && isAdmin,
-  })
-
-  const allVouchers = vouchersQuery.data ?? []
-
   const packageOptions = React.useMemo(() => {
-    const fromVouchers = packageFilterOptions(allVouchers)
+    const fromSummary = summaryQuery.data?.packages ?? []
     const catalogPkgs = catalog.data?.packages ?? []
-    /** @type {Map<string, string>} */
-    const merged = new Map(fromVouchers.map((p) => [p.id, p.name]))
+    /** @type {Map<string, { name: string, count?: number }>} */
+    const merged = new Map(fromSummary.map((p) => [p.id, { name: p.name, count: p.count }]))
     for (const p of catalogPkgs) {
       if (p.id && !merged.has(p.id)) {
-        merged.set(p.id, typeof p.name === "string" && p.name.trim() ? p.name.trim() : p.id)
+        merged.set(p.id, { name: typeof p.name === "string" && p.name.trim() ? p.name.trim() : p.id })
       }
     }
     return [...merged.entries()]
-      .sort((a, b) => a[1].localeCompare(b[1]))
-      .map(([id, name]) => ({ id, name }))
-  }, [allVouchers, catalog.data?.packages])
+      .sort((a, b) => a[1].name.localeCompare(b[1].name))
+      .map(([id, { name, count }]) => ({ id, name, count }))
+  }, [summaryQuery.data?.packages, catalog.data?.packages])
 
-  const hasUnassigned = React.useMemo(
-    () => allVouchers.some((v) => !v.packageId || !String(v.packageId).trim()),
-    [allVouchers],
-  )
+  const hasUnassigned = (summaryQuery.data?.unassignedCount ?? 0) > 0
+  const totalInventory = summaryQuery.data?.totalCount ?? 0
 
   const selectedPackageLabel = React.useMemo(() => {
     if (packageFilter === "all") return null
@@ -163,15 +127,17 @@ export default function UploadedVouchers() {
       return r.deleted
     },
     onSuccess: (_deleted, scope) => {
-      void queryClient.invalidateQueries({ queryKey: ["vouchers", token] })
+      void queryClient.invalidateQueries({ queryKey: ["vouchers"] })
+      void queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
+      void queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
       void queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
       if (scope?.packageId) setPackageFilter("all")
+      setPage(1)
     },
   })
 
   const confirmDeleteAll = React.useCallback(() => {
-    const n = allVouchers.length
-    if (n === 0) return
+    if (totalInventory === 0) return
     if (
       !window.confirm(
         "Delete EVERY voucher in the database? This removes all locations, packages, and statuses. This cannot be undone.",
@@ -179,47 +145,61 @@ export default function UploadedVouchers() {
     ) {
       return
     }
-    if (!window.confirm(`Final confirmation: permanently remove all voucher documents (at least ${n} loaded in this view).`))
+    if (
+      !window.confirm(
+        `Final confirmation: permanently remove all ${totalInventory.toLocaleString()} voucher document(s).`,
+      )
+    )
       return
     deleteAllMutation.mutate(undefined)
-  }, [deleteAllMutation, allVouchers.length])
+  }, [deleteAllMutation, totalInventory])
 
   const confirmDeleteForPackage = React.useCallback(() => {
     if (packageFilter === "all" || packageFilter === "unassigned") return
-    const inView = filterVouchersByPackage(allVouchers, packageFilter).length
+    const pkg = packageOptions.find((p) => p.id === packageFilter)
+    const count = pkg?.count ?? vouchersQuery.data?.total ?? 0
     const label = selectedPackageLabel ?? "this package"
     if (
       !window.confirm(
-        `Delete all vouchers assigned to ${label}? This removes every voucher with that package in the database (${inView} shown in the current list). This cannot be undone.`,
+        `Delete all vouchers assigned to ${label}? This removes ${count.toLocaleString()} voucher(s) from the database. This cannot be undone.`,
       )
     ) {
       return
     }
     deleteAllMutation.mutate({ packageId: packageFilter })
-  }, [deleteAllMutation, packageFilter, allVouchers, selectedPackageLabel])
+  }, [deleteAllMutation, packageFilter, packageOptions, vouchersQuery.data?.total, selectedPackageLabel])
 
-  const filteredVouchers = React.useMemo(() => {
-    let list = allVouchers
-    list = list.filter((v) => voucherMatchesPackageFilter(v, packageFilter))
-    if (statusFilter !== "all") {
-      list = list.filter((v) => voucherMatchesStatusFilter(v, statusFilter))
-    }
-    return list
-  }, [allVouchers, statusFilter, packageFilter])
+  const list = vouchersQuery.data?.vouchers ?? []
+  const filteredTotal = vouchersQuery.data?.total ?? 0
+  const totalPages = vouchersQuery.data?.totalPages ?? 1
+  const pageIndex = Math.max(0, page - 1)
 
-  const totalCount = allVouchers.length
   const emptyFilterMessage =
-    filteredVouchers.length === 0 && totalCount > 0
-      ? "No vouchers match the current filters."
+    list.length === 0 && filteredTotal === 0 && !vouchersQuery.isLoading
+      ? totalInventory > 0
+        ? "No vouchers match the current filters."
+        : undefined
       : undefined
 
   const canDeletePackageScope = packageFilter !== "all" && packageFilter !== "unassigned"
+
+  const serverPagination = React.useMemo(
+    () => ({
+      pageIndex,
+      pageCount: totalPages,
+      total: filteredTotal,
+      pageSize,
+      onPageIndexChange: (index) => setPage(index + 1),
+      onPageSizeChange: (size) => setPageSize(size),
+    }),
+    [pageIndex, totalPages, filteredTotal, pageSize],
+  )
 
   return (
     <div className="w-full min-w-0 space-y-3">
       <PageHeader
         title="Uploaded vouchers"
-        description="Filter by package and status. Delete one row, all vouchers for a package, or the entire inventory."
+        description="Filter by package and status. Only one page loads from the server at a time."
       />
 
       <Card className="border-border bg-card w-full min-w-0 gap-2 py-2 shadow-none ring-1 ring-border">
@@ -245,6 +225,7 @@ export default function UploadedVouchers() {
                         {packageOptions.map((p) => (
                           <SelectItem key={p.id} value={p.id}>
                             {p.name}
+                            {typeof p.count === "number" ? ` (${p.count.toLocaleString()})` : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -268,10 +249,12 @@ export default function UploadedVouchers() {
                       </SelectContent>
                     </Select>
                   </div>
-                  {filteredVouchers.length > 0 || totalCount > 0 ? (
+                  {filteredTotal > 0 || totalInventory > 0 ? (
                     <p className="text-muted-foreground text-xs tabular-nums">
-                      Showing {filteredVouchers.length}
-                      {packageFilter !== "all" || statusFilter !== "all" ? ` of ${totalCount}` : ""}
+                      {filteredTotal.toLocaleString()} match
+                      {packageFilter !== "all" || statusFilter !== "all"
+                        ? ` · ${totalInventory.toLocaleString()} total in inventory`
+                        : ""}
                     </p>
                   ) : null}
                 </div>
@@ -310,7 +293,7 @@ export default function UploadedVouchers() {
                     className="h-8 w-full shrink-0 border-destructive/50 text-xs text-destructive hover:bg-destructive/10 sm:w-auto"
                     onClick={confirmDeleteAll}
                     disabled={
-                      totalCount === 0 ||
+                      totalInventory === 0 ||
                       vouchersQuery.isLoading ||
                       vouchersQuery.isFetching ||
                       deleteMutation.isPending ||
@@ -321,7 +304,7 @@ export default function UploadedVouchers() {
                   </Button>
                 </div>
               </div>
-              {vouchersQuery.isLoading ? (
+              {vouchersQuery.isLoading && !vouchersQuery.data ? (
                 <p className="text-muted-foreground text-sm">Loading vouchers from server…</p>
               ) : vouchersQuery.isError ? (
                 <p className="text-destructive text-sm">
@@ -342,7 +325,7 @@ export default function UploadedVouchers() {
                     </p>
                   ) : null}
                   <ServerVouchersTable
-                    vouchers={filteredVouchers}
+                    vouchers={list}
                     emptyMessage={emptyFilterMessage}
                     onDelete={confirmDelete}
                     deletingId={
@@ -350,6 +333,7 @@ export default function UploadedVouchers() {
                         ? deleteMutation.variables
                         : null
                     }
+                    serverPagination={serverPagination}
                   />
                 </>
               )}

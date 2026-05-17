@@ -225,6 +225,50 @@ async function findConflictingLocationForSalesAgent(locations, users, agentUserI
   return null
 }
 
+const VOUCHER_LIST_MAX_LIMIT = 100
+const VOUCHER_LIST_DEFAULT_LIMIT = 25
+
+/**
+ * @param {import("express").Request} req
+ */
+function parseVoucherListQuery(req) {
+  const page = Math.max(1, Number.parseInt(String(req.query.page ?? "1"), 10) || 1)
+  const limitRaw = Number.parseInt(String(req.query.limit ?? String(VOUCHER_LIST_DEFAULT_LIMIT)), 10)
+  const limit = Math.min(
+    VOUCHER_LIST_MAX_LIMIT,
+    Math.max(1, Number.isFinite(limitRaw) ? limitRaw : VOUCHER_LIST_DEFAULT_LIMIT),
+  )
+  const packageId = typeof req.query.packageId === "string" ? req.query.packageId.trim() : ""
+  const locationId = typeof req.query.locationId === "string" ? req.query.locationId.trim() : ""
+  const status = typeof req.query.status === "string" ? req.query.status.trim().toLowerCase() : "all"
+  return { page, limit, packageId, locationId, status }
+}
+
+/**
+ * @param {{ packageId?: string, locationId?: string, status?: string }} q
+ * @returns {import("mongodb").Document}
+ */
+function buildVoucherMongoFilter(q) {
+  /** @type {import("mongodb").Document[]} */
+  const and = []
+  if (q.packageId === "unassigned") {
+    and.push({ $or: [{ packageId: { $exists: false } }, { packageId: null }, { packageId: "" }] })
+  } else if (q.packageId) {
+    and.push({ packageId: q.packageId })
+  }
+  if (q.locationId && q.locationId !== "all") {
+    and.push({ locationId: q.locationId })
+  }
+  if (q.status === "used") {
+    and.push({ $or: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }] })
+  } else if (q.status === "unused") {
+    and.push({ $nor: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }] })
+  }
+  if (and.length === 0) return {}
+  if (and.length === 1) return and[0]
+  return { $and: and }
+}
+
 /** @type {import("express").RequestHandler} */
 function requireSalesAgentOrAdmin(req, res, next) {
   const r = req.auth?.role
@@ -260,10 +304,73 @@ export function createCatalogRouter(deps) {
     }
   })
 
-  router.get("/vouchers", requireAdmin, async (_req, res) => {
+  router.get("/vouchers/summary", requireAdmin, async (_req, res) => {
     try {
-      const docs = await vouchers.find({}).sort({ uploadedAt: -1 }).limit(10_000).toArray()
-      res.json({ vouchers: docs.map(toVoucher) })
+      const [totalCount, unassignedCount, packageGroups] = await Promise.all([
+        vouchers.countDocuments({}),
+        vouchers.countDocuments({
+          $or: [{ packageId: { $exists: false } }, { packageId: null }, { packageId: "" }],
+        }),
+        vouchers
+          .aggregate([
+            { $match: { packageId: { $exists: true, $ne: "" } } },
+            { $group: { _id: "$packageId", name: { $first: "$packageName" }, count: { $sum: 1 } } },
+            { $sort: { name: 1 } },
+          ])
+          .toArray(),
+      ])
+      res.json({
+        totalCount,
+        unassignedCount,
+        packages: packageGroups.map((p) => ({
+          id: String(p._id),
+          name: typeof p.name === "string" && p.name.trim() ? p.name.trim() : String(p._id),
+          count: p.count,
+        })),
+      })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.get("/vouchers/stats", requireAdmin, async (req, res) => {
+    try {
+      const locationId = typeof req.query.locationId === "string" ? req.query.locationId.trim() : ""
+      const filter = buildVoucherMongoFilter({ locationId })
+      const [total, remaining] = await Promise.all([
+        vouchers.countDocuments(filter),
+        vouchers.countDocuments({
+          ...filter,
+          $nor: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }],
+        }),
+      ])
+      res.json({ total, remaining })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.get("/vouchers", requireAdmin, async (req, res) => {
+    try {
+      const q = parseVoucherListQuery(req)
+      const filter = buildVoucherMongoFilter(q)
+      const skip = (q.page - 1) * q.limit
+      const [docs, total] = await Promise.all([
+        vouchers.find(filter).sort({ uploadedAt: -1 }).skip(skip).limit(q.limit).toArray(),
+        vouchers.countDocuments(filter),
+      ])
+      const totalPages = Math.max(1, Math.ceil(total / q.limit))
+      res.json({
+        vouchers: docs.map(toVoucher),
+        total,
+        page: q.page,
+        limit: q.limit,
+        totalPages,
+      })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)

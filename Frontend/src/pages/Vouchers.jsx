@@ -259,7 +259,9 @@ export default function Vouchers() {
 
       if (out.ok) {
         await queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
-        await queryClient.invalidateQueries({ queryKey: ["vouchers", token] })
+        await queryClient.invalidateQueries({ queryKey: ["vouchers"] })
+        await queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
+        await queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
         navigate("/vouchers/uploaded")
       }
     },
@@ -306,7 +308,9 @@ export default function Vouchers() {
         text: `Saved ${out.inserted} new voucher(s) for this package. Skipped ${out.skippedAlreadyInDb} already on this package, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} without id (batch ${out.batchId}).`,
       })
       await queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
-      await queryClient.invalidateQueries({ queryKey: ["vouchers", token] })
+      await queryClient.invalidateQueries({ queryKey: ["vouchers"] })
+      await queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
+      await queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
     } catch (e) {
       setSingleFeedback({
         kind: "error",

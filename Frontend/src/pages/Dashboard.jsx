@@ -17,11 +17,9 @@ import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { StatCard } from "@/components/shared/StatCard.jsx"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
-import { fetchVouchers } from "@/lib/api.js"
+import { fetchVoucherStats } from "@/lib/api.js"
 import {
   filterSalesByLocation,
-  filterVouchersByLocation,
-  countRemainingVouchers,
   getCompletedRevenueByWeekday,
   getDashboardMetrics,
   getDayOverDaySummary,
@@ -61,15 +59,22 @@ export default function Dashboard() {
   const locations = React.useMemo(() => rawLocations ?? [], [rawLocations])
   const agentStore = React.useMemo(() => findAgentStoreLocation(locations, user), [locations, user])
 
-  const vouchersQuery = useQuery({
-    queryKey: ["vouchers", token],
+  const statsLocationId = React.useMemo(() => {
+    if (isSalesAgent) return agentStore?.id ?? ""
+    if (locationId === "all") return ""
+    return locationId
+  }, [isSalesAgent, agentStore?.id, locationId])
+
+  const voucherStatsQuery = useQuery({
+    queryKey: ["voucher-stats", token, statsLocationId],
     queryFn: async () => {
       if (!token) throw new Error("Not signed in")
-      const r = await fetchVouchers(token)
-      if (!r.ok) throw new Error(r.error || "Failed to load vouchers")
-      return r.vouchers
+      const r = await fetchVoucherStats(token, { locationId: statsLocationId || undefined })
+      if (!r.ok) throw new Error(r.error || "Failed to load voucher stats")
+      return r
     },
     enabled: authReady && Boolean(token) && isAdmin,
+    staleTime: 30_000,
   })
 
   const filtered = React.useMemo(() => {
@@ -81,12 +86,8 @@ export default function Dashboard() {
     return filterSalesByLocation(sales, locationId)
   }, [catalog.data, locationId, isSalesAgent, agentStore])
 
-  const vouchersForScope = React.useMemo(
-    () => filterVouchersByLocation(vouchersQuery.data ?? [], locationId),
-    [vouchersQuery.data, locationId],
-  )
-  const remainingVouchers = React.useMemo(() => countRemainingVouchers(vouchersForScope), [vouchersForScope])
-  const totalVouchersInScope = vouchersForScope.length
+  const totalVouchersInScope = voucherStatsQuery.data?.total ?? 0
+  const remainingVouchers = voucherStatsQuery.data?.remaining ?? 0
 
   const m = React.useMemo(() => {
     const packages = catalog.data?.packages ?? []
@@ -181,16 +182,16 @@ export default function Dashboard() {
           label="Total Vouchers"
           value={
             isAdmin
-              ? vouchersQuery.isLoading
+              ? voucherStatsQuery.isLoading
                 ? "…"
-                : vouchersQuery.isError
+                : voucherStatsQuery.isError
                   ? "—"
                   : String(totalVouchersInScope)
               : String(m.totalSales)
           }
           subline={
             isAdmin
-              ? vouchersQuery.isError
+              ? voucherStatsQuery.isError
                 ? "Could not load vouchers"
                 : `${remainingVouchers} remaining`
               : `${m.pending} pending`
@@ -205,9 +206,9 @@ export default function Dashboard() {
           value={String(m.sold)}
           subline={
             isAdmin
-              ? vouchersQuery.isLoading
+              ? voucherStatsQuery.isLoading
                 ? "…"
-                : vouchersQuery.isError
+                : voucherStatsQuery.isError
                   ? "Could not load vouchers"
                   : `${remainingVouchers} remaining`
               : null

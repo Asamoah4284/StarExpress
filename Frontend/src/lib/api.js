@@ -235,9 +235,25 @@ export async function importVouchersBatch(token, body) {
   }
 }
 
-/** @param {string} token */
-export async function fetchVouchers(token) {
-  const { res, data } = await parseJsonResponse("/api/catalog/vouchers", {
+/**
+ * @param {string} token
+ * @param {{
+ *   page?: number
+ *   limit?: number
+ *   packageId?: string
+ *   locationId?: string
+ *   status?: string
+ * }} [opts]
+ */
+export async function fetchVouchers(token, opts = {}) {
+  const params = new URLSearchParams()
+  if (opts.page != null) params.set("page", String(opts.page))
+  if (opts.limit != null) params.set("limit", String(opts.limit))
+  if (opts.packageId && opts.packageId !== "all") params.set("packageId", opts.packageId)
+  if (opts.locationId && opts.locationId !== "all") params.set("locationId", opts.locationId)
+  if (opts.status && opts.status !== "all") params.set("status", opts.status)
+  const qs = params.toString() ? `?${params.toString()}` : ""
+  const { res, data } = await parseJsonResponse(`/api/catalog/vouchers${qs}`, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   })
@@ -245,10 +261,72 @@ export async function fetchVouchers(token) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
     return { ok: false, error: msg }
   }
-  if (typeof data !== "object" || data === null || !Array.isArray(data.vouchers)) {
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    !Array.isArray(data.vouchers) ||
+    typeof data.total !== "number"
+  ) {
     return { ok: false, error: "Unexpected response from server." }
   }
-  return { ok: true, vouchers: data.vouchers }
+  return {
+    ok: true,
+    vouchers: data.vouchers,
+    total: data.total,
+    page: typeof data.page === "number" ? data.page : 1,
+    limit: typeof data.limit === "number" ? data.limit : 25,
+    totalPages: typeof data.totalPages === "number" ? data.totalPages : 1,
+  }
+}
+
+/** @param {string} token */
+export async function fetchVouchersSummary(token) {
+  const { res, data } = await parseJsonResponse("/api/catalog/vouchers/summary", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    typeof data.totalCount !== "number" ||
+    typeof data.unassignedCount !== "number" ||
+    !Array.isArray(data.packages)
+  ) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return {
+    ok: true,
+    totalCount: data.totalCount,
+    unassignedCount: data.unassignedCount,
+    packages: data.packages,
+  }
+}
+
+/**
+ * @param {string} token
+ * @param {{ locationId?: string }} [opts]
+ */
+export async function fetchVoucherStats(token, opts = {}) {
+  const params = new URLSearchParams()
+  const lid = typeof opts.locationId === "string" ? opts.locationId.trim() : ""
+  if (lid && lid !== "all") params.set("locationId", lid)
+  const qs = params.toString() ? `?${params.toString()}` : ""
+  const { res, data } = await parseJsonResponse(`/api/catalog/vouchers/stats${qs}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.total !== "number" || typeof data.remaining !== "number") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, total: data.total, remaining: data.remaining }
 }
 
 /**
