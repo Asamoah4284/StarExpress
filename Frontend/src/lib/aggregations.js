@@ -10,6 +10,19 @@ export function filterSalesByLocation(allSales, locationId) {
   return allSales.filter((s) => s.locationId === locationId)
 }
 
+/** Self-serve USSD purchases — inventory at a location but not credited to the assigned agent. */
+export const SALE_CHANNEL_USSD = "ussd"
+export const SALE_CHANNEL_AGENT = "agent"
+
+/**
+ * Sales that count toward a sales agent's dashboard KPIs and commission.
+ * @param {object[]} sales
+ */
+export function filterSalesForAgentAttribution(sales) {
+  if (!Array.isArray(sales)) return []
+  return sales.filter((s) => s.channel !== SALE_CHANNEL_USSD)
+}
+
 /** ISO `YYYY-MM-DD` for Monday of the week containing `isoDate`. */
 export function getWeekStartFromDate(isoDate) {
   const d = new Date(`${isoDate}T12:00:00Z`)
@@ -592,6 +605,7 @@ export function getAgentSalesCommissionRows(sales, locations, users, commissionR
 
   for (const sale of sales ?? []) {
     if (sale.status !== "Completed") continue
+    if (sale.channel === SALE_CHANNEL_USSD) continue
     const agentId = agentIdByLocationId.get(sale.locationId)
     if (!agentId || !agentById.has(agentId)) continue
     const row = agentById.get(agentId)

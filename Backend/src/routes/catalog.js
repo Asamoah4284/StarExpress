@@ -143,6 +143,10 @@ function toSale(d) {
     ...(typeof d.voucherCode === "string" && d.voucherCode.trim()
       ? { voucherCode: d.voucherCode.trim() }
       : {}),
+    ...(typeof d.channel === "string" && d.channel.trim() ? { channel: d.channel.trim() } : {}),
+    ...(typeof d.soldByUserId === "string" && d.soldByUserId.trim()
+      ? { soldByUserId: d.soldByUserId.trim() }
+      : {}),
   }
 }
 
@@ -930,6 +934,8 @@ export function createCatalogRouter(deps) {
         status: "Completed",
         voucherId: String(voucherToUse._id),
         voucherCode,
+        channel: "agent",
+        soldByUserId: req.auth.userId,
       }
 
       await sales.insertOne(saleDoc)

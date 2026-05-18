@@ -23,6 +23,7 @@ import { fetchVoucherStats } from "@/lib/api.js"
 import {
   filterSalesByDateRange,
   filterSalesByLocation,
+  filterSalesForAgentAttribution,
   getAgentCommissionMetrics,
   getCompletedRevenueByWeekday,
   getDashboardMetrics,
@@ -119,7 +120,7 @@ export default function Dashboard() {
     let rows
     if (isSalesAgent) {
       if (!agentStore) return []
-      rows = filterSalesByLocation(sales, agentStore.id)
+      rows = filterSalesForAgentAttribution(filterSalesByLocation(sales, agentStore.id))
     } else {
       rows = filterSalesByLocation(sales, locationId)
     }
