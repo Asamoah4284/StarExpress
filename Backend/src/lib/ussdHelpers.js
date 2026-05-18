@@ -44,16 +44,50 @@ export function getNetworkFromMsisdn(msisdn) {
 }
 
 /**
+ * Moolre payment API channels (docs.moolre.com): 13=MTN, 6=Telecel, 7=AT.
+ * USSD gateway sends network: 3=MTN, 5=AT, 6=Telecel — map to payment channels.
+ * @param {number | null | undefined} moolreUssdNetwork
+ */
+export function mapUssdNetworkToPaymentChannel(moolreUssdNetwork) {
+  const n = Number(moolreUssdNetwork)
+  if (n === 3) return String(process.env.MOOLRE_CHANNEL_MTN || "13")
+  if (n === 5) return String(process.env.MOOLRE_CHANNEL_AT || "7")
+  if (n === 6) return String(process.env.MOOLRE_CHANNEL_TELECEL || "6")
+  return null
+}
+
+/**
  * @param {string} network
  */
 function getMoolreChannelForNetwork(network) {
   const n = (network || "").trim()
-  if (n === "MTN") return process.env.MOOLRE_CHANNEL_MTN || "13"
-  if (n === "Vodafone") return process.env.MOOLRE_CHANNEL_VODAFONE || process.env.MOOLRE_DIRECT_DEBIT_CHANNEL || "15"
-  if (n === "Telecel" || n === "AirtelTigo" || n === "AT") {
-    return process.env.MOOLRE_CHANNEL_TELECEL || process.env.MOOLRE_DIRECT_DEBIT_CHANNEL || "14"
+  if (n === "MTN") return String(process.env.MOOLRE_CHANNEL_MTN || "13")
+  if (n === "Telecel") return String(process.env.MOOLRE_CHANNEL_TELECEL || "6")
+  if (n === "AT" || n === "AirtelTigo") return String(process.env.MOOLRE_CHANNEL_AT || "7")
+  if (n === "Vodafone") return String(process.env.MOOLRE_CHANNEL_VODAFONE || "15")
+  return String(process.env.MOOLRE_DIRECT_DEBIT_CHANNEL || process.env.MOOLRE_CHANNEL_MTN || "13")
+}
+
+/**
+ * @param {unknown} data
+ */
+function isMoolreApiSuccess(data) {
+  if (!data || typeof data !== "object") return false
+  const status = Number(/** @type {{ status?: unknown }} */ (data).status)
+  return status === 1 || status === 200
+}
+
+function getMoolrePaymentCallbackUrl() {
+  const base = BACKEND_URL.replace(/\/$/, "")
+  return `${base}/api/moolre/callback`
+}
+
+function shouldIncludePaymentCallbackInRequest() {
+  if (String(process.env.MOOLRE_DIRECT_DEBIT_INCLUDE_CALLBACK || "").toLowerCase() === "true") {
+    return true
   }
-  return process.env.MOOLRE_DIRECT_DEBIT_CHANNEL || "13"
+  const base = BACKEND_URL.replace(/\/$/, "")
+  return base.startsWith("https://") && !base.includes("localhost")
 }
 
 /**
@@ -161,10 +195,51 @@ export function verifyMoolreWebhook(payload, headers = {}) {
  * @param {string} sessionId
  * @param {{ packageName?: string, description?: string, reference?: string, network?: string, moolreNetwork?: number | null }} options
  */
+const MOOLRE_PAYMENT_URL = "https://api.moolre.com/open/transact/payment"
+
+/**
+ * @param {Record<string, unknown>} payload
+ * @param {Record<string, string>} authHeaders
+ */
+async function postMoolrePayment(payload, authHeaders) {
+  const response = await fetch(MOOLRE_PAYMENT_URL, {
+    method: "POST",
+    headers: authHeaders,
+    body: JSON.stringify(payload),
+  })
+  const responseText = await response.text()
+  let data = null
+  try {
+    data = responseText ? JSON.parse(responseText) : null
+  } catch {
+    console.warn("[ussd-momo] Non-JSON response", response.status, responseText?.slice(0, 200))
+  }
+  return { response, data, responseText }
+}
+
+/**
+ * Second call (same externalref, empty otp) triggers the MoMo PIN popup after USSD ends.
+ * @param {Record<string, unknown>} basePayload
+ * @param {Record<string, string>} authHeaders
+ */
+async function triggerMoMoPinPrompt(basePayload, authHeaders) {
+  const triggerPayload = { ...basePayload, otpcode: "" }
+  console.log("[ussd-momo] POST payment (trigger PIN prompt)", {
+    externalref: triggerPayload.externalref,
+    channel: triggerPayload.channel,
+  })
+  const { response, data, responseText } = await postMoolrePayment(triggerPayload, authHeaders)
+  if (!response.ok || !isMoolreApiSuccess(data)) {
+    console.error("[ussd-momo] PIN trigger failed", response.status, data || responseText?.slice(0, 200))
+    return { ok: false, data }
+  }
+  console.log("[ussd-momo] PIN trigger OK", { code: data?.code, message: data?.message })
+  return { ok: true, data }
+}
+
 export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {}) {
   const {
     packageName = "WiFi package",
-    description = "StarExpress WiFi voucher",
     reference: preGeneratedReference = null,
     network: networkHint = null,
     moolreNetwork: moolreNetworkCode = null,
@@ -173,19 +248,9 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
   const formattedPhone = formatPhoneNumber(msisdn)
   const reference = preGeneratedReference || generatePaymentReference(sessionId)
 
-  const getPaymentChannel = (/** @type {number | null} */ moolreNet) => {
-    if (moolreNet === 3) return "13"
-    if (moolreNet === 5) return "5"
-    if (moolreNet === 6) return "6"
-    return null
-  }
-
-  const paymentChannelFromMoolre = getPaymentChannel(moolreNetworkCode ?? null)
+  const paymentChannelFromUssd = mapUssdNetworkToPaymentChannel(moolreNetworkCode ?? null)
   const channel =
-    paymentChannelFromMoolre || getMoolreChannelForNetwork(networkHint || getNetworkFromMsisdn(msisdn))
-
-  const baseUrl = BACKEND_URL.replace(/\/$/, "")
-  const webhookUrl = `${baseUrl}/ussd/payments/webhook`
+    paymentChannelFromUssd || getMoolreChannelForNetwork(networkHint || getNetworkFromMsisdn(msisdn))
 
   if (!MOOLRE_USERNAME || !MOOLRE_PUBLIC_KEY || !MOOLRE_ACCOUNT_NUMBER) {
     console.warn("[ussd-momo] Moolre credentials not set; mock payment for", reference)
@@ -204,23 +269,13 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     "Content-Type": "application/json",
   }
 
-  const parseJsonResponse = (/** @type {Response} */ res, /** @type {string} */ text) => {
-    if (!text) return null
-    try {
-      return JSON.parse(text)
-    } catch {
-      console.warn("[ussd-momo] Non-JSON response", res.status, text.slice(0, 120))
-      return null
-    }
-  }
-
   try {
     const payerPhone = formattedPhone?.startsWith("233") ? `0${formattedPhone.slice(3)}` : formattedPhone
-    const includeCallback =
-      String(process.env.MOOLRE_DIRECT_DEBIT_INCLUDE_CALLBACK || "").toLowerCase() === "true"
-    /** @type {Record<string, string>} */
+    const callbackUrl = getMoolrePaymentCallbackUrl()
+
+    /** @type {Record<string, unknown>} */
     const directDebitPayload = {
-      type: "1",
+      type: 1,
       channel: String(channel),
       currency: "GHS",
       payer: payerPhone || "",
@@ -228,64 +283,67 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       externalref: reference,
       otpcode: "",
       reference: "",
-      sessionid: sessionId || "",
+      sessionid: String(sessionId || ""),
       accountnumber: MOOLRE_ACCOUNT_NUMBER,
     }
-    if (includeCallback) {
-      directDebitPayload.callback = webhookUrl
-      directDebitPayload.redirect = webhookUrl
+    if (shouldIncludePaymentCallbackInRequest()) {
+      directDebitPayload.callback = callbackUrl
+      directDebitPayload.redirect = callbackUrl
     }
 
-    console.log("[ussd-momo] POST payment", { reference, amount, channel, packageName })
-
-    let response = await fetch("https://api.moolre.com/open/transact/payment", {
-      method: "POST",
-      headers: authHeaders,
-      body: JSON.stringify(directDebitPayload),
+    console.log("[ussd-momo] POST payment (init)", {
+      reference,
+      amount,
+      channel,
+      moolreUssdNetwork: moolreNetworkCode,
+      payer: payerPhone,
+      packageName,
+      callback: directDebitPayload.callback || "(wallet dashboard only)",
     })
-    let responseText = await response.text()
-    let data = parseJsonResponse(response, responseText)
 
-    if (response.ok && data && (data.status === 1 || data.status === 200)) {
-      return {
-        success: true,
-        reference,
-        provider: "moolre",
-        action: "PROMPT_TRIGGERED",
-        message: "Payment prompt sent. Enter your MoMo PIN to approve.",
-        data: data.data || data,
-      }
-    }
+    const { response, data, responseText } = await postMoolrePayment(directDebitPayload, authHeaders)
 
-    console.warn("[ussd-momo] Direct debit failed, trying embed/link")
-    const moolreData = {
-      type: 1,
-      amount: String(amount),
-      email: `${formattedPhone}@ussd.starexpress.local`,
-      phone: formattedPhone,
-      externalref: reference,
-      callback: webhookUrl,
-      redirect: webhookUrl,
-      reusable: "0",
-      currency: "GHS",
-      accountnumber: MOOLRE_ACCOUNT_NUMBER,
-      metadata: { sessionId, packageName, channel: "ussd", description },
-    }
-
-    response = await fetch("https://api.moolre.com/embed/link", {
-      method: "POST",
-      headers: authHeaders,
-      body: JSON.stringify(moolreData),
-    })
-    responseText = await response.text()
-    data = parseJsonResponse(response, responseText)
-
-    if (!response.ok || !data || (data.status !== 1 && data.status !== 200)) {
+    if (!response.ok || !isMoolreApiSuccess(data)) {
+      console.error("[ussd-momo] init failed", response.status, data || responseText?.slice(0, 300))
       return {
         success: false,
         reference,
-        message: data?.message || "Payment initiation failed",
+        message:
+          (data && typeof data === "object" && "message" in data && String(data.message)) ||
+          "Payment initiation failed",
         provider: "moolre",
+        moolreCode: data && typeof data === "object" ? data.code : undefined,
+      }
+    }
+
+    const code = String(data?.code || "").toUpperCase()
+    console.log("[ussd-momo] init OK", { code, message: data?.message })
+
+    // TP14 = SMS verification required first — cannot auto-trigger PIN
+    if (code === "TP14") {
+      return {
+        success: false,
+        reference,
+        message: "Complete the SMS verification from Moolre, then try again.",
+        provider: "moolre",
+        moolreCode: code,
+      }
+    }
+
+    // After USSD ends, second call with same ref triggers the MoMo PIN popup (TR099 flow).
+    const skipSecond =
+      String(process.env.MOOLRE_USSD_SKIP_SECOND_PAYMENT_CALL || "").toLowerCase() === "true"
+    if (!skipSecond) {
+      const delayMs = Number(process.env.USSD_MOMO_TRIGGER_DELAY_MS) || 600
+      await new Promise((r) => setTimeout(r, delayMs))
+      const triggered = await triggerMoMoPinPrompt(directDebitPayload, authHeaders)
+      if (!triggered.ok) {
+        return {
+          success: false,
+          reference,
+          message: "Could not send MoMo prompt to your phone. Try again.",
+          provider: "moolre",
+        }
       }
     }
 
@@ -293,9 +351,10 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       success: true,
       reference,
       provider: "moolre",
-      action: "LINK_GENERATED",
-      message: "Payment link generated",
-      data: data.data || {},
+      action: "PROMPT_TRIGGERED",
+      message: "Payment prompt sent. Enter your MoMo PIN to approve.",
+      data: data?.data || data,
+      moolreCode: code,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

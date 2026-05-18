@@ -37,7 +37,7 @@ export function createUssdRouter(deps) {
   }
 
   function menuWelcome() {
-    return `Welcome to StarExpress WiFi\n1) Buy voucher\n2) Exit\nDial ${USSD_SHORTCODE}`
+    return `Welcome to Tabitacum WiFi\n1) Buy voucher\n2) Exit\n`
   }
 
   /**
@@ -267,21 +267,31 @@ export function createUssdRouter(deps) {
             })
 
             const moolreNet = session?.moolreNetwork ?? validMoolreNetwork
-            setImmediate(() => {
+            const momoDelayMs = Number(process.env.USSD_MOMO_START_DELAY_MS) || 400
+            setTimeout(() => {
               initiateMoMoPayment(phone, amount, sessionId, {
                 packageName: selected.name,
-                description: `StarExpress ${selected.name}`,
                 reference: paymentReference,
                 network: session?.network || normalizedNetwork,
                 moolreNetwork: moolreNet,
               })
                 .then((result) => {
-                  console.log("[ussd] momo initiated", paymentReference, result?.success, result?.action)
+                  console.log(
+                    "[ussd] momo result",
+                    paymentReference,
+                    result?.success,
+                    result?.action,
+                    result?.moolreCode,
+                    result?.message,
+                  )
+                  if (!result?.success) {
+                    console.error("[ussd] momo failed — user will not see PIN prompt:", result?.message)
+                  }
                 })
                 .catch((err) => {
                   console.error("[ussd] momo error", paymentReference, err)
                 })
-            })
+            }, momoDelayMs)
 
             return res.json({
               message:

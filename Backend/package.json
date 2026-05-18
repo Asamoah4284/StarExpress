@@ -7,7 +7,8 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "seed:catalog": "node src/seed/seedCatalogCli.js",
-    "test:sms": "node scripts/test-moolre-sms.js"
+    "test:sms": "node scripts/test-moolre-sms.js",
+    "test:ussd-momo": "node scripts/test-ussd-momo.js"
   },
   "engines": {
     "node": ">=20"
