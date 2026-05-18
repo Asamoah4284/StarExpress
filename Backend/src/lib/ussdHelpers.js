@@ -217,26 +217,6 @@ async function postMoolrePayment(payload, authHeaders) {
   return { response, data, responseText }
 }
 
-/**
- * Second call (same externalref, empty otp) triggers the MoMo PIN popup after USSD ends.
- * @param {Record<string, unknown>} basePayload
- * @param {Record<string, string>} authHeaders
- */
-async function triggerMoMoPinPrompt(basePayload, authHeaders) {
-  const triggerPayload = { ...basePayload, otpcode: "" }
-  console.log("[ussd-momo] POST payment (trigger PIN prompt)", {
-    externalref: triggerPayload.externalref,
-    channel: triggerPayload.channel,
-  })
-  const { response, data, responseText } = await postMoolrePayment(triggerPayload, authHeaders)
-  if (!response.ok || !isMoolreApiSuccess(data)) {
-    console.error("[ussd-momo] PIN trigger failed", response.status, data || responseText?.slice(0, 200))
-    return { ok: false, data }
-  }
-  console.log("[ussd-momo] PIN trigger OK", { code: data?.code, message: data?.message })
-  return { ok: true, data }
-}
-
 export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {}) {
   const {
     packageName = "WiFi package",
@@ -319,7 +299,7 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     const code = String(data?.code || "").toUpperCase()
     console.log("[ussd-momo] init OK", { code, message: data?.message })
 
-    // TP14 = SMS verification required first — cannot auto-trigger PIN
+    // TP14 = SMS verification required before MoMo can be used
     if (code === "TP14") {
       return {
         success: false,
@@ -330,21 +310,10 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       }
     }
 
-    // After USSD ends, second call with same ref triggers the MoMo PIN popup (TR099 flow).
-    const skipSecond =
-      String(process.env.MOOLRE_USSD_SKIP_SECOND_PAYMENT_CALL || "").toLowerCase() === "true"
-    if (!skipSecond) {
-      const delayMs = Number(process.env.USSD_MOMO_TRIGGER_DELAY_MS) || 600
-      await new Promise((r) => setTimeout(r, delayMs))
-      const triggered = await triggerMoMoPinPrompt(directDebitPayload, authHeaders)
-      if (!triggered.ok) {
-        return {
-          success: false,
-          reference,
-          message: "Could not send MoMo prompt to your phone. Try again.",
-          provider: "moolre",
-        }
-      }
+    // TR099 = payment request initiated; MoMo PIN prompt is sent on this single call.
+    // Do NOT POST again with the same externalref — Moolre returns TP13 (duplicate ref).
+    if (code === "TR099") {
+      console.log("[ussd-momo] TR099 — MoMo prompt should appear on payer phone", { reference, channel })
     }
 
     return {
