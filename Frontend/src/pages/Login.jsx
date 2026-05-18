@@ -2,6 +2,7 @@ import * as React from "react"
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom"
 import { Lock, Loader2, Satellite } from "lucide-react"
 import { useAuth } from "@/context/AuthContext.jsx"
+import { getDefaultAppName } from "@/lib/env.js"
 import { postLoginPath } from "@/lib/roles.js"
 import { PasswordField } from "@/components/auth/PasswordField.jsx"
 import { Button } from "@/components/ui/button"
@@ -17,6 +18,7 @@ import {
 } from "@/components/ui/card"
 
 export default function Login() {
+  const appName = getDefaultAppName()
   const { isAuthenticated, authReady, login, user } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -77,7 +79,7 @@ export default function Login() {
       <div className="relative z-10 flex w-full max-w-[440px] flex-col items-center">
         <div className="mb-4 text-center sm:mb-8">
           <p className="text-primary font-heading text-[10px] font-semibold uppercase tracking-[0.2em] dark:text-primary sm:text-xs sm:tracking-[0.22em]">
-            StarExpress
+            {appName}
           </p>
           <h1 className="text-foreground mt-2 text-2xl font-bold tracking-tight dark:text-foreground sm:mt-3 sm:text-[2rem] sm:leading-tight">
             Team sign-in

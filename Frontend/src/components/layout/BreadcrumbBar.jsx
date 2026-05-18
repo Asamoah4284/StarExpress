@@ -1,5 +1,6 @@
 import { Link, useLocation } from "react-router-dom"
 import { ChevronRight } from "lucide-react"
+import { useAppName } from "@/hooks/useAppSettings.js"
 import { cn } from "@/lib/utils"
 
 const ROUTE_TITLES = {
@@ -20,11 +21,12 @@ const ROUTE_TITLES = {
 export function BreadcrumbBar({ className }) {
   const { pathname } = useLocation()
   const page = ROUTE_TITLES[pathname] ?? "Page"
+  const appName = useAppName()
 
   return (
     <nav aria-label="Breadcrumb" className={cn("flex min-w-0 items-center gap-1.5 text-sm", className)}>
       <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">
-        StarExpress
+        {appName}
       </Link>
       <ChevronRight className="text-muted-foreground/70 size-3.5 shrink-0" aria-hidden />
       <span className="truncate font-medium text-foreground">{page}</span>

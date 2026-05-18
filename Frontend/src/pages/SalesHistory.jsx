@@ -1,72 +1,121 @@
 import * as React from "react"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
+import { DateRangePicker } from "@/components/reports/DateRangePicker.jsx"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { useCatalog } from "@/hooks/useCatalog.js"
+import { useCompanyName } from "@/hooks/useAppSettings.js"
+import { filterSalesByDateRange, filterSalesByLocation, salesToCsv } from "@/lib/aggregations.js"
+import {
+  formatDateRangeLabel,
+  getLastNDaysRange,
+  isCompleteDateRange,
+  localDateToIso,
+  normalizeDateRange,
+} from "@/lib/dates.js"
 import { locationNameById } from "@/lib/locations.js"
 import { formatCedis } from "@/lib/utils"
-import { salesToCsv } from "@/lib/aggregations.js"
 
 export default function SalesHistory() {
   const catalog = useCatalog()
+  const companyName = useCompanyName()
+  const locations = catalog.data?.locations ?? []
+  const [locationId, setLocationId] = React.useState("all")
+  const [dateRange, setDateRange] = React.useState(/** @type {{ from?: Date, to?: Date } | undefined} */ (undefined))
+  const rangeInitialized = React.useRef(false)
 
-  const sorted = React.useMemo(() => {
+  const handleDateRangeChange = React.useCallback((range) => {
+    setDateRange(normalizeDateRange(range))
+  }, [])
+
+  React.useEffect(() => {
+    if (rangeInitialized.current) return
+    rangeInitialized.current = true
+    setDateRange(getLastNDaysRange(7))
+  }, [])
+
+  const rangeComplete = isCompleteDateRange(dateRange)
+  const dateLabel = formatDateRangeLabel(dateRange)
+
+  const locationLabel =
+    locationId === "all"
+      ? "All locations"
+      : (locations.find((l) => l.id === locationId)?.name ?? locationId)
+
+  const filtered = React.useMemo(() => {
     const sales = catalog.data?.sales ?? []
-    return [...sales].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
-  }, [catalog.data])
+    let rows = filterSalesByLocation(sales, locationId)
+    if (rangeComplete && dateRange?.from && dateRange?.to) {
+      rows = filterSalesByDateRange(
+        rows,
+        localDateToIso(dateRange.from),
+        localDateToIso(dateRange.to),
+      )
+    }
+    return [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+  }, [catalog.data, locationId, dateRange, rangeComplete])
 
   const columns = React.useMemo(
     () => {
       const locations = catalog.data?.locations ?? []
       return [
-      { accessorKey: "id", header: "Sale ID" },
-      { accessorKey: "customerName", header: "Customer Name" },
-      {
-        accessorKey: "customerPhone",
-        header: "Phone",
-        cell: ({ getValue }) => {
-          const v = getValue()
-          return v ? String(v) : "—"
+        { accessorKey: "id", header: "Sale ID" },
+        { accessorKey: "customerName", header: "Customer Name" },
+        {
+          accessorKey: "customerPhone",
+          header: "Phone",
+          cell: ({ getValue }) => {
+            const v = getValue()
+            return v ? String(v) : "—"
+          },
         },
-      },
-      {
-        accessorKey: "paymentNumber",
-        header: "Payment #",
-        cell: ({ getValue }) => {
-          const v = getValue()
-          return v ? String(v) : "—"
+        {
+          accessorKey: "paymentNumber",
+          header: "Payment #",
+          cell: ({ getValue }) => {
+            const v = getValue()
+            return v ? String(v) : "—"
+          },
         },
-      },
-      { accessorKey: "packageType", header: "Package Type" },
-      {
-        accessorKey: "amount",
-        header: "Amount",
-        cell: ({ getValue }) => formatCedis(getValue()),
-      },
-      {
-        accessorKey: "locationId",
-        header: "Location",
-        cell: ({ getValue }) => locationNameById(getValue(), locations),
-      },
-      { accessorKey: "date", header: "Date" },
-      {
-        accessorKey: "status",
-        header: "Status",
-        cell: ({ getValue }) => {
-          const v = getValue()
-          const variant =
-            v === "Completed" ? "success" : v === "Pending" ? "secondary" : v === "Cancelled" ? "destructive" : "outline"
-          return <Badge variant={variant}>{v}</Badge>
+        { accessorKey: "packageType", header: "Package Type" },
+        {
+          accessorKey: "amount",
+          header: "Amount",
+          cell: ({ getValue }) => formatCedis(getValue()),
         },
-      },
-    ]
+        {
+          accessorKey: "locationId",
+          header: "Location",
+          cell: ({ getValue }) => locationNameById(getValue(), locations),
+        },
+        { accessorKey: "date", header: "Date" },
+        {
+          accessorKey: "status",
+          header: "Status",
+          cell: ({ getValue }) => {
+            const v = getValue()
+            const variant =
+              v === "Completed" ? "success" : v === "Pending" ? "secondary" : v === "Cancelled" ? "destructive" : "outline"
+            return <Badge variant={variant}>{v}</Badge>
+          },
+        },
+      ]
     },
     [catalog.data],
   )
 
   const exportCsv = () => {
-    const csv = salesToCsv(sorted)
+    const csv = salesToCsv(filtered, { companyName })
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -76,10 +125,14 @@ export default function SalesHistory() {
     URL.revokeObjectURL(url)
   }
 
+  const applyPresetDays = (days) => {
+    setDateRange(getLastNDaysRange(days))
+  }
+
   return (
     <div className="space-y-6">
-      <PageHeader title="Sales History" description="Full paginated history from the API.">
-        <Button type="button" onClick={exportCsv}>
+      <PageHeader title="Sales History" description="Browse and export sales. Filter by location and date range.">
+        <Button type="button" onClick={exportCsv} disabled={!filtered.length}>
           Export to CSV
         </Button>
       </PageHeader>
@@ -91,7 +144,69 @@ export default function SalesHistory() {
         </p>
       ) : null}
 
-      <DataTable data={sorted} columns={columns} pageSize={10} searchPlaceholder="Search all columns…" />
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Filters</CardTitle>
+          <CardDescription>
+            Choose a location and date range, then click Apply range on the calendar.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="sales-history-location">Location</Label>
+              <Select value={locationId} onValueChange={setLocationId}>
+                <SelectTrigger id="sales-history-location" className="w-full shadow-none">
+                  <SelectValue placeholder="All locations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All locations</SelectItem>
+                  {locations.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>
+                      {l.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="sales-history-date-range">Date range</Label>
+              <DateRangePicker
+                id="sales-history-date-range"
+                value={dateRange}
+                onChange={handleDateRangeChange}
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground text-xs font-medium">Quick range:</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(7)}>
+              Last 7 days
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(30)}>
+              Last 30 days
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setDateRange(getLastNDaysRange(7))}>
+              Reset to last 7 days
+            </Button>
+          </div>
+          <p className="text-muted-foreground text-sm">
+            Showing{" "}
+            <span className="text-foreground font-medium">
+              {locationLabel} · {rangeComplete ? dateLabel : `${dateLabel} (complete both dates to filter)`}
+            </span>
+            {rangeComplete ? (
+              <>
+                {" "}
+                · <span className="text-foreground font-medium">{filtered.length}</span> sale
+                {filtered.length === 1 ? "" : "s"}
+              </>
+            ) : null}
+          </p>
+        </CardContent>
+      </Card>
+
+      <DataTable data={filtered} columns={columns} pageSize={10} searchPlaceholder="Search all columns…" />
     </div>
   )
 }

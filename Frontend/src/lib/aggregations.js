@@ -1,3 +1,5 @@
+import { eachIsoDayInRange } from "./dates.js"
+
 /**
  * Filter sales by location id or null for all.
  * @param {object[]} allSales
@@ -117,8 +119,11 @@ function completedCommissionOnDate(rows, dateStr, rate) {
  * Day-over-day changes on the latest data date vs the previous calendar day.
  * @param {object[]} filteredSales
  */
-export function getDayOverDaySummary(filteredSales) {
-  const latestDate = getLatestSaleDateStr(filteredSales)
+export function getDayOverDaySummary(filteredSales, asOfDate) {
+  const latestDate =
+    typeof asOfDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(asOfDate)
+      ? asOfDate
+      : getLatestSaleDateStr(filteredSales)
   const prevDate = prevCalendarDayStr(latestDate)
   return {
     latestDate,
@@ -135,8 +140,8 @@ export function getDayOverDaySummary(filteredSales) {
  * @param {object[]} filteredSales
  * @param {number} commissionRate 0–1
  */
-export function getDayOverDaySummaryForAgent(filteredSales, commissionRate) {
-  const base = getDayOverDaySummary(filteredSales)
+export function getDayOverDaySummaryForAgent(filteredSales, commissionRate, asOfDate) {
+  const base = getDayOverDaySummary(filteredSales, asOfDate)
   const rate = Number.isFinite(commissionRate) && commissionRate >= 0 ? commissionRate : 0
   return {
     ...base,
@@ -152,10 +157,13 @@ export function getDayOverDaySummaryForAgent(filteredSales, commissionRate) {
  * @param {object[]} filteredSales
  * @param {number} commissionRate 0–1 share of completed sale amount
  */
-export function getAgentCommissionMetrics(filteredSales, commissionRate) {
+export function getAgentCommissionMetrics(filteredSales, commissionRate, asOfDate) {
   const rate = Number.isFinite(commissionRate) && commissionRate >= 0 ? commissionRate : 0
   const completed = filteredSales.filter((s) => s.status === "Completed")
-  const todayStr = getReportingDate(filteredSales)
+  const todayStr =
+    typeof asOfDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(asOfDate)
+      ? asOfDate
+      : getReportingDate(filteredSales)
   const todayCompleted = completed.filter((s) => s.date === todayStr)
   const pending = filteredSales.filter((s) => s.status === "Pending").length
 
@@ -253,6 +261,29 @@ export function filterVouchersByPackage(vouchers, packageId) {
   if (!Array.isArray(vouchers)) return []
   if (!packageId || packageId === "all") return vouchers
   return vouchers.filter((v) => v.packageId === packageId)
+}
+
+/**
+ * Daily completed revenue for each day in an inclusive ISO date range.
+ * @param {object[]} allSales
+ * @param {string} fromIso
+ * @param {string} toIso
+ */
+export function getRevenueByDateRange(allSales, fromIso, toIso) {
+  const completed = allSales.filter((s) => s.status === "Completed")
+  if (!fromIso || !toIso) return []
+
+  const days = eachIsoDayInRange(fromIso, toIso)
+  if (!days.length) return []
+
+  /** @type {Record<string, number>} */
+  const byDay = Object.fromEntries(days.map((d) => [d, 0]))
+  completed.forEach((s) => {
+    if (s.date >= fromIso && s.date <= toIso && Object.prototype.hasOwnProperty.call(byDay, s.date)) {
+      byDay[s.date] += s.amount
+    }
+  })
+  return days.map((date) => ({ date, revenue: byDay[date] }))
 }
 
 /** Last 30 days daily revenue by day for line chart (anchored to latest sale date in data). */
@@ -460,8 +491,16 @@ export function getSparklineCumulativeSoldCount(filteredSales, dayCount = 14) {
   return daily.map((d) => ({ x: d.x, y: (run += d.y) }))
 }
 
-/** Export CSV rows from sales */
-export function salesToCsv(rows) {
+/**
+ * Export CSV rows from sales.
+ * @param {object[]} rows
+ * @param {{ companyName?: string }} [options]
+ */
+export function salesToCsv(rows, options = {}) {
+  const lines = []
+  if (options.companyName?.trim()) {
+    lines.push(`# Company: ${options.companyName.trim().replace(/\r?\n/g, " ")}`)
+  }
   const header = [
     "id",
     "customerName",
@@ -473,7 +512,7 @@ export function salesToCsv(rows) {
     "date",
     "status",
   ]
-  const lines = [header.join(",")]
+  lines.push(header.join(","))
   for (const r of rows) {
     lines.push(
       [

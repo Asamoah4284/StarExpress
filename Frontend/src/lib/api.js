@@ -1,4 +1,27 @@
-import { getApiBaseUrl } from "@/lib/env.js"
+import { getApiBaseUrl, getDefaultAppName, getDefaultCompanyName } from "@/lib/env.js"
+
+/**
+ * @param {unknown} data
+ */
+function parseAppSettingsPayload(data) {
+  if (typeof data !== "object" || data === null || typeof data.salesAgentCommissionRate !== "number") {
+    return null
+  }
+  const companyLogoUrl =
+    typeof data.companyLogoUrl === "string" && data.companyLogoUrl.trim()
+      ? data.companyLogoUrl.trim()
+      : null
+
+  return {
+    salesAgentCommissionRate: data.salesAgentCommissionRate,
+    appName: typeof data.appName === "string" && data.appName.trim() ? data.appName.trim() : getDefaultAppName(),
+    companyName:
+      typeof data.companyName === "string" && data.companyName.trim()
+        ? data.companyName.trim()
+        : getDefaultCompanyName(),
+    companyLogoUrl,
+  }
+}
 
 function url(path) {
   const base = getApiBaseUrl().replace(/\/$/, "")
@@ -620,21 +643,21 @@ export async function fetchAppSettings(token) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
     return { ok: false, error: msg }
   }
-  if (
-    typeof data !== "object" ||
-    data === null ||
-    typeof data.salesAgentCommissionRate !== "number"
-  ) {
-    return { ok: false, error: "Unexpected response from server." }
-  }
-  return { ok: true, salesAgentCommissionRate: data.salesAgentCommissionRate }
+  const settings = parseAppSettingsPayload(data)
+  if (!settings) return { ok: false, error: "Unexpected response from server." }
+  return { ok: true, ...settings }
 }
 
 /**
  * @param {string} token
- * @param {{ salesAgentCommissionPercent: number }} body Percent 0–100
+ * @param {{
+ *   salesAgentCommissionPercent?: number
+ *   appName?: string
+ *   companyName?: string
+ *   companyLogoUrl?: string | null
+ * }} body
  */
-export async function updateAppSettingsCommission(token, body) {
+export async function updateAppSettings(token, body) {
   const { res, data } = await parseJsonResponse("/api/settings", {
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}` },
@@ -644,12 +667,15 @@ export async function updateAppSettingsCommission(token, body) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
     return { ok: false, error: msg }
   }
-  if (
-    typeof data !== "object" ||
-    data === null ||
-    typeof data.salesAgentCommissionRate !== "number"
-  ) {
-    return { ok: false, error: "Unexpected response from server." }
-  }
-  return { ok: true, salesAgentCommissionRate: data.salesAgentCommissionRate }
+  const settings = parseAppSettingsPayload(data)
+  if (!settings) return { ok: false, error: "Unexpected response from server." }
+  return { ok: true, ...settings }
+}
+
+/**
+ * @param {string} token
+ * @param {{ salesAgentCommissionPercent: number }} body Percent 0–100
+ */
+export async function updateAppSettingsCommission(token, body) {
+  return updateAppSettings(token, body)
 }

@@ -9,8 +9,9 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { APP_SETTINGS_QUERY_KEY, useAppSettings } from "@/hooks/useAppSettings.js"
-import { updateAppSettingsCommission } from "@/lib/api.js"
-import { getSalesAgentCommissionRate } from "@/lib/env.js"
+import { updateAppSettings, updateAppSettingsCommission } from "@/lib/api.js"
+import { getDefaultAppName, getDefaultCompanyName, getSalesAgentCommissionRate } from "@/lib/env.js"
+import { readImageFileAsDataUrl } from "@/lib/readImageFile.js"
 
 function rateToPercentInput(rate) {
   const pct = rate * 100
@@ -24,14 +25,21 @@ export default function Settings() {
   const queryClient = useQueryClient()
   const settingsQuery = useAppSettings()
 
-  const [company, setCompany] = React.useState("StarExpress Admin")
-  const [logoPreview, setLogoPreview] = React.useState(null)
+  const [appName, setAppName] = React.useState(getDefaultAppName())
+  const [companyName, setCompanyName] = React.useState(getDefaultCompanyName())
+  const [companyLogoUrl, setCompanyLogoUrl] = React.useState(/** @type {string | null} */ (null))
+  const [logoError, setLogoError] = React.useState(/** @type {string | null} */ (null))
   const [commissionPercent, setCommissionPercent] = React.useState(() =>
     rateToPercentInput(getSalesAgentCommissionRate()),
   )
   const [commissionMessage, setCommissionMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
+  const [profileMessage, setProfileMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
 
   const loadedRate = settingsQuery.data?.salesAgentCommissionRate
+  const loadedAppName = settingsQuery.data?.appName
+  const loadedCompanyName = settingsQuery.data?.companyName
+  const loadedCompanyLogoUrl = settingsQuery.data?.companyLogoUrl
+
   React.useEffect(() => {
     if (typeof loadedRate === "number" && Number.isFinite(loadedRate)) {
       setCommissionPercent(rateToPercentInput(loadedRate))
@@ -39,10 +47,24 @@ export default function Settings() {
   }, [loadedRate])
 
   React.useEffect(() => {
-    return () => {
-      if (logoPreview) URL.revokeObjectURL(logoPreview)
+    if (typeof loadedAppName === "string" && loadedAppName.trim()) {
+      setAppName(loadedAppName.trim())
     }
-  }, [logoPreview])
+  }, [loadedAppName])
+
+  React.useEffect(() => {
+    if (typeof loadedCompanyName === "string" && loadedCompanyName.trim()) {
+      setCompanyName(loadedCompanyName.trim())
+    }
+  }, [loadedCompanyName])
+
+  React.useEffect(() => {
+    if (typeof loadedCompanyLogoUrl === "string" && loadedCompanyLogoUrl.trim()) {
+      setCompanyLogoUrl(loadedCompanyLogoUrl.trim())
+    } else if (loadedCompanyLogoUrl === null) {
+      setCompanyLogoUrl(null)
+    }
+  }, [loadedCompanyLogoUrl])
 
   const saveCommissionMutation = useMutation({
     mutationFn: async () => {
@@ -53,13 +75,18 @@ export default function Settings() {
       }
       const r = await updateAppSettingsCommission(token, { salesAgentCommissionPercent: pct })
       if (!r.ok) throw new Error(r.error || "Failed to save commission")
-      return r.salesAgentCommissionRate
+      return {
+        salesAgentCommissionRate: r.salesAgentCommissionRate,
+        appName: r.appName,
+        companyName: r.companyName,
+        companyLogoUrl: r.companyLogoUrl ?? null,
+      }
     },
-    onSuccess: (rate) => {
-      queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], { salesAgentCommissionRate: rate })
+    onSuccess: (settings) => {
+      queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
-      setCommissionPercent(rateToPercentInput(rate))
-      const label = `${Math.round(rate * 1000) / 10}%`
+      setCommissionPercent(rateToPercentInput(settings.salesAgentCommissionRate))
+      const label = `${Math.round(settings.salesAgentCommissionRate * 1000) / 10}%`
       setCommissionMessage({ type: "ok", text: `Sales agent commission saved (${label}).` })
     },
     onError: (err) => {
@@ -70,20 +97,64 @@ export default function Settings() {
     },
   })
 
-  const onLogo = (e) => {
+  const onLogo = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const url = URL.createObjectURL(file)
-    setLogoPreview((prev) => {
-      if (prev) URL.revokeObjectURL(prev)
-      return url
-    })
+    setLogoError(null)
+    try {
+      const dataUrl = await readImageFileAsDataUrl(file)
+      setCompanyLogoUrl(dataUrl)
+    } catch (err) {
+      setLogoError(err instanceof Error ? err.message : "Could not read logo file.")
+    }
   }
+
+  const saveProfileMutation = useMutation({
+    mutationFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const name = appName.trim()
+      const company = companyName.trim()
+      if (!name) throw new Error("App name cannot be empty.")
+      if (!company) throw new Error("Company name cannot be empty.")
+      const r = await updateAppSettings(token, {
+        appName: name,
+        companyName: company,
+        companyLogoUrl,
+      })
+      if (!r.ok) throw new Error(r.error || "Failed to save company profile")
+      return {
+        salesAgentCommissionRate: r.salesAgentCommissionRate,
+        appName: r.appName,
+        companyName: r.companyName,
+        companyLogoUrl: r.companyLogoUrl ?? null,
+      }
+    },
+    onSuccess: (settings) => {
+      queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      setAppName(settings.appName)
+      setCompanyName(settings.companyName)
+      setCompanyLogoUrl(settings.companyLogoUrl ?? null)
+      setProfileMessage({ type: "ok", text: "Profile saved. Logo appears in the sidebar." })
+    },
+    onError: (err) => {
+      setProfileMessage({
+        type: "err",
+        text: err instanceof Error ? err.message : "Could not save company profile.",
+      })
+    },
+  })
 
   const onSaveCommission = (e) => {
     e.preventDefault()
     setCommissionMessage(null)
     saveCommissionMutation.mutate()
+  }
+
+  const onSaveProfile = (e) => {
+    e.preventDefault()
+    setProfileMessage(null)
+    saveProfileMutation.mutate()
   }
 
   const isDark = theme === "dark"
@@ -156,24 +227,89 @@ export default function Settings() {
       <Card className="border-border/80 shadow-sm">
         <CardHeader>
           <CardTitle className="text-base">Company</CardTitle>
-          <CardDescription>Displayed in the top bar and exports.</CardDescription>
+          <CardDescription>
+            App name and logo appear in the sidebar profile area; company name is used in exports.
+          </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="company-name">Company name</Label>
-            <Input id="company-name" value={company} onChange={(e) => setCompany(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="company-logo">Logo upload (preview only)</Label>
-            <Input id="company-logo" type="file" accept="image/*" onChange={onLogo} />
-            {logoPreview ? (
-              <img
-                src={logoPreview}
-                alt="Logo preview"
-                className="mt-2 h-16 w-auto rounded-md border border-border/80"
+        <CardContent>
+          <form onSubmit={onSaveProfile} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="app-name">App name</Label>
+              <Input
+                id="app-name"
+                value={appName}
+                onChange={(e) => setAppName(e.target.value)}
+                disabled={settingsQuery.isLoading || saveProfileMutation.isPending}
+                placeholder="StarExpress"
               />
+              <p className="text-muted-foreground text-xs">Shown in the sidebar, breadcrumbs, and sign-in pages.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="company-name">Company name</Label>
+              <Input
+                id="company-name"
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                disabled={settingsQuery.isLoading || saveProfileMutation.isPending}
+                placeholder="StarExpress Admin"
+              />
+              <p className="text-muted-foreground text-xs">Included in CSV exports.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="company-logo">Logo</Label>
+              <Input
+                id="company-logo"
+                type="file"
+                accept="image/*"
+                onChange={onLogo}
+                disabled={settingsQuery.isLoading || saveProfileMutation.isPending}
+              />
+              <p className="text-muted-foreground text-xs">
+                Shown in the sidebar profile section. PNG, JPEG, GIF, WebP, or SVG under 400 KB.
+              </p>
+              {companyLogoUrl ? (
+                <img
+                  src={companyLogoUrl}
+                  alt="Company logo preview"
+                  className="mt-2 max-h-20 w-auto max-w-full rounded-md border border-border/80 object-contain"
+                />
+              ) : null}
+              {logoError ? (
+                <p className="text-destructive text-xs" role="alert">
+                  {logoError}
+                </p>
+              ) : null}
+              {companyLogoUrl ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground h-8 px-0"
+                  onClick={() => {
+                    setCompanyLogoUrl(null)
+                    setLogoError(null)
+                  }}
+                >
+                  Remove logo
+                </Button>
+              ) : null}
+            </div>
+            <Button type="submit" disabled={saveProfileMutation.isPending || settingsQuery.isLoading}>
+              {saveProfileMutation.isPending ? "Saving…" : "Save profile"}
+            </Button>
+            {profileMessage ? (
+              <p
+                className={
+                  profileMessage.type === "ok"
+                    ? "text-sm text-emerald-600 dark:text-emerald-400"
+                    : "text-sm text-destructive"
+                }
+                role="status"
+              >
+                {profileMessage.text}
+              </p>
             ) : null}
-          </div>
+          </form>
         </CardContent>
       </Card>
 

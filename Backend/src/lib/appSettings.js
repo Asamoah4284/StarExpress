@@ -1,4 +1,48 @@
 const GLOBAL_SETTINGS_ID = "global"
+const MAX_LABEL_LENGTH = 120
+const MAX_LOGO_DATA_URL_LENGTH = 600_000
+
+const LOGO_DATA_URL_RE = /^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i
+
+/** @returns {string} */
+export function defaultAppName() {
+  const raw = process.env.APP_NAME
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "StarExpress"
+}
+
+/** @returns {string} */
+export function defaultCompanyName() {
+  const raw = process.env.COMPANY_NAME
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "StarExpress Admin"
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} fallback
+ */
+export function normalizeLabel(value, fallback) {
+  if (typeof value !== "string") return fallback
+  const trimmed = value.trim().slice(0, MAX_LABEL_LENGTH)
+  return trimmed || fallback
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | null | undefined} `undefined` = omit from patch
+ */
+export function normalizeCompanyLogoUrl(value) {
+  if (value === null || value === "") return null
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!LOGO_DATA_URL_RE.test(trimmed)) {
+    throw new Error("Logo must be a PNG, JPEG, GIF, WebP, or SVG image.")
+  }
+  if (trimmed.length > MAX_LOGO_DATA_URL_LENGTH) {
+    throw new Error("Logo file is too large. Use an image under 400 KB.")
+  }
+  return trimmed
+}
 
 /** @returns {number} */
 export function defaultSalesAgentCommissionRate() {
@@ -50,4 +94,60 @@ export async function setSalesAgentCommissionRate(appSettings, rate, auth) {
     { upsert: true },
   )
   return normalized
+}
+
+/**
+ * @param {import("mongodb").Collection} appSettings
+ */
+export async function getAppSettings(appSettings) {
+  const doc = await appSettings.findOne({ _id: GLOBAL_SETTINGS_ID })
+  const salesAgentCommissionRate = await getSalesAgentCommissionRate(appSettings)
+  const appName = normalizeLabel(doc?.appName, defaultAppName())
+  const companyName = normalizeLabel(doc?.companyName, defaultCompanyName())
+  const companyLogoUrl =
+    typeof doc?.companyLogoUrl === "string" && LOGO_DATA_URL_RE.test(doc.companyLogoUrl.trim())
+      ? doc.companyLogoUrl.trim()
+      : null
+  return { salesAgentCommissionRate, appName, companyName, companyLogoUrl }
+}
+
+/**
+ * @param {import("mongodb").Collection} appSettings
+ * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null }} patch
+ * @param {{ userId?: string } | undefined} auth
+ */
+export async function patchAppSettings(appSettings, patch, auth) {
+  /** @type {Record<string, unknown>} */
+  const $set = {
+    updatedAt: new Date().toISOString(),
+    updatedBy: auth?.userId ?? null,
+  }
+  let savedRate = null
+
+  if (patch.salesAgentCommissionRate != null) {
+    const normalized = normalizeCommissionRate(patch.salesAgentCommissionRate)
+    if (normalized == null) throw new Error("Invalid commission rate.")
+    $set.salesAgentCommissionRate = normalized
+    savedRate = normalized
+  }
+
+  if (patch.appName != null) {
+    $set.appName = normalizeLabel(patch.appName, defaultAppName())
+  }
+
+  if (patch.companyName != null) {
+    $set.companyName = normalizeLabel(patch.companyName, defaultCompanyName())
+  }
+
+  if (patch.companyLogoUrl !== undefined) {
+    const logo = normalizeCompanyLogoUrl(patch.companyLogoUrl)
+    if (logo === undefined) throw new Error("Invalid company logo.")
+    $set.companyLogoUrl = logo
+  }
+
+  await appSettings.updateOne({ _id: GLOBAL_SETTINGS_ID }, { $set }, { upsert: true })
+
+  const current = await getAppSettings(appSettings)
+  if (savedRate != null) current.salesAgentCommissionRate = savedRate
+  return current
 }

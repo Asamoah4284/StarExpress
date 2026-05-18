@@ -572,56 +572,56 @@ export default function Vouchers() {
 
               <Separator />
 
-              <div
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault()
-                    inputRef.current?.click()
-                  }
-                }}
-                onDragEnter={(e) => {
-                  e.preventDefault()
-                  setDragOver(true)
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  setDragOver(true)
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={onDrop}
-                onClick={() => inputRef.current?.click()}
-                className={cn(
-                  "border-border bg-muted/20 hover:border-primary/40 hover:bg-muted/35 flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-12 transition-colors",
-                  dragOver && "border-primary bg-primary/5",
-                )}
-              >
-                <div className="bg-primary/10 text-primary mb-3 flex size-12 items-center justify-center rounded-full">
-                  <Upload className="size-6 stroke-[1.5]" aria-hidden />
-                </div>
-                <p className="text-foreground text-sm font-medium">Drop files to upload</p>
-                <p className="text-muted-foreground mt-1 text-center text-xs">or click to browse · {ACCEPT.replaceAll(",", ", ")}</p>
-                <input
-                  ref={inputRef}
-                  id={inputId}
-                  type="file"
-                  multiple
-                  accept={ACCEPT}
-                  className="sr-only"
-                  onChange={onInputChange}
-                />
-              </div>
+          <div
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                inputRef.current?.click()
+              }
+            }}
+            onDragEnter={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+            onClick={() => inputRef.current?.click()}
+            className={cn(
+              "border-border bg-muted/20 hover:border-primary/40 hover:bg-muted/35 flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-12 transition-colors",
+              dragOver && "border-primary bg-primary/5",
+            )}
+          >
+            <div className="bg-primary/10 text-primary mb-3 flex size-12 items-center justify-center rounded-full">
+              <Upload className="size-6 stroke-[1.5]" aria-hidden />
+            </div>
+            <p className="text-foreground text-sm font-medium">Drop files to upload</p>
+            <p className="text-muted-foreground mt-1 text-center text-xs">or click to browse · {ACCEPT.replaceAll(",", ", ")}</p>
+            <input
+              ref={inputRef}
+              id={inputId}
+              type="file"
+              multiple
+              accept={ACCEPT}
+              className="sr-only"
+              onChange={onInputChange}
+            />
+          </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="outline" className="gap-2 border-border shadow-none" onClick={() => inputRef.current?.click()}>
-                  <FileUp className="size-4 stroke-[1.5]" aria-hidden />
-                  Choose files
-                </Button>
-                <Label htmlFor={inputId} className="sr-only">
-                  Voucher files
-                </Label>
-              </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" className="gap-2 border-border shadow-none" onClick={() => inputRef.current?.click()}>
+              <FileUp className="size-4 stroke-[1.5]" aria-hidden />
+              Choose files
+            </Button>
+            <Label htmlFor={inputId} className="sr-only">
+              Voucher files
+            </Label>
+          </div>
             </TabsContent>
           </Tabs>
         </CardContent>

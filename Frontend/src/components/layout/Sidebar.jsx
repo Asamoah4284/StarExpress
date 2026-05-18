@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { useAppName, useCompanyLogoUrl } from "@/hooks/useAppSettings.js"
 import { cn } from "@/lib/utils"
 import { roleMayAccessNavPath } from "@/lib/roles.js"
 
@@ -38,7 +39,30 @@ const items = [
   { to: "/settings", label: "Settings", icon: Settings },
 ]
 
+function SidebarBrandMark({ logoUrl }) {
+  if (logoUrl) {
+    return (
+      <img
+        src={logoUrl}
+        alt=""
+        className="size-10 shrink-0 rounded-full border border-border bg-muted/40 object-cover"
+      />
+    )
+  }
+  return (
+    <div
+      className="flex size-10 shrink-0 items-center justify-center rounded-full border border-border bg-muted/40"
+      aria-hidden
+    >
+      <Satellite className="size-[18px] stroke-[1.5] text-primary" />
+    </div>
+  )
+}
+
 export function Sidebar({ className, collapsed, onToggleCollapse, onLogout, onNavigate, user }) {
+  const appName = useAppName()
+  const companyLogoUrl = useCompanyLogoUrl()
+
   return (
     <aside
       className={cn(
@@ -49,15 +73,10 @@ export function Sidebar({ className, collapsed, onToggleCollapse, onLogout, onNa
     >
       <div className="flex items-start justify-between gap-2 px-4 pb-3 pt-5">
         <div className={cn("flex min-w-0 items-center gap-3", collapsed && "justify-center")}>
-          <div
-            className="flex size-10 shrink-0 items-center justify-center rounded-full border border-border bg-muted/40"
-            aria-hidden
-          >
-            <Satellite className="size-[18px] stroke-[1.5] text-primary" />
-          </div>
+          <SidebarBrandMark logoUrl={companyLogoUrl} />
           {!collapsed ? (
             <div className="min-w-0 leading-tight">
-              <p className="truncate font-semibold tracking-tight">StarExpress</p>
+              <p className="truncate font-semibold tracking-tight">{appName}</p>
               <p className="text-muted-foreground text-xs font-medium">
                 {user?.role === "Sales Agent" ? "Sales workspace" : "Console"}
               </p>

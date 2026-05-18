@@ -1,35 +1,33 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { ChevronLeft, ChevronRight, Coins, ShoppingCart, Users } from "lucide-react"
+import { Coins, ShoppingCart, Users } from "lucide-react"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
+import { DateRangePicker } from "@/components/reports/DateRangePicker.jsx"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import { useSalesAgentCommissionRate } from "@/hooks/useAppSettings.js"
 import { fetchUsersList } from "@/lib/api.js"
 import {
   filterSalesByDateRange,
-  formatWeekRangeLabel,
   getAgentSalesCommissionRows,
   getWeekEndFromStart,
-  getWeekOptionsFromSales,
   getWeekStartFromDate,
   sumAgentSalesCommissionRows,
 } from "@/lib/aggregations.js"
+import {
+  formatDateRangeLabel,
+  getLastNDaysRange,
+  isCompleteDateRange,
+  isoToLocalDate,
+  localDateToIso,
+  normalizeDateRange,
+} from "@/lib/dates.js"
 import { cn, formatCedis } from "@/lib/utils"
-
-const ALL_TIME_WEEK = "all"
 
 function SummaryCard({ label, value, hint, icon: Icon }) {
   return (
@@ -56,50 +54,35 @@ export default function AgentCommissions() {
 
   const allSales = catalog.data?.sales ?? []
 
-  const weekOptions = React.useMemo(() => getWeekOptionsFromSales(allSales), [allSales])
+  const [dateRange, setDateRange] = React.useState(/** @type {{ from?: Date, to?: Date } | undefined} */ (undefined))
+  const [allTime, setAllTime] = React.useState(false)
+  const rangeInitialized = React.useRef(false)
 
-  const [weekFilter, setWeekFilter] = React.useState(/** @type {string} */ (ALL_TIME_WEEK))
-  const weekFilterInitialized = React.useRef(false)
+  const handleDateRangeChange = React.useCallback((range) => {
+    setAllTime(false)
+    setDateRange(normalizeDateRange(range))
+  }, [])
 
   React.useEffect(() => {
-    if (weekFilterInitialized.current || catalog.isLoading) return
-    weekFilterInitialized.current = true
-    if (weekOptions.length > 0) {
-      setWeekFilter(weekOptions[0].weekStart)
-    }
-  }, [catalog.isLoading, weekOptions])
+    if (rangeInitialized.current) return
+    rangeInitialized.current = true
+    setDateRange(getLastNDaysRange(7))
+  }, [])
 
-  const selectedWeek = React.useMemo(() => {
-    if (weekFilter === ALL_TIME_WEEK) return null
-    const found = weekOptions.find((w) => w.weekStart === weekFilter)
-    if (found) return found
-    const weekEnd = getWeekEndFromStart(weekFilter)
-    return {
-      weekStart: weekFilter,
-      weekEnd,
-      label: formatWeekRangeLabel(weekFilter, weekEnd),
-    }
-  }, [weekFilter, weekOptions])
+  const rangeComplete = isCompleteDateRange(dateRange)
+  const dateLabel = allTime ? "All time" : formatDateRangeLabel(dateRange)
 
   const filteredSales = React.useMemo(() => {
-    if (!selectedWeek) return allSales
-    return filterSalesByDateRange(allSales, selectedWeek.weekStart, selectedWeek.weekEnd)
-  }, [allSales, selectedWeek])
-
-  const weekFilterLabel = selectedWeek
-    ? `${selectedWeek.label} (Mon–Sun)`
-    : "All time"
-
-  const weekNav = React.useMemo(() => {
-    if (weekFilter === ALL_TIME_WEEK || !weekOptions.length) {
-      return { prev: null, next: null }
+    if (allTime) return allSales
+    if (rangeComplete && dateRange?.from && dateRange?.to) {
+      return filterSalesByDateRange(
+        allSales,
+        localDateToIso(dateRange.from),
+        localDateToIso(dateRange.to),
+      )
     }
-    const idx = weekOptions.findIndex((w) => w.weekStart === weekFilter)
-    return {
-      prev: idx >= 0 && idx < weekOptions.length - 1 ? weekOptions[idx + 1].weekStart : null,
-      next: idx > 0 ? weekOptions[idx - 1].weekStart : null,
-    }
-  }, [weekFilter, weekOptions])
+    return allSales
+  }, [allSales, allTime, dateRange, rangeComplete])
 
   const usersQuery = useQuery({
     queryKey: ["teamUsers", token],
@@ -120,6 +103,18 @@ export default function AgentCommissions() {
 
   const totals = React.useMemo(() => sumAgentSalesCommissionRows(rows), [rows])
   const activeAgentCount = React.useMemo(() => rows.filter((r) => r.active).length, [rows])
+
+  const applyPresetDays = (days) => {
+    setAllTime(false)
+    setDateRange(getLastNDaysRange(days))
+  }
+
+  const applyThisWeek = () => {
+    setAllTime(false)
+    const weekStart = getWeekStartFromDate(localDateToIso(new Date()))
+    const weekEnd = getWeekEndFromStart(weekStart)
+    setDateRange({ from: isoToLocalDate(weekStart), to: isoToLocalDate(weekEnd) })
+  }
 
   const columns = React.useMemo(
     () => [
@@ -214,6 +209,11 @@ export default function AgentCommissions() {
   const loading = catalog.isLoading || usersQuery.isLoading
   const error = catalog.error ?? usersQuery.error
 
+  const filterSummary =
+    allTime || rangeComplete
+      ? dateLabel
+      : `${dateLabel} (complete both dates to filter)`
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -229,61 +229,57 @@ export default function AgentCommissions() {
       ) : null}
 
       <Card className="border-border/80 shadow-sm">
-        <CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:flex-wrap sm:items-end">
-          <div className="min-w-0 flex-1 space-y-1.5 sm:max-w-xs">
-            <Label htmlFor="commission-week">Week</Label>
-            <Select value={weekFilter} onValueChange={setWeekFilter}>
-              <SelectTrigger id="commission-week" className="w-full">
-                <SelectValue placeholder="Select week" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_TIME_WEEK}>All time</SelectItem>
-                {weekOptions.map((w) => (
-                  <SelectItem key={w.weekStart} value={w.weekStart}>
-                    {w.label}
-                  </SelectItem>
-                ))}
-                {weekFilter !== ALL_TIME_WEEK &&
-                !weekOptions.some((w) => w.weekStart === weekFilter) ? (
-                  <SelectItem value={weekFilter}>{selectedWeek?.label ?? weekFilter}</SelectItem>
-                ) : null}
-              </SelectContent>
-            </Select>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Filters</CardTitle>
+          <CardDescription>
+            Type or pick a custom date range for commission totals, or view all time.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="max-w-md space-y-1.5">
+            <Label htmlFor="commission-date-range">Date range</Label>
+            <DateRangePicker
+              id="commission-date-range"
+              value={allTime ? undefined : dateRange}
+              onChange={handleDateRangeChange}
+            />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={weekFilter === ALL_TIME_WEEK || !weekNav.prev}
-              onClick={() => weekNav.prev && setWeekFilter(weekNav.prev)}
-            >
-              <ChevronLeft className="size-4" aria-hidden />
-              Previous
+            <span className="text-muted-foreground text-xs font-medium">Quick range:</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(7)}>
+              Last 7 days
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(30)}>
+              Last 30 days
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={applyThisWeek}>
+              This week
             </Button>
             <Button
               type="button"
-              variant="outline"
+              variant={allTime ? "secondary" : "outline"}
               size="sm"
-              disabled={weekFilter === ALL_TIME_WEEK || !weekNav.next}
-              onClick={() => weekNav.next && setWeekFilter(weekNav.next)}
+              onClick={() => {
+                setAllTime(true)
+                setDateRange(undefined)
+              }}
             >
-              Next
-              <ChevronRight className="size-4" aria-hidden />
+              All time
             </Button>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() =>
-                setWeekFilter(getWeekStartFromDate(new Date().toISOString().slice(0, 10)))
-              }
+              onClick={() => {
+                setAllTime(false)
+                setDateRange(getLastNDaysRange(7))
+              }}
             >
-              This week
+              Reset to last 7 days
             </Button>
           </div>
-          <p className="text-muted-foreground w-full text-sm sm:w-auto sm:flex-1 sm:text-right">
-            Showing <span className="text-foreground font-medium">{weekFilterLabel}</span>
+          <p className="text-muted-foreground text-sm">
+            Showing <span className="text-foreground font-medium">{filterSummary}</span>
           </p>
         </CardContent>
       </Card>
@@ -298,7 +294,7 @@ export default function AgentCommissions() {
         <SummaryCard
           label="Completed sales"
           value={totals.completedSales.toLocaleString()}
-          hint={selectedWeek ? weekFilterLabel : "All agents, all wifi locations"}
+          hint={filterSummary}
           icon={ShoppingCart}
         />
         <SummaryCard

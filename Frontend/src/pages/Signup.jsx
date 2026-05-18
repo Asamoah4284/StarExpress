@@ -2,6 +2,7 @@ import * as React from "react"
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom"
 import { Lock, Loader2, UserPlus } from "lucide-react"
 import { useAuth } from "@/context/AuthContext.jsx"
+import { getDefaultAppName } from "@/lib/env.js"
 import { PasswordField } from "@/components/auth/PasswordField.jsx"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -16,6 +17,7 @@ import {
 } from "@/components/ui/card"
 
 export default function Signup() {
+  const appName = getDefaultAppName()
   const { isAuthenticated, authReady, signup } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -92,7 +94,7 @@ export default function Signup() {
       <div className="relative z-10 flex w-full max-w-[440px] flex-col items-center">
         <div className="mb-3 text-center sm:mb-5">
           <p className="text-primary font-heading text-[10px] font-semibold uppercase tracking-[0.2em] dark:text-primary sm:text-xs sm:tracking-[0.22em]">
-            StarExpress
+            {appName}
           </p>
           <h1 className="text-foreground mt-1.5 text-2xl font-bold tracking-tight dark:text-foreground sm:mt-2 sm:text-[1.75rem] sm:leading-tight">
             Create your workspace

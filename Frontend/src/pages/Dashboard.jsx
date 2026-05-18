@@ -15,10 +15,13 @@ import {
 } from "@/components/ui/select"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { StatCard } from "@/components/shared/StatCard.jsx"
+import { DateRangePicker } from "@/components/reports/DateRangePicker.jsx"
+import { Label } from "@/components/ui/label"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import { fetchVoucherStats } from "@/lib/api.js"
 import {
+  filterSalesByDateRange,
   filterSalesByLocation,
   getAgentCommissionMetrics,
   getCompletedRevenueByWeekday,
@@ -37,6 +40,13 @@ import {
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
 import { useSalesAgentCommissionRate } from "@/hooks/useAppSettings.js"
 import { ROLE_SALES_AGENT } from "@/lib/roles.js"
+import {
+  formatDateRangeLabel,
+  getLastNDaysRange,
+  isCompleteDateRange,
+  localDateToIso,
+  normalizeDateRange,
+} from "@/lib/dates.js"
 import { formatCedis } from "@/lib/utils"
 
 function moneyDayTrend(delta) {
@@ -60,6 +70,27 @@ export default function Dashboard() {
   const isSalesAgent = user?.role === ROLE_SALES_AGENT
   const catalog = useCatalog()
   const [locationId, setLocationId] = React.useState("all")
+  const [dateRange, setDateRange] = React.useState(/** @type {{ from?: Date, to?: Date } | undefined} */ (undefined))
+  const rangeInitialized = React.useRef(false)
+
+  const handleDateRangeChange = React.useCallback((range) => {
+    setDateRange(normalizeDateRange(range))
+  }, [])
+
+  React.useEffect(() => {
+    if (rangeInitialized.current) return
+    rangeInitialized.current = true
+    setDateRange(getLastNDaysRange(7))
+  }, [])
+
+  const rangeComplete = isCompleteDateRange(dateRange)
+  const dateLabel = formatDateRangeLabel(dateRange)
+  const rangeEndIso =
+    rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : localDateToIso(new Date())
+  const calendarTodayIso = localDateToIso(new Date())
+  const endDayCommissionLabel =
+    rangeEndIso === calendarTodayIso ? "Today's Commission" : "End-day Commission"
+  const endDaySalesLabel = rangeEndIso === calendarTodayIso ? "Today's Sales" : "End-day Sales"
 
   const rawLocations = catalog.data?.locations
   const locations = React.useMemo(() => rawLocations ?? [], [rawLocations])
@@ -85,12 +116,22 @@ export default function Dashboard() {
 
   const filtered = React.useMemo(() => {
     const sales = catalog.data?.sales ?? []
+    let rows
     if (isSalesAgent) {
       if (!agentStore) return []
-      return filterSalesByLocation(sales, agentStore.id)
+      rows = filterSalesByLocation(sales, agentStore.id)
+    } else {
+      rows = filterSalesByLocation(sales, locationId)
     }
-    return filterSalesByLocation(sales, locationId)
-  }, [catalog.data, locationId, isSalesAgent, agentStore])
+    if (rangeComplete && dateRange?.from && dateRange?.to) {
+      rows = filterSalesByDateRange(
+        rows,
+        localDateToIso(dateRange.from),
+        localDateToIso(dateRange.to),
+      )
+    }
+    return rows
+  }, [catalog.data, locationId, isSalesAgent, agentStore, dateRange, rangeComplete])
 
   const totalVouchersInScope = voucherStatsQuery.data?.total ?? 0
   const remainingVouchers = voucherStatsQuery.data?.remaining ?? 0
@@ -103,8 +144,9 @@ export default function Dashboard() {
   }, [catalog.data, filtered])
 
   const agentKpi = React.useMemo(
-    () => (isSalesAgent ? getAgentCommissionMetrics(filtered, commissionRate) : null),
-    [isSalesAgent, filtered, commissionRate],
+    () =>
+      isSalesAgent ? getAgentCommissionMetrics(filtered, commissionRate, rangeEndIso) : null,
+    [isSalesAgent, filtered, commissionRate, rangeEndIso],
   )
 
   const sparkTotalRevenue = React.useMemo(() => getSparklineCumulativeRevenue(filtered, 14), [filtered])
@@ -122,21 +164,30 @@ export default function Dashboard() {
   const sparkCumulativeSales = React.useMemo(() => getSparklineCumulativeSoldCount(filtered, 14), [filtered])
   const grossRevenueTrend = React.useMemo(() => getMonthlyGrossRevenueTrend(filtered, 6), [filtered])
   const revenueByWeekday = React.useMemo(() => getCompletedRevenueByWeekday(filtered), [filtered])
-  const dod = React.useMemo(() => getDayOverDaySummary(filtered), [filtered])
+  const dod = React.useMemo(() => getDayOverDaySummary(filtered, rangeEndIso), [filtered, rangeEndIso])
   const agentDod = React.useMemo(
-    () => (isSalesAgent ? getDayOverDaySummaryForAgent(filtered, commissionRate) : null),
-    [isSalesAgent, filtered, commissionRate],
+    () =>
+      isSalesAgent ? getDayOverDaySummaryForAgent(filtered, commissionRate, rangeEndIso) : null,
+    [isSalesAgent, filtered, commissionRate, rangeEndIso],
   )
 
   const commissionPercentLabel = `${Math.round(commissionRate * 1000) / 10}% of completed sales`
 
   const overviewDescription = isAdmin
-    ? "Key revenue and sales totals for the selected location (live data from the API)."
-    : `Commission and sale counts for your wifi location (${commissionPercentLabel}).`
+    ? "Key revenue and sales totals for the selected location and date range (defaults to the last 7 days through today)."
+    : `Commission and sale counts for your wifi location (${commissionPercentLabel}). Filter by date range below.`
 
   const salesBreakdownHint = isAdmin
-    ? "Six-month completed gross revenue trend and completed revenue by day of week (Mon–Sun). Respects the location filter above."
-    : "Six-month completed gross revenue trend and completed revenue by day of week (Mon–Sun), scoped to your wifi location."
+    ? "Completed gross revenue trend and revenue by day of week (Mon–Sun) for the selected location and date range."
+    : "Completed gross revenue trend and revenue by day of week (Mon–Sun) for your wifi location and selected date range."
+
+  const applyPresetDays = (days) => {
+    setDateRange(getLastNDaysRange(days))
+  }
+
+  const filterSummary = rangeComplete
+    ? dateLabel
+    : `${dateLabel} (complete both dates to filter)`
 
   return (
     <div className="space-y-8">
@@ -147,43 +198,80 @@ export default function Dashboard() {
         </p>
       ) : null}
 
-      <PageHeader title="Overview" description={overviewDescription}>
-        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-          <span className="text-muted-foreground shrink-0 text-xs font-semibold uppercase tracking-wider">
-            {isSalesAgent ? "Wifi location" : "Location"}
-          </span>
-          {isAdmin ? (
-            <Select value={locationId} onValueChange={setLocationId}>
-              <SelectTrigger className="w-full border-border bg-card shadow-none sm:w-[220px]">
-                <SelectValue placeholder="All locations" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All locations</SelectItem>
-                {locations.map((l) => (
-                  <SelectItem key={l.id} value={l.id}>
-                    {l.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <div className="border-border bg-card text-card-foreground w-full rounded-md border px-3 py-2 text-sm shadow-none sm:w-[min(100%,280px)] sm:min-w-[220px]">
-              {agentStore ? (
-                <div className="space-y-0.5">
-                  <p className="font-medium leading-snug">{agentStore.name}</p>
-                  {agentStore.address ? (
-                    <p className="text-muted-foreground text-xs leading-snug">{agentStore.address}</p>
-                  ) : null}
-                </div>
+      <PageHeader title="Overview" description={overviewDescription} />
+
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Filters</CardTitle>
+          <CardDescription>
+            Choose a date range (defaults to the last 7 days through today). Commission and sales totals update
+            for the selected period.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="overview-location">{isSalesAgent ? "Wifi location" : "Location"}</Label>
+              {isAdmin ? (
+                <Select value={locationId} onValueChange={setLocationId}>
+                  <SelectTrigger id="overview-location" className="w-full shadow-none">
+                    <SelectValue placeholder="All locations" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All locations</SelectItem>
+                    {locations.map((l) => (
+                      <SelectItem key={l.id} value={l.id}>
+                        {l.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               ) : (
-                <p className="text-muted-foreground leading-snug">
-                  No store assigned yet. Ask an administrator to link your account to a location.
-                </p>
+                <div
+                  id="overview-location"
+                  className="border-border bg-card text-card-foreground w-full rounded-md border px-3 py-2 text-sm shadow-none"
+                >
+                  {agentStore ? (
+                    <div className="space-y-0.5">
+                      <p className="font-medium leading-snug">{agentStore.name}</p>
+                      {agentStore.address ? (
+                        <p className="text-muted-foreground text-xs leading-snug">{agentStore.address}</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground leading-snug">
+                      No store assigned yet. Ask an administrator to link your account to a location.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
-      </PageHeader>
+            <div className="space-y-1.5">
+              <Label htmlFor="overview-date-range">Date range</Label>
+              <DateRangePicker
+                id="overview-date-range"
+                value={dateRange}
+                onChange={handleDateRangeChange}
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground text-xs font-medium">Quick range:</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(7)}>
+              Last 7 days
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(30)}>
+              Last 30 days
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setDateRange(getLastNDaysRange(7))}>
+              Reset to last 7 days
+            </Button>
+          </div>
+          <p className="text-muted-foreground text-sm">
+            Showing <span className="text-foreground font-medium">{filterSummary}</span>
+          </p>
+        </CardContent>
+      </Card>
 
       <div className="grid auto-rows-auto grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
         {isSalesAgent && agentKpi && agentDod ? (
@@ -193,16 +281,16 @@ export default function Dashboard() {
               icon={Percent}
               label="Total Commission"
               value={formatCedis(agentKpi.totalCommission)}
-              subline={`${agentKpi.totalSales} completed sale${agentKpi.totalSales === 1 ? "" : "s"}`}
+              subline={`${agentKpi.totalSales} completed in range`}
               trend={{ text: commissionPercentLabel, positive: true }}
               sparkline={{ data: sparkTotalCommission, variant: "area" }}
             />
             <StatCard
               tone="emerald"
               icon={DollarSign}
-              label="Today's Commission"
+              label={endDayCommissionLabel}
               value={formatCedis(agentKpi.todayCommission)}
-              subline={`Yesterday ${formatCedis(agentDod.prevDayCommission)}`}
+              subline={`Previous day ${formatCedis(agentDod.prevDayCommission)}`}
               trend={moneyDayTrend(agentDod.commissionDelta)}
               sparkline={{ data: sparkTodayCommission, variant: "bar" }}
             />
@@ -218,9 +306,9 @@ export default function Dashboard() {
             <StatCard
               tone="sky"
               icon={Calendar}
-              label="Today's Sales"
+              label={endDaySalesLabel}
               value={String(agentKpi.todaySales)}
-              subline={`${agentKpi.totalSales} total completed`}
+              subline={`${agentKpi.totalSales} in selected range`}
               trend={countDayTrend(agentDod.soldDelta)}
               sparkline={{ data: sparkSold, variant: "area" }}
             />
