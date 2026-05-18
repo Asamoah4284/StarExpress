@@ -19,6 +19,10 @@ let auditLogsCollection = null
 let vouchersCollection = null
 /** @type {import("mongodb").Collection | null} */
 let appSettingsCollection = null
+/** @type {import("mongodb").Collection | null} */
+let signupOtpsCollection = null
+/** @type {import("mongodb").Collection | null} */
+let ussdSessionsCollection = null
 
 /** @param {string | undefined} value */
 function parseMongoFamilyEnv(value) {
@@ -87,7 +91,18 @@ export async function connectMongo(uri) {
   auditLogsCollection = db.collection("audit_logs")
   vouchersCollection = db.collection("vouchers")
   appSettingsCollection = db.collection("app_settings")
+  signupOtpsCollection = db.collection("signup_otps")
+  ussdSessionsCollection = db.collection("ussd_sessions")
   await usersCollection.createIndex({ email_normalized: 1 }, { unique: true })
+  try {
+    await usersCollection.createIndex({ phone_normalized: 1 }, { unique: true, sparse: true })
+  } catch (e) {
+    console.warn("MongoDB: could not create unique sparse index on users.phone_normalized.", e)
+  }
+  await signupOtpsCollection.createIndex({ phone: 1 })
+  await signupOtpsCollection.createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 })
+  await ussdSessionsCollection.createIndex({ paymentReference: 1 }, { sparse: true })
+  await ussdSessionsCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
   try {
     await locationsCollection.createIndex({ managerUserId: 1 }, { unique: true, sparse: true })
   } catch (e) {
@@ -139,6 +154,16 @@ export function getAppSettingsCollection() {
   return appSettingsCollection
 }
 
+export function getSignupOtpsCollection() {
+  if (!signupOtpsCollection) throw new Error("MongoDB not connected. Call connectMongo first.")
+  return signupOtpsCollection
+}
+
+export function getUssdSessionsCollection() {
+  if (!ussdSessionsCollection) throw new Error("MongoDB not connected. Call connectMongo first.")
+  return ussdSessionsCollection
+}
+
 export async function closeMongo() {
   if (client) {
     await client.close()
@@ -151,6 +176,8 @@ export async function closeMongo() {
   auditLogsCollection = null
   vouchersCollection = null
   appSettingsCollection = null
+  signupOtpsCollection = null
+  ussdSessionsCollection = null
 }
 }
 

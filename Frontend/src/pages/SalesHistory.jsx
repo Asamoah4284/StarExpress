@@ -89,6 +89,14 @@ export default function SalesHistory() {
         },
         { accessorKey: "packageType", header: "Package Type" },
         {
+          accessorKey: "voucherCode",
+          header: "Voucher ID",
+          cell: ({ getValue }) => {
+            const v = getValue()
+            return v ? String(v) : "—"
+          },
+        },
+        {
           accessorKey: "amount",
           header: "Amount",
           cell: ({ getValue }) => formatCedis(getValue()),

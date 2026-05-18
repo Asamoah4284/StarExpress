@@ -65,6 +65,7 @@ export default function Packages() {
   const [sellCustomerPhone, setSellCustomerPhone] = React.useState("")
   const [sellLocationId, setSellLocationId] = React.useState("")
   const [sellError, setSellError] = React.useState(null)
+  const [sellSuccess, setSellSuccess] = React.useState(/** @type {string | null} */ (null))
 
   const sellRowRef = React.useRef(
     /** @type {{ id: string, name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number } | null} */ (null),
@@ -202,28 +203,29 @@ export default function Packages() {
       if (customerPhone.replace(/\D/g, "").length < 7) {
         throw new Error("Customer phone must include at least 7 digits.")
       }
+      let result
       if (isAdmin) {
         if (!sellLocationId) throw new Error("Choose a wifi location for this sale.")
-        const r = await createCatalogSale(token, {
+        result = await createCatalogSale(token, {
           packageId: row.id,
           customerPhone,
           locationId: sellLocationId,
         })
-        if (!r.ok) throw new Error(r.error || "Sale failed")
-        return
+      } else {
+        if (!agentStore) {
+          throw new Error(
+            "No wifi location is linked to your account. Ask an administrator to assign you to a location.",
+          )
+        }
+        result = await createCatalogSale(token, {
+          packageId: row.id,
+          customerPhone,
+        })
       }
-      if (!agentStore) {
-        throw new Error(
-          "No wifi location is linked to your account. Ask an administrator to assign you to a location.",
-        )
-      }
-      const r = await createCatalogSale(token, {
-        packageId: row.id,
-        customerPhone,
-      })
-      if (!r.ok) throw new Error(r.error || "Sale failed")
+      if (!result.ok) throw new Error(result.error || "Sale failed")
+      return result.sale
     },
-    onSuccess: () => {
+    onSuccess: (sale) => {
       queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
       queryClient.invalidateQueries({ queryKey: ["package-stock"] })
@@ -231,6 +233,12 @@ export default function Packages() {
       queryClient.invalidateQueries({ queryKey: ["vouchers"] })
       queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
       queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+      const code = sale?.voucherCode
+      setSellSuccess(
+        code
+          ? `Sale recorded. Voucher ${code} was sent by SMS to the customer and marked as used.`
+          : "Sale recorded. Voucher SMS was sent and marked as used.",
+      )
       setSellOpen(false)
       sellRowRef.current = null
       setSellPkg(null)
@@ -273,6 +281,7 @@ export default function Packages() {
       setSellCustomerPhone("")
       setSellLocationId(locations[0]?.id ?? "")
       setSellError(null)
+      setSellSuccess(null)
       setSellOpen(true)
     },
     [locations],
@@ -430,6 +439,12 @@ export default function Packages() {
         </Button>
       </PageHeader>
 
+      {sellSuccess ? (
+        <p className="text-foreground bg-primary/10 border-primary/25 rounded-md border px-3 py-2 text-sm" role="status">
+          {sellSuccess}
+        </p>
+      ) : null}
+
       {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
       {catalog.error ? (
         <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
@@ -535,6 +550,7 @@ export default function Packages() {
             setSellPkg(null)
             setSellCustomerPhone("")
             setSellError(null)
+            setSellSuccess(null)
           }
         }}
       >
@@ -618,7 +634,7 @@ export default function Packages() {
                 sellStockRemaining === 0
               }
             >
-              {sellMutation.isPending ? "Recording…" : "Confirm sale"}
+              {sellMutation.isPending ? "Sending voucher…" : "Confirm sale"}
             </Button>
           </DialogFooter>
         </DialogContent>

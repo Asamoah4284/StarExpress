@@ -5,13 +5,13 @@ const STORAGE_KEY = "starexpress-auth-session"
 
 /** @typedef {import("@/types.js").AuthUser} AuthUser */
 
-/** @typedef {"ok" | "exists" | "invalid" | "network"} SignupResult */
+/** @typedef {"ok" | "exists" | "phone_exists" | "invalid" | "otp_invalid" | "network"} SignupResult */
 
 /** @typedef {{ user: AuthUser, token: string | null }} StoredSession */
 
 /** @typedef {{ ok: true, user: AuthUser } | { ok: false }} LoginResult */
 
-/** @type {React.Context<{ user: AuthUser | null, token: string | null, isAuthenticated: boolean, authReady: boolean, login: (email: string, password: string) => Promise<LoginResult>, signup: (name: string, email: string, password: string) => Promise<SignupResult>, logout: () => void } | null>} */
+/** @type {React.Context<{ user: AuthUser | null, token: string | null, isAuthenticated: boolean, authReady: boolean, login: (email: string, password: string) => Promise<LoginResult>, signup: (name: string, email: string, phone: string, password: string, otp: string) => Promise<SignupResult>, logout: () => void } | null>} */
 const AuthContext = React.createContext(null)
 
 /** @param {unknown} u */
@@ -101,9 +101,9 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  const signup = React.useCallback(async (name, email, password) => {
+  const signup = React.useCallback(async (name, email, phone, password, otp) => {
     try {
-      const result = await authSignup(name, email, password)
+      const result = await authSignup(name, email, phone, password, otp)
       if (result.ok) {
         persistSession({ user: result.user, token: result.token })
         setUser(result.user)
@@ -111,6 +111,8 @@ export function AuthProvider({ children }) {
         return "ok"
       }
       if ("code" in result && result.code === "exists") return "exists"
+      if ("code" in result && result.code === "phone_exists") return "phone_exists"
+      if ("code" in result && result.code === "otp_invalid") return "otp_invalid"
       return "invalid"
     } catch {
       return "network"

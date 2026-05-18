@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { appendAuditLog } from "../lib/appendAuditLog.js"
 import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
+import { sendSms } from "../services/sms.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -139,7 +140,23 @@ function toSale(d) {
     locationId: d.locationId,
     date: d.date,
     status: d.status,
+    ...(typeof d.voucherCode === "string" && d.voucherCode.trim()
+      ? { voucherCode: d.voucherCode.trim() }
+      : {}),
   }
+}
+
+/**
+ * @param {string} packageName
+ * @param {string} dataLimit
+ * @param {string} voucherCode
+ */
+function buildSaleVoucherSmsMessage(packageName, dataLimit, voucherCode) {
+  const limit = typeof dataLimit === "string" ? dataLimit.trim() : ""
+  const packageLine = limit
+    ? ` Package: ${packageName} (${limit})`
+    : ` Package: ${packageName}`
+  return `Your wifi access is ready!\n${packageLine}\n Voucher ID: ${voucherCode}`
 }
 
 /**
@@ -894,6 +911,9 @@ export function createCatalogRouter(deps) {
       }
 
       const packageType = typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : packageId
+      const packageDataLimit =
+        typeof pkg.dataLimit === "string" && pkg.dataLimit.trim() ? pkg.dataLimit.trim() : ""
+      const voucherCode = voucherDisplayCode(voucherToUse)
       const date = new Date().toISOString().slice(0, 10)
       const saleId = `sale-${randomUUID().slice(0, 12)}`
 
@@ -909,6 +929,7 @@ export function createCatalogRouter(deps) {
         date,
         status: "Completed",
         voucherId: String(voucherToUse._id),
+        voucherCode,
       }
 
       await sales.insertOne(saleDoc)
@@ -930,14 +951,37 @@ export function createCatalogRouter(deps) {
         })
       }
 
+      const smsMessage = buildSaleVoucherSmsMessage(packageType, packageDataLimit, voucherCode)
+      try {
+        const smsResult = await sendSms({ to: customerPhone, message: smsMessage })
+        if (smsResult.skipped) {
+          console.warn(
+            `[catalog] Sale ${saleId}: SMS skipped (no MOOLRE_API_KEY) — voucher ${voucherCode} → ${customerPhone}`,
+          )
+        }
+      } catch (smsErr) {
+        const restoredColumns = clearVoucherUsedColumns(
+          voucherToUse.columns && typeof voucherToUse.columns === "object" && !Array.isArray(voucherToUse.columns)
+            ? voucherToUse.columns
+            : {},
+        )
+        await vouchers.updateOne({ _id: voucherToUse._id }, { $set: { columns: restoredColumns } })
+        await sales.deleteOne({ _id: saleId })
+        await syncPackageStockUnitsFromVouchers(vouchers, packages)
+        const msg = smsErr instanceof Error ? smsErr.message : "Failed to send voucher SMS."
+        return res.status(502).json({
+          error: `Could not send voucher SMS to the customer. Sale was not completed. ${msg}`,
+        })
+      }
+
       await syncPackageStockUnitsFromVouchers(vouchers, packages)
 
       await appendAuditLog(
         auditLogs,
         req.auth,
-        `Sale ${saleId}: ${customerPhone}${paymentNumber ? ` · pay ${paymentNumber}` : ""} · ${packageType} · ${priceGHS} GHS · ${locationId}`,
+        `Sale ${saleId}: ${customerPhone}${paymentNumber ? ` · pay ${paymentNumber}` : ""} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ${locationId}`,
       )
-      res.status(201).json({ sale: toSale(saleDoc) })
+      res.status(201).json({ sale: toSale(saleDoc), smsSent: true })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)

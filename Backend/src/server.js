@@ -11,14 +11,18 @@ import {
   getAuditLogsCollection,
   getVouchersCollection,
   getAppSettingsCollection,
+  getSignupOtpsCollection,
+  getUssdSessionsCollection,
 } from "./db/mongo.js"
 import { UserStore } from "./userStore.js"
+import { SignupOtpStore } from "./lib/signupOtpStore.js"
 import { createAuthRouter } from "./routes/auth.js"
 import { mountHealthRoutes } from "./routes/health.js"
 import { createUsersRouter } from "./routes/users.js"
 import { createCatalogRouter } from "./routes/catalog.js"
 import { createSettingsRouter } from "./routes/settings.js"
 import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
+import { createUssdRouter } from "./routes/ussd.js"
 
 /** @param {string} key */
 function envTruthy(key) {
@@ -104,6 +108,7 @@ if (!MONGODB_URI) {
 async function main() {
   await connectMongo(MONGODB_URI)
   const userStore = new UserStore(getUsersCollection())
+  const signupOtpStore = new SignupOtpStore(getSignupOtpsCollection())
 
   if (envTruthy("CATALOG_SEED_ON_STARTUP")) {
     await seedCatalogIfEmpty({
@@ -137,8 +142,21 @@ async function main() {
     corsAllowAllVercelApp ? "| + any https://*.vercel.app" : "| (Vercel wildcard disabled via CORS_DISABLE_VERCEL_APP)",
   )
   app.use(express.json({ limit: "5mb" }))
+  app.use(express.urlencoded({ extended: true, limit: "1mb" }))
 
   mountHealthRoutes(app)
+
+  const { router: ussdRouter, handleMoolrePaymentWebhook } = createUssdRouter({
+    ussdSessions: getUssdSessionsCollection(),
+    packages: getPackagesCollection(),
+    vouchers: getVouchersCollection(),
+    sales: getSalesCollection(),
+    auditLogs: getAuditLogsCollection(),
+    locations: getLocationsCollection(),
+  })
+  app.use("/ussd", ussdRouter)
+  // Moolre wallet → Wallet Settings → API → Callback URL
+  app.post("/api/moolre/callback", handleMoolrePaymentWebhook)
 
   app.use(
     "/api/catalog",
@@ -174,6 +192,7 @@ async function main() {
 
   const authRouter = createAuthRouter({
     userStore,
+    signupOtpStore,
     jwtSecret: JWT_SECRET,
     jwtExpiresIn: JWT_EXPIRES_IN,
   })

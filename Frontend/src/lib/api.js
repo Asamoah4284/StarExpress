@@ -87,21 +87,54 @@ export async function authLogin(email, password) {
 }
 
 /**
- * @param {string} name
- * @param {string} email
- * @param {string} password
+ * @param {string} phone
  */
-export async function authSignup(name, email, password) {
-  const { res, data } = await parseJsonResponse("/api/auth/signup", {
+export async function authSendSignupOtp(phone) {
+  const { res, data } = await parseJsonResponse("/api/auth/send-signup-otp", {
     method: "POST",
-    body: JSON.stringify({ name, email, password }),
+    body: JSON.stringify({ phone }),
   })
+  if (res.status === 429) {
+    return { ok: false, code: "cooldown", error: typeof data === "object" && data && "error" in data ? String(data.error) : "Please wait before requesting another code." }
+  }
   if (res.status === 409) {
-    return { ok: false, code: "exists", error: typeof data === "object" && data && "error" in data ? String(data.error) : "Email taken." }
+    return { ok: false, code: "exists", error: typeof data === "object" && data && "error" in data ? String(data.error) : "Phone already registered." }
   }
   if (!res.ok) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
     return { ok: false, code: "invalid", error: msg }
+  }
+  return { ok: true }
+}
+
+/**
+ * @param {string} name
+ * @param {string} email
+ * @param {string} phone
+ * @param {string} password
+ * @param {string} otp
+ */
+export async function authSignup(name, email, phone, password, otp) {
+  const { res, data } = await parseJsonResponse("/api/auth/signup", {
+    method: "POST",
+    body: JSON.stringify({ name, email, phone, password, otp }),
+  })
+  if (res.status === 409) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : "Account already exists."
+    const code = /phone/i.test(msg) ? "phone_exists" : "exists"
+    return { ok: false, code, error: msg }
+  }
+  if (res.status === 401) {
+    return {
+      ok: false,
+      code: "otp_invalid",
+      error: typeof data === "object" && data && "error" in data ? String(data.error) : "Invalid verification code.",
+    }
+  }
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    const code = /code|otp|verification/i.test(msg) ? "otp_invalid" : "invalid"
+    return { ok: false, code, error: msg }
   }
   if (
     typeof data !== "object" ||
