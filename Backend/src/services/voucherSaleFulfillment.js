@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { sendSms } from "./sms.js"
+import { sendUssdVoucherSms } from "./ussdVoucherSms.js"
 
 /**
  * @param {import("mongodb").Document} d
@@ -149,23 +149,13 @@ export async function fulfillUssdVoucherSale(opts) {
     return { ok: false, error: "Could not reserve voucher — inventory changed." }
   }
 
-  const smsMessage = buildSaleVoucherSmsMessage(packageType, packageDataLimit, voucherCode)
-  try {
-    const smsResult = await sendSms({ to: customerPhone, message: smsMessage })
-    if (smsResult.skipped) {
-      console.warn(`[ussd] Sale ${saleId}: SMS skipped — voucher ${voucherCode} → ${customerPhone}`)
-    }
-  } catch (smsErr) {
-    const restoredColumns = clearVoucherUsedColumns(
-      voucherToUse.columns && typeof voucherToUse.columns === "object" && !Array.isArray(voucherToUse.columns)
-        ? voucherToUse.columns
-        : {},
-    )
-    await vouchers.updateOne({ _id: voucherToUse._id }, { $set: { columns: restoredColumns } })
-    await sales.deleteOne({ _id: saleId })
-    const msg = smsErr instanceof Error ? smsErr.message : "SMS failed"
-    return { ok: false, error: msg }
-  }
+  // As-market: payment is final; SMS failure is logged but sale is kept.
+  const smsResult = await sendUssdVoucherSms({
+    to: customerPhone,
+    packageName: packageType,
+    dataLimit: packageDataLimit,
+    voucherCode,
+  })
 
   await syncPackageStockForLocation(packages, vouchers, packageId, locationId)
 
@@ -180,5 +170,11 @@ export async function fulfillUssdVoucherSale(opts) {
     console.error("[ussd] audit log failed", e)
   }
 
-  return { ok: true, sale: saleDoc, voucherCode }
+  return {
+    ok: true,
+    sale: saleDoc,
+    voucherCode,
+    smsSent: smsResult.success === true,
+    smsError: smsResult.success ? undefined : smsResult.message,
+  }
 }

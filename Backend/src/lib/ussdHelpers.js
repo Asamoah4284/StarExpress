@@ -77,7 +77,9 @@ function isMoolreApiSuccess(data) {
   return status === 1 || status === 200
 }
 
-function getMoolrePaymentCallbackUrl() {
+export function getMoolrePaymentCallbackUrl() {
+  const explicit = String(process.env.MOOLRE_PAYMENT_CALLBACK_URL || "").trim()
+  if (explicit) return explicit.replace(/\/$/, "")
   const base = BACKEND_URL.replace(/\/$/, "")
   return `${base}/api/moolre/callback`
 }
@@ -86,6 +88,7 @@ function shouldIncludePaymentCallbackInRequest() {
   if (String(process.env.MOOLRE_DIRECT_DEBIT_INCLUDE_CALLBACK || "").toLowerCase() === "true") {
     return true
   }
+  if (process.env.MOOLRE_PAYMENT_CALLBACK_URL) return true
   const base = BACKEND_URL.replace(/\/$/, "")
   return base.startsWith("https://") && !base.includes("localhost")
 }
@@ -266,10 +269,8 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       sessionid: String(sessionId || ""),
       accountnumber: MOOLRE_ACCOUNT_NUMBER,
     }
-    if (shouldIncludePaymentCallbackInRequest()) {
-      directDebitPayload.callback = callbackUrl
-      directDebitPayload.redirect = callbackUrl
-    }
+    directDebitPayload.callback = callbackUrl
+    directDebitPayload.redirect = callbackUrl
 
     console.log("[ussd-momo] POST payment (init)", {
       reference,
@@ -278,7 +279,7 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       moolreUssdNetwork: moolreNetworkCode,
       payer: payerPhone,
       packageName,
-      callback: directDebitPayload.callback || "(wallet dashboard only)",
+      callback: callbackUrl,
     })
 
     const { response, data, responseText } = await postMoolrePayment(directDebitPayload, authHeaders)

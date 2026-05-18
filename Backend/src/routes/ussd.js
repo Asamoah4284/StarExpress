@@ -10,10 +10,13 @@ import {
   verifyMoolreWebhook,
 } from "../lib/ussdHelpers.js"
 import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
+import { checkMoolrePaymentStatus, scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
+import { getMoolreWebhookPayload, parseMoolrePaymentEvent } from "../lib/moolreWebhook.js"
 import {
   buildPackageAvailabilityFilter,
   fulfillUssdVoucherSale,
 } from "../services/voucherSaleFulfillment.js"
+import { sendUssdVoucherSms } from "../services/ussdVoucherSms.js"
 
 const MAX_PACKAGES_IN_MENU = 8
 
@@ -34,6 +37,88 @@ export function createUssdRouter(deps) {
 
   function getUssdLocationId() {
     return String(process.env.USSD_DEFAULT_LOCATION_ID || "").trim()
+  }
+
+  /**
+   * Fulfill voucher sale + SMS after Moolre confirms payment (webhook or status poll).
+   * @param {string} paymentReference
+   * @param {string} source
+   */
+  async function processUssdPaymentSuccess(paymentReference, source = "webhook") {
+    const existingSale = await sales.findOne({ paymentReference })
+    if (existingSale) {
+      console.log(`[ussd-pay] ${source} idempotent`, paymentReference, existingSale._id)
+      if (existingSale.voucherCode && existingSale.customerPhone) {
+        await sendUssdVoucherSms({
+          to: String(existingSale.customerPhone),
+          packageName: String(existingSale.packageType || "WiFi"),
+          voucherCode: String(existingSale.voucherCode),
+        })
+      }
+      return { ok: true, status: "already_processed", saleId: existingSale._id }
+    }
+
+    const ussdSession = await sessions.findByPaymentReference(paymentReference)
+    if (!ussdSession) {
+      console.warn(`[ussd-pay] ${source} no session for`, paymentReference)
+      return { ok: false, status: "no_session" }
+    }
+
+    const selected = ussdSession.selectedPackage
+    const packageId = selected?.packageId
+    const locationId = ussdSession.locationId || getUssdLocationId()
+    const customerPhone = ussdSession.phone
+
+    if (!packageId || !locationId || !customerPhone) {
+      console.error(`[ussd-pay] ${source} invalid session`, paymentReference)
+      return { ok: false, status: "invalid_session" }
+    }
+
+    const result = await fulfillUssdVoucherSale({
+      packages,
+      vouchers,
+      sales,
+      auditLogs,
+      paymentReference,
+      customerPhone: String(customerPhone),
+      packageId: String(packageId),
+      locationId: String(locationId),
+    })
+
+    await sessions.updateSession(String(ussdSession._id), { step: "completed" })
+
+    if (!result.ok) {
+      console.error(`[ussd-pay] ${source} fulfillment failed`, paymentReference, result.error)
+      return { ok: false, status: "fulfillment_failed", error: result.error }
+    }
+
+    console.log(
+      `[ussd-pay] ${source} success`,
+      paymentReference,
+      result.voucherCode,
+      "smsSent=",
+      result.smsSent,
+    )
+    return {
+      ok: true,
+      status: "success",
+      saleId: result.sale?._id,
+      voucherCode: result.voucherCode,
+      smsSent: result.smsSent,
+    }
+  }
+
+  /** @param {string} paymentReference */
+  async function tryConfirmPaymentFromPoll(paymentReference) {
+    const existing = await sales.findOne({ paymentReference })
+    if (existing) return true
+
+    const status = await checkMoolrePaymentStatus(paymentReference)
+    console.log("[ussd-poll] status", paymentReference, status)
+    if (!status.ok || !status.isPaid) return false
+
+    const outcome = await processUssdPaymentSuccess(paymentReference, "poll")
+    return outcome.ok === true
   }
 
   function menuWelcome() {
@@ -264,10 +349,13 @@ export function createUssdRouter(deps) {
             await sessions.updateSession(sessionId, {
               paymentReference,
               step: "payment",
+              selectedPackage: session?.selectedPackage || selected,
+              phone,
+              locationId,
             })
 
             const moolreNet = session?.moolreNetwork ?? validMoolreNetwork
-            const momoDelayMs = Number(process.env.USSD_MOMO_START_DELAY_MS) || 400
+            const momoDelayMs = Number(process.env.USSD_MOMO_START_DELAY_MS) || 1500
             setTimeout(() => {
               initiateMoMoPayment(phone, amount, sessionId, {
                 packageName: selected.name,
@@ -286,7 +374,9 @@ export function createUssdRouter(deps) {
                   )
                   if (!result?.success) {
                     console.error("[ussd] momo failed — user will not see PIN prompt:", result?.message)
+                    return
                   }
+                  scheduleUssdPaymentStatusPoll(paymentReference, tryConfirmPaymentFromPoll)
                 })
                 .catch((err) => {
                   console.error("[ussd] momo error", paymentReference, err)
@@ -338,89 +428,52 @@ export function createUssdRouter(deps) {
     }
   })
 
-  /** Moolre wallet "Callback URL" + USSD MoMo confirmation (same handler). */
+  /** Moolre wallet callback + payment confirmation (As-market pattern). */
   async function handleMoolrePaymentWebhook(req, res) {
     try {
-      const payload = req.body || {}
-      const reference = payload.data?.externalref ?? payload.externalref ?? null
-      const txStatus = payload.data?.txstatus ?? payload.txstatus ?? null
+      const payload = getMoolreWebhookPayload(req)
+      const event = parseMoolrePaymentEvent(payload)
 
-      console.log("[ussd-webhook] received", { reference, txStatus })
+      console.log("[ussd-webhook] received", {
+        reference: event.reference,
+        txStatusNum: event.txStatusNum,
+        code: event.code,
+        contentType: req.get("content-type"),
+        bodyKeys: Object.keys(payload || {}),
+      })
 
       if (!verifyMoolreWebhook(payload, req.headers)) {
         console.error("[ussd-webhook] invalid secret")
         return res.status(401).json({ error: "Invalid webhook" })
       }
 
-      if (!reference) {
-        return res.status(400).json({ error: "Missing externalref" })
+      if (!event.reference) {
+        console.error("[ussd-webhook] missing externalref", JSON.stringify(payload).slice(0, 500))
+        return res.status(200).json({ received: true, error: "Missing externalref" })
       }
 
-      const txStatusNum = txStatus == null ? null : Number(txStatus)
-      const status = txStatusNum === 1 ? "success" : txStatusNum === 2 ? "failed" : "pending"
-
-      const ussdSession = await sessions.findByPaymentReference(reference)
-
-      if (status === "failed") {
+      if (event.isFailed) {
+        const ussdSession = await sessions.findByPaymentReference(event.reference)
         if (ussdSession) await sessions.updateSession(String(ussdSession._id), { step: "completed" })
-        return res.json({ ok: true, status: "failed" })
+        return res.status(200).json({ received: true, status: "failed" })
       }
 
-      if (status === "pending") {
-        return res.json({ ok: true, status: "pending" })
+      if (event.isPending && !event.isSuccess) {
+        return res.status(200).json({ received: true, status: "pending" })
       }
 
-      if (!ussdSession) {
-        console.warn("[ussd-webhook] no session for reference", reference)
-        return res.json({ ok: true, status: "no_session" })
+      if (!event.isSuccess) {
+        return res.status(200).json({ received: true, status: "ignored", code: event.code })
       }
 
-      const existingSale = await sales.findOne({ paymentReference: reference })
-      if (existingSale) {
-        console.log("[ussd-webhook] idempotent", reference)
-        await sessions.updateSession(String(ussdSession._id), { step: "completed" })
-        return res.json({ ok: true, status: "already_processed", saleId: existingSale._id })
-      }
-
-      const selected = ussdSession.selectedPackage
-      const packageId = selected?.packageId
-      const locationId = ussdSession.locationId || getUssdLocationId()
-      const customerPhone = ussdSession.phone
-
-      if (!packageId || !locationId || !customerPhone) {
-        console.error("[ussd-webhook] session missing package/location/phone", reference)
-        return res.status(400).json({ error: "Invalid session data" })
-      }
-
-      const result = await fulfillUssdVoucherSale({
-        packages,
-        vouchers,
-        sales,
-        auditLogs,
-        paymentReference: reference,
-        customerPhone,
-        packageId: String(packageId),
-        locationId: String(locationId),
-      })
-
-      await sessions.updateSession(String(ussdSession._id), { step: "completed" })
-
-      if (!result.ok) {
-        console.error("[ussd-webhook] fulfillment failed", reference, result.error)
-        return res.status(500).json({ error: result.error || "Fulfillment failed" })
-      }
-
-      console.log("[ussd-webhook] success", reference, result.voucherCode)
-      return res.json({
-        ok: true,
-        status: "success",
-        saleId: result.sale?._id,
-        voucherCode: result.voucherCode,
-        idempotent: Boolean(result.idempotent),
-      })
+      const outcome = await processUssdPaymentSuccess(event.reference, "webhook")
+      return res.status(200).json({ received: true, ...outcome })
     } catch (err) {
       console.error("[ussd-webhook] error", err)
-      return res.status(500).json({ error: "Webhook processing failed" })
+      return res.status(200).json({
+        received: true,
+        error: err instanceof Error ? err.message : "Webhook processing failed",
+      })
     }
   }
 

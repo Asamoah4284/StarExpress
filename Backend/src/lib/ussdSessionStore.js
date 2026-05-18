@@ -1,4 +1,5 @@
-const SESSION_TTL_MS = 5 * 60 * 1000
+/** USSD + MoMo can take several minutes; keep session until webhook or status poll completes. */
+const SESSION_TTL_MS = Number(process.env.USSD_SESSION_TTL_MS) || 45 * 60 * 1000
 
 /**
  * @param {import("mongodb").Collection} col
@@ -36,10 +37,11 @@ export function createUssdSessionStore(col) {
      * @param {Record<string, unknown>} patch
      */
     async updateSession(sessionId, patch) {
-      await col.updateOne(
-        { _id: sessionId },
-        { $set: { ...patch, updatedAt: new Date() } },
-      )
+      const set = { ...patch, updatedAt: new Date() }
+      if (!("expiresAt" in patch)) {
+        set.expiresAt = new Date(Date.now() + SESSION_TTL_MS)
+      }
+      await col.updateOne({ _id: sessionId }, { $set: set })
       return col.findOne({ _id: sessionId })
     },
 
