@@ -95,22 +95,37 @@ export async function sendSms({ to, message }) {
 
   const responseData = await parseResponseBody(response)
 
+  const apiStatus = Number(
+    responseData && typeof responseData === "object" ? responseData.status : NaN,
+  )
+
   if (!response.ok) {
     const msg =
       typeof responseData === "object" && responseData !== null && "message" in responseData
         ? String(responseData.message)
         : JSON.stringify(responseData)
-    const err = new Error(`Moolre SMS failed (${response.status}): ${msg}`)
-    /** @type {Error & { raw?: unknown }} */ (err).raw = responseData
-    throw err
+    const smsError = new Error(`Moolre SMS failed (${response.status}): ${msg}`)
+    smsError.raw = responseData
+    throw smsError
   }
 
-  if (responseData.status !== 1) {
-    const err = new Error(
-      `Moolre SMS failed: ${responseData.message || JSON.stringify(responseData)}`,
-    )
-    /** @type {Error & { raw?: unknown }} */ (err).raw = responseData
-    throw err
+  if (apiStatus !== 1) {
+    const code =
+      responseData && typeof responseData === "object" && responseData.code != null
+        ? String(responseData.code)
+        : ""
+    const msg =
+      typeof responseData === "object" && responseData !== null && responseData.message != null
+        ? String(responseData.message)
+        : JSON.stringify(responseData)
+    if (code === "AIN01") {
+      console.error(
+        "[sms] Moolre SMS auth failed (AIN01). Use the VAS/SMS API key (X-API-VASKEY) from Moolre — not MOOLRE_PUBLIC_KEY.",
+      )
+    }
+    const smsError = new Error(`Moolre SMS failed: ${msg}`)
+    smsError.raw = responseData
+    throw smsError
   }
 
   return { ok: true, raw: responseData }

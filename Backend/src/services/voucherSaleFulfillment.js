@@ -42,18 +42,7 @@ export function clearVoucherUsedColumns(columns) {
   return next
 }
 
-/**
- * @param {string} packageName
- * @param {string} dataLimit
- * @param {string} voucherCode
- */
-export function buildSaleVoucherSmsMessage(packageName, dataLimit, voucherCode) {
-  const limit = typeof dataLimit === "string" ? dataLimit.trim() : ""
-  const packageLine = limit
-    ? ` Package: ${packageName} (${limit})`
-    : ` Package: ${packageName}`
-  return `Your wifi access is ready!\n${packageLine}\n Voucher ID: ${voucherCode}`
-}
+export { buildSaleVoucherSmsMessage } from "../lib/voucherSmsMessage.js"
 
 /**
  * @param {import("mongodb").Collection} packagesCol
@@ -127,6 +116,7 @@ export async function fulfillUssdVoucherSale(opts) {
     voucherCode,
     paymentReference,
     channel: "ussd",
+    smsSent: false,
   }
 
   await sales.insertOne(saleDoc)
@@ -158,6 +148,10 @@ export async function fulfillUssdVoucherSale(opts) {
   })
 
   await syncPackageStockForLocation(packages, vouchers, packageId, locationId)
+
+  if (smsResult.success) {
+    await sales.updateOne({ _id: saleId }, { $set: { smsSent: true } })
+  }
 
   try {
     await auditLogs.insertOne({

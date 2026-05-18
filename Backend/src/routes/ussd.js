@@ -48,12 +48,15 @@ export function createUssdRouter(deps) {
     const existingSale = await sales.findOne({ paymentReference })
     if (existingSale) {
       console.log(`[ussd-pay] ${source} idempotent`, paymentReference, existingSale._id)
-      if (existingSale.voucherCode && existingSale.customerPhone) {
-        await sendUssdVoucherSms({
+      if (existingSale.voucherCode && existingSale.customerPhone && existingSale.smsSent !== true) {
+        const sms = await sendUssdVoucherSms({
           to: String(existingSale.customerPhone),
           packageName: String(existingSale.packageType || "WiFi"),
           voucherCode: String(existingSale.voucherCode),
         })
+        if (sms.success) {
+          await sales.updateOne({ _id: existingSale._id }, { $set: { smsSent: true } })
+        }
       }
       return { ok: true, status: "already_processed", saleId: existingSale._id }
     }

@@ -1,5 +1,5 @@
 import { sendSms } from "./sms.js"
-import { buildSaleVoucherSmsMessage } from "./voucherSaleFulfillment.js"
+import { buildSaleVoucherSmsMessage } from "../lib/voucherSmsMessage.js"
 
 /**
  * Send voucher SMS after USSD payment (same Moolre SMS as signup/agent sales).
