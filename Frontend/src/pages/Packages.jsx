@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -39,7 +40,7 @@ export default function Packages() {
   const { token, user } = useAuth()
   const catalog = useCatalog()
   const queryClient = useQueryClient()
-  const rows = catalog.data?.packages ?? []
+  const allPackages = catalog.data?.packages ?? []
   const rawLocations = catalog.data?.locations
   const locations = React.useMemo(() => rawLocations ?? [], [rawLocations])
   const isAdmin = user?.role === ROLE_ADMIN
@@ -47,6 +48,28 @@ export default function Packages() {
   const canSell = isAdmin || isSalesAgent
 
   const agentStore = React.useMemo(() => findAgentStoreLocation(locations, user), [locations, user])
+
+  const [locationFilterId, setLocationFilterId] = React.useState("all")
+
+  const viewingAllLocations = isAdmin && locationFilterId === "all"
+
+  const inventoryLocationId = React.useMemo(() => {
+    if (isSalesAgent) return agentStore?.id ?? ""
+    if (locationFilterId === "all") return ""
+    return locationFilterId
+  }, [isSalesAgent, agentStore?.id, locationFilterId])
+
+  const inventoryFromCatalog =
+    isAdmin && locationFilterId === "all" && Array.isArray(catalog.data?.packageVoucherInventory)
+
+  const locationFilterLabel =
+    locationFilterId === "all"
+      ? "All locations"
+      : (locations.find((l) => l.id === locationFilterId)?.name ?? locationFilterId)
+
+  const scopedLocationLabel = isSalesAgent
+    ? (agentStore?.name ?? "your wifi location")
+    : locationFilterLabel
 
   const [open, setOpen] = React.useState(false)
   const [editing, setEditing] = React.useState(null)
@@ -120,8 +143,6 @@ export default function Packages() {
     },
   })
 
-  const inventoryLocationId = isAdmin ? "" : (agentStore?.id ?? "")
-
   const packageInventoryQuery = useQuery({
     queryKey: ["package-voucher-inventory", token, inventoryLocationId],
     queryFn: async () => {
@@ -134,16 +155,15 @@ export default function Packages() {
       return r.packages
     },
     enabled:
-      Boolean(token) &&
-      (isAdmin || Boolean(inventoryLocationId)) &&
-      !Array.isArray(catalog.data?.packageVoucherInventory),
+      Boolean(token) && !inventoryFromCatalog && (isAdmin || Boolean(inventoryLocationId)),
     staleTime: 30_000,
   })
 
   const inventoryByPackageId = React.useMemo(() => {
     const map = new Map()
-    const rows =
-      catalog.data?.packageVoucherInventory ?? packageInventoryQuery.data ?? []
+    const rows = inventoryFromCatalog
+      ? (catalog.data?.packageVoucherInventory ?? [])
+      : (packageInventoryQuery.data ?? [])
     for (const row of rows) {
       if (row && typeof row.id === "string") {
         map.set(row.id, {
@@ -153,11 +173,24 @@ export default function Packages() {
       }
     }
     return map
-  }, [catalog.data?.packageVoucherInventory, packageInventoryQuery.data])
+  }, [catalog.data?.packageVoucherInventory, packageInventoryQuery.data, inventoryFromCatalog])
 
-  const inventoryLoading =
-    (catalog.isLoading && !catalog.data?.packageVoucherInventory) || packageInventoryQuery.isLoading
+  const inventoryLoading = inventoryFromCatalog
+    ? catalog.isLoading
+    : catalog.isLoading || packageInventoryQuery.isLoading
   const inventoryError = catalog.error ?? packageInventoryQuery.error
+
+  /** Single-location view: only packages with vouchers at that site. All locations: full catalog. */
+  const scopedToSingleLocation =
+    !viewingAllLocations &&
+    ((isAdmin && locationFilterId !== "all") || (isSalesAgent && Boolean(inventoryLocationId)))
+
+  const tableRows = React.useMemo(() => {
+    if (viewingAllLocations) return allPackages
+    if (!scopedToSingleLocation) return allPackages
+    if (inventoryLoading) return []
+    return allPackages.filter((pkg) => inventoryByPackageId.has(pkg.id))
+  }, [allPackages, viewingAllLocations, scopedToSingleLocation, inventoryLoading, inventoryByPackageId])
 
   const sellPhoneValid = React.useMemo(() => {
     const t = sellCustomerPhone.trim().replace(/\s+/g, " ")
@@ -279,12 +312,16 @@ export default function Packages() {
       sellRowRef.current = row
       setSellPkg(row)
       setSellCustomerPhone("")
-      setSellLocationId(locations[0]?.id ?? "")
+      const defaultLoc =
+        isAdmin && locationFilterId !== "all"
+          ? locationFilterId
+          : (locations[0]?.id ?? "")
+      setSellLocationId(defaultLoc)
       setSellError(null)
       setSellSuccess(null)
       setSellOpen(true)
     },
-    [locations],
+    [locations, isAdmin, locationFilterId],
   )
 
   const remove = React.useCallback(
@@ -428,7 +465,9 @@ export default function Packages() {
   )
 
   const pageDescription = isAdmin
-    ? "Package catalog with live voucher inventory (total uploaded and remaining unused across all wifi locations)."
+    ? locationFilterId === "all"
+      ? "Package catalog with live voucher inventory (total uploaded and remaining unused across all wifi locations)."
+      : `Voucher totals and remaining stock at ${locationFilterLabel}. Tap Sell to record a sale at this location.`
     : "Packages at your wifi location with voucher totals and remaining stock. Tap Sell to record a sale."
 
   return (
@@ -468,8 +507,62 @@ export default function Packages() {
         </p>
       ) : null}
 
+      {isAdmin ? (
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Filters</CardTitle>
+            <CardDescription>
+              Choose a location to show only packages with vouchers at that site. Totals and remaining stock are
+              scoped to that location.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-1.5 sm:max-w-xs">
+              <Label htmlFor="packages-location-filter">Location</Label>
+              <Select value={locationFilterId} onValueChange={setLocationFilterId}>
+                <SelectTrigger id="packages-location-filter" className="w-full shadow-none">
+                  <SelectValue placeholder="All locations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All locations</SelectItem>
+                  {locations.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>
+                      {l.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-muted-foreground text-sm">
+              {viewingAllLocations ? (
+                <>
+                  Showing all <span className="text-foreground font-medium">{allPackages.length}</span>{" "}
+                  package{allPackages.length === 1 ? "" : "s"} with combined inventory across{" "}
+                  <span className="text-foreground font-medium">{locationFilterLabel}</span>
+                </>
+              ) : inventoryLoading ? (
+                <>Loading packages for {locationFilterLabel}…</>
+              ) : (
+                <>
+                  Showing{" "}
+                  <span className="text-foreground font-medium">{tableRows.length}</span> package
+                  {tableRows.length === 1 ? "" : "s"} at{" "}
+                  <span className="text-foreground font-medium">{locationFilterLabel}</span>
+                </>
+              )}
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {scopedToSingleLocation && !inventoryLoading && !inventoryError && tableRows.length === 0 ? (
+        <p className="text-muted-foreground rounded-md border border-dashed px-3 py-6 text-center text-sm">
+          No packages with vouchers at {scopedLocationLabel}. Upload vouchers for this location to list them here.
+        </p>
+      ) : null}
+
       <DataTable
-        data={rows}
+        data={tableRows}
         columns={columns}
         searchPlaceholder="Search name, price, data limit, status, vouchers…"
         pageSize={8}

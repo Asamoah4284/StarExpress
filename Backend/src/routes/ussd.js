@@ -13,12 +13,14 @@ import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
 import { checkMoolrePaymentStatus, scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
 import { getMoolreWebhookPayload, parseMoolrePaymentEvent } from "../lib/moolreWebhook.js"
 import {
+  buildLocationAvailabilityFilter,
   buildPackageAvailabilityFilter,
   fulfillUssdVoucherSale,
 } from "../services/voucherSaleFulfillment.js"
 import { sendUssdVoucherSms } from "../services/ussdVoucherSms.js"
 
 const MAX_PACKAGES_IN_MENU = 8
+const MAX_LOCATIONS_IN_MENU = 8
 
 /**
  * @param {{
@@ -131,6 +133,32 @@ export function createUssdRouter(deps) {
   /**
    * @param {string} locationId
    */
+  /**
+   * Wifi locations with at least one unused voucher (optional USSD_DEFAULT_LOCATION_ID whitelist).
+   * @returns {Promise<{ locationId: string, name: string }[]>}
+   */
+  async function getLocationsForUssdMenu() {
+    const forcedId = getUssdLocationId()
+    const locDocs = await locations.find({}).sort({ name: 1 }).limit(MAX_LOCATIONS_IN_MENU).toArray()
+    /** @type {{ locationId: string, name: string }[]} */
+    const list = []
+    for (const loc of locDocs) {
+      const locationId = String(loc._id)
+      if (forcedId && locationId !== forcedId) continue
+      const remaining = await vouchers.countDocuments(buildLocationAvailabilityFilter(locationId))
+      if (remaining > 0) {
+        list.push({
+          locationId,
+          name: typeof loc.name === "string" && loc.name.trim() ? loc.name.trim() : locationId,
+        })
+      }
+    }
+    return list
+  }
+
+  /**
+   * @param {string} locationId
+   */
   async function getPackagesForUssdMenu(locationId) {
     if (!locationId) return []
 
@@ -158,29 +186,118 @@ export function createUssdRouter(deps) {
     return list
   }
 
-  router.get("/health", (_req, res) => {
-    res.json({
-      status: "ok",
-      service: "starexpress-ussd",
-      shortcode: USSD_SHORTCODE,
-      locationConfigured: Boolean(getUssdLocationId()),
-      timestamp: new Date().toISOString(),
+  /**
+   * @param {string} sessionId
+   * @param {string} locationId
+   */
+  async function beginPackageSelection(sessionId, locationId) {
+    const loc = await locations.findOne({ _id: locationId })
+    if (!loc) {
+      return {
+        message: "Location not available. Try again later.",
+        reply: false,
+      }
+    }
+
+    const packageList = await getPackagesForUssdMenu(locationId)
+    if (packageList.length === 0) {
+      return {
+        message: "No vouchers available at this location. Try another location or try again later.",
+        reply: false,
+      }
+    }
+
+    await sessions.updateSession(sessionId, {
+      step: "select_package",
+      locationId,
+      packageList,
     })
+
+    const locName = typeof loc.name === "string" && loc.name.trim() ? loc.name.trim() : locationId
+    const lines = packageList.map((p, i) => `${i + 1}) ${p.name} - GHS ${p.priceGHS}`)
+    return {
+      message: `${locName}\nSelect package:\n${lines.join("\n")}`,
+      reply: true,
+    }
+  }
+
+  /**
+   * After user chooses Buy voucher: pick location (if needed) or go straight to packages.
+   * @param {string} sessionId
+   */
+  async function beginBuyFlow(sessionId) {
+    const locationList = await getLocationsForUssdMenu()
+    if (locationList.length === 0) {
+      return {
+        message: "No vouchers available right now. Try again later.",
+        reply: false,
+      }
+    }
+    if (locationList.length === 1) {
+      return beginPackageSelection(sessionId, locationList[0].locationId)
+    }
+    await sessions.updateSession(sessionId, { step: "select_location", locationList })
+    const lines = locationList.map((l, i) => `${i + 1}) ${l.name}`)
+    return {
+      message: `Select wifi location:\n${lines.join("\n")}`,
+      reply: true,
+    }
+  }
+
+  router.get("/health", async (_req, res) => {
+    try {
+      const locationList = await getLocationsForUssdMenu()
+      res.json({
+        status: "ok",
+        service: "starexpress-ussd",
+        shortcode: USSD_SHORTCODE,
+        locationWhitelist: Boolean(getUssdLocationId()),
+        locationsWithStock: locationList.length,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (err) {
+      res.json({
+        status: "ok",
+        service: "starexpress-ussd",
+        shortcode: USSD_SHORTCODE,
+        timestamp: new Date().toISOString(),
+      })
+    }
   })
 
-  router.get("/packages", async (_req, res) => {
+  router.get("/packages", async (req, res) => {
     try {
-      const locationId = getUssdLocationId()
-      if (!locationId) {
-        return res.status(503).json({ error: "USSD_DEFAULT_LOCATION_ID is not configured." })
+      const queryLocationId =
+        typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
+      const forcedId = getUssdLocationId()
+      const locationList = await getLocationsForUssdMenu()
+
+      if (queryLocationId) {
+        const loc = await locations.findOne({ _id: queryLocationId })
+        if (!loc) return res.status(404).json({ error: "Unknown location." })
+        if (forcedId && queryLocationId !== forcedId) {
+          return res.status(403).json({ error: "Location not enabled for USSD." })
+        }
+        const items = await getPackagesForUssdMenu(queryLocationId)
+        return res.json({
+          shortcode: USSD_SHORTCODE,
+          locationId: queryLocationId,
+          locationName: typeof loc.name === "string" ? loc.name : queryLocationId,
+          packages: items,
+        })
       }
-      const loc = await locations.findOne({ _id: locationId })
-      const items = await getPackagesForUssdMenu(locationId)
+
+      const withPackages = await Promise.all(
+        locationList.map(async (entry) => {
+          const items = await getPackagesForUssdMenu(entry.locationId)
+          return { ...entry, packages: items }
+        }),
+      )
+
       res.json({
         shortcode: USSD_SHORTCODE,
-        locationId,
-        locationName: loc && typeof loc.name === "string" ? loc.name : locationId,
-        packages: items,
+        locationWhitelist: Boolean(forcedId),
+        locations: withPackages,
       })
     } catch (err) {
       console.error("[ussd] GET /packages", err)
@@ -205,22 +322,16 @@ export function createUssdRouter(deps) {
         return res.json({ message: "Invalid request. Please try again.", reply: false })
       }
 
-      const locationId = getUssdLocationId()
-      if (!locationId) {
-        console.error("[ussd] USSD_DEFAULT_LOCATION_ID not set")
-        return res.json({
-          message: "WiFi sales are not configured. Contact support.",
-          reply: false,
-        })
-      }
-
-      const loc = await locations.findOne({ _id: locationId })
-      if (!loc) {
-        console.error("[ussd] Unknown USSD_DEFAULT_LOCATION_ID:", locationId)
-        return res.json({
-          message: "WiFi location not configured. Contact support.",
-          reply: false,
-        })
+      const forcedLocationId = getUssdLocationId()
+      if (forcedLocationId) {
+        const forcedLoc = await locations.findOne({ _id: forcedLocationId })
+        if (!forcedLoc) {
+          console.error("[ussd] Unknown USSD_DEFAULT_LOCATION_ID:", forcedLocationId)
+          return res.json({
+            message: "WiFi location not configured. Contact support.",
+            reply: false,
+          })
+        }
       }
 
       const phone = formatPhoneNumber(msisdn)
@@ -245,7 +356,6 @@ export function createUssdRouter(deps) {
           phone,
           network: normalizedNetwork,
           moolreNetwork: validMoolreNetwork,
-          locationId,
           step: "menu",
         })
         return res.json({ message: menuWelcome(), reply: true })
@@ -258,7 +368,6 @@ export function createUssdRouter(deps) {
           phone,
           network: normalizedNetwork,
           moolreNetwork: validMoolreNetwork,
-          locationId,
           step: "menu",
         })
         return res.json({ message: menuWelcome(), reply: true })
@@ -275,21 +384,8 @@ export function createUssdRouter(deps) {
       switch (step) {
         case "menu": {
           if (input === "1") {
-            const packageList = await getPackagesForUssdMenu(locationId)
-            if (packageList.length === 0) {
-              return res.json({
-                message: "No vouchers available right now. Try again later.",
-                reply: false,
-              })
-            }
-            await sessions.updateSession(sessionId, { step: "select_package", packageList })
-            const lines = packageList.map(
-              (p, i) => `${i + 1}) ${p.name} - GHS ${p.priceGHS}`,
-            )
-            return res.json({
-              message: `Select package:\n${lines.join("\n")}`,
-              reply: true,
-            })
+            const buyFlow = await beginBuyFlow(sessionId)
+            return res.json(buyFlow)
           }
           if (input === "2") {
             await sessions.updateSession(sessionId, { step: "completed" })
@@ -302,6 +398,21 @@ export function createUssdRouter(deps) {
             message: `Invalid option.\n${menuWelcome()}`,
             reply: true,
           })
+        }
+
+        case "select_location": {
+          const locationList = Array.isArray(session?.locationList) ? session.locationList : []
+          const num = parseInt(input, 10)
+          if (!Number.isFinite(num) || num < 1 || num > locationList.length) {
+            const lines = locationList.map((/** @type {{ name: string }} */ l, i) => `${i + 1}) ${l.name}`)
+            return res.json({
+              message: `Invalid option.\nSelect wifi location:\n${lines.join("\n")}`,
+              reply: true,
+            })
+          }
+          const chosenLoc = locationList[num - 1]
+          const packageStep = await beginPackageSelection(sessionId, chosenLoc.locationId)
+          return res.json(packageStep)
         }
 
         case "select_package": {
@@ -349,12 +460,20 @@ export function createUssdRouter(deps) {
               return res.json({ message: "Invalid package price. Contact support.", reply: false })
             }
 
+            const payLocationId = String(session?.locationId || "").trim()
+            if (!payLocationId) {
+              return res.json({
+                message: `Session expired. Dial ${USSD_SHORTCODE} to start again.`,
+                reply: false,
+              })
+            }
+
             await sessions.updateSession(sessionId, {
               paymentReference,
               step: "payment",
               selectedPackage: session?.selectedPackage || selected,
               phone,
-              locationId,
+              locationId: payLocationId,
             })
 
             const moolreNet = session?.moolreNetwork ?? validMoolreNetwork

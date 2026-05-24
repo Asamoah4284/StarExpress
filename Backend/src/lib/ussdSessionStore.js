@@ -18,6 +18,7 @@ export function createUssdSessionStore(col) {
         moolreNetwork: doc.moolreNetwork ?? null,
         locationId: doc.locationId ?? "",
         step: doc.step ?? "menu",
+        locationList: [],
         packageList: [],
         selectedPackage: null,
         paymentReference: null,

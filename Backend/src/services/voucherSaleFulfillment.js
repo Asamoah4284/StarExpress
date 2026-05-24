@@ -27,6 +27,15 @@ export function buildPackageAvailabilityFilter(packageId, locationId) {
   }
 }
 
+/** Unused vouchers at a wifi location (any package). */
+export function buildLocationAvailabilityFilter(locationId) {
+  return {
+    locationId,
+    packageId: { $exists: true, $ne: "" },
+    $nor: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }],
+  }
+}
+
 /**
  * @param {Record<string, unknown> | undefined} columns
  */
