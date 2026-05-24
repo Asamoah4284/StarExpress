@@ -37,7 +37,8 @@ export function createUssdRouter(deps) {
   const sessions = createUssdSessionStore(ussdSessions)
   const router = express.Router()
 
-  function getUssdLocationId() {
+  /** Fallback when session has no location (legacy). Does not limit the location menu. */
+  function getUssdFallbackLocationId() {
     return String(process.env.USSD_DEFAULT_LOCATION_ID || "").trim()
   }
 
@@ -71,7 +72,7 @@ export function createUssdRouter(deps) {
 
     const selected = ussdSession.selectedPackage
     const packageId = selected?.packageId
-    const locationId = ussdSession.locationId || getUssdLocationId()
+    const locationId = ussdSession.locationId || getUssdFallbackLocationId()
     const customerPhone = ussdSession.phone
 
     if (!packageId || !locationId || !customerPhone) {
@@ -131,20 +132,15 @@ export function createUssdRouter(deps) {
   }
 
   /**
-   * @param {string} locationId
-   */
-  /**
-   * Wifi locations with at least one unused voucher (optional USSD_DEFAULT_LOCATION_ID whitelist).
+   * Wifi locations with at least one unused voucher (all sites — user picks in menu).
    * @returns {Promise<{ locationId: string, name: string }[]>}
    */
   async function getLocationsForUssdMenu() {
-    const forcedId = getUssdLocationId()
     const locDocs = await locations.find({}).sort({ name: 1 }).limit(MAX_LOCATIONS_IN_MENU).toArray()
     /** @type {{ locationId: string, name: string }[]} */
     const list = []
     for (const loc of locDocs) {
       const locationId = String(loc._id)
-      if (forcedId && locationId !== forcedId) continue
       const remaining = await vouchers.countDocuments(buildLocationAvailabilityFilter(locationId))
       if (remaining > 0) {
         list.push({
@@ -251,7 +247,7 @@ export function createUssdRouter(deps) {
         status: "ok",
         service: "starexpress-ussd",
         shortcode: USSD_SHORTCODE,
-        locationWhitelist: Boolean(getUssdLocationId()),
+        fallbackLocationId: getUssdFallbackLocationId() || null,
         locationsWithStock: locationList.length,
         timestamp: new Date().toISOString(),
       })
@@ -269,15 +265,11 @@ export function createUssdRouter(deps) {
     try {
       const queryLocationId =
         typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
-      const forcedId = getUssdLocationId()
       const locationList = await getLocationsForUssdMenu()
 
       if (queryLocationId) {
         const loc = await locations.findOne({ _id: queryLocationId })
         if (!loc) return res.status(404).json({ error: "Unknown location." })
-        if (forcedId && queryLocationId !== forcedId) {
-          return res.status(403).json({ error: "Location not enabled for USSD." })
-        }
         const items = await getPackagesForUssdMenu(queryLocationId)
         return res.json({
           shortcode: USSD_SHORTCODE,
@@ -296,7 +288,6 @@ export function createUssdRouter(deps) {
 
       res.json({
         shortcode: USSD_SHORTCODE,
-        locationWhitelist: Boolean(forcedId),
         locations: withPackages,
       })
     } catch (err) {
@@ -320,18 +311,6 @@ export function createUssdRouter(deps) {
 
       if (!sessionId || !msisdn) {
         return res.json({ message: "Invalid request. Please try again.", reply: false })
-      }
-
-      const forcedLocationId = getUssdLocationId()
-      if (forcedLocationId) {
-        const forcedLoc = await locations.findOne({ _id: forcedLocationId })
-        if (!forcedLoc) {
-          console.error("[ussd] Unknown USSD_DEFAULT_LOCATION_ID:", forcedLocationId)
-          return res.json({
-            message: "WiFi location not configured. Contact support.",
-            reply: false,
-          })
-        }
       }
 
       const phone = formatPhoneNumber(msisdn)
