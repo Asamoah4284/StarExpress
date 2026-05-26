@@ -86,7 +86,7 @@ export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpi
 
       const otpDoc = await signupOtpStore.create(phone, codeHash, expiresAt)
 
-      const message = `StarExpress: Your verification code is ${code}. It expires in 10 minutes.`
+      const message = `Starexpress: Your verification code is ${code}. It expires in 10 minutes.`
       try {
         await sendSms({ to: phone, message })
       } catch (smsErr) {

@@ -1,7 +1,7 @@
 import * as React from "react"
 import { authLogin, authMe, authSignup } from "@/lib/api.js"
 
-const STORAGE_KEY = "starexpress-auth-session"
+const STORAGE_KEY = "Starexpress-auth-session"
 
 /** @typedef {import("@/types.js").AuthUser} AuthUser */
 

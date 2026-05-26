@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { sendUssdVoucherSms } from "./ussdVoucherSms.js"
+import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 
 /**
  * @param {import("mongodb").Document} d
@@ -88,11 +89,14 @@ export async function fulfillUssdVoucherSale(opts) {
   }
 
   const pkg = await packages.findOne({ _id: packageId })
-  if (!pkg || pkg.status !== "Active") {
+  if (!pkg) return { ok: false, error: "Package unavailable." }
+
+  const resolved = resolvePackageForLocation(pkg, locationId)
+  if (resolved.status !== "Active") {
     return { ok: false, error: "Package unavailable." }
   }
 
-  const priceGHS = Number(pkg.priceGHS)
+  const priceGHS = resolved.priceGHS
   if (!Number.isFinite(priceGHS) || priceGHS < 0) {
     return { ok: false, error: "Invalid package price." }
   }
@@ -103,9 +107,8 @@ export async function fulfillUssdVoucherSale(opts) {
     return { ok: false, error: "No vouchers in stock for this package." }
   }
 
-  const packageType = typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : packageId
-  const packageDataLimit =
-    typeof pkg.dataLimit === "string" && pkg.dataLimit.trim() ? pkg.dataLimit.trim() : ""
+  const packageType = resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId
+  const packageDataLimit = resolved.dataLimit && resolved.dataLimit.trim() ? resolved.dataLimit.trim() : ""
   const voucherCode = voucherDisplayCode(voucherToUse)
   const date = new Date().toISOString().slice(0, 10)
   const saleId = `sale-ussd-${randomUUID().slice(0, 12)}`

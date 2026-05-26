@@ -1,6 +1,6 @@
 import * as React from "react"
 
-const STORAGE_KEY = "starexpress-sidebar-collapsed"
+const STORAGE_KEY = "Starexpress-sidebar-collapsed"
 
 export function useSidebarCollapsed() {
   const [collapsed, setCollapsed] = React.useState(() => {

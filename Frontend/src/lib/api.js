@@ -46,7 +46,7 @@ async function parseJsonResponse(path, init = {}) {
     const method = init.method || "GET"
     const href =
       typeof window !== "undefined" ? new URL(url(path), window.location.origin).href : url(path)
-    console.info(`[StarExpress API] ${method} ${href} → ${res.status}`)
+    console.info(`[Starexpress API] ${method} ${href} → ${res.status}`)
   }
   const text = await res.text()
   /** @type {unknown} */
@@ -587,12 +587,21 @@ export async function createCatalogPackage(token, body) {
 }
 
 /**
+ * Update a package. When `opts.locationId` is supplied the backend scopes the edit to that
+ * hostel: if the package is shared with other locations it forks it and re-links only this
+ * location's vouchers + sales, leaving the original (and other hostels) untouched.
+ *
  * @param {string} token
  * @param {string} id
  * @param {{ name?: string, priceGHS?: number, dataLimit?: string, status?: string }} body
+ * @param {{ locationId?: string }} [opts]
  */
-export async function updateCatalogPackage(token, id, body) {
-  const path = `/api/catalog/packages/${encodeURIComponent(id)}`
+export async function updateCatalogPackage(token, id, body, opts = {}) {
+  const params = new URLSearchParams()
+  const lid = typeof opts.locationId === "string" ? opts.locationId.trim() : ""
+  if (lid && lid !== "all") params.set("locationId", lid)
+  const qs = params.toString() ? `?${params.toString()}` : ""
+  const path = `/api/catalog/packages/${encodeURIComponent(id)}${qs}`
   const { res, data } = await parseJsonResponse(path, {
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}` },
@@ -605,7 +614,13 @@ export async function updateCatalogPackage(token, id, body) {
   if (typeof data !== "object" || data === null || typeof data.package !== "object" || data.package === null) {
     return { ok: false, error: "Unexpected response from server." }
   }
-  return { ok: true, package: data.package }
+  return {
+    ok: true,
+    package: data.package,
+    forked: Boolean(data.forked),
+    fromPackageId:
+      typeof data.fromPackageId === "string" && data.fromPackageId ? data.fromPackageId : undefined,
+  }
 }
 
 /** @param {string} token @param {string} id */

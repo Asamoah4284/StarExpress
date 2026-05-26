@@ -75,7 +75,7 @@ export async function sendSms({ to, message }) {
     return { ok: true, skipped: true }
   }
 
-  const senderId = process.env.MOOLRE_SENDER_ID || "StarExpress"
+  const senderId = process.env.MOOLRE_SENDER_ID || "Starexpress"
   const recipient = formatPhoneForMoolre(to)
 
   const payload = {

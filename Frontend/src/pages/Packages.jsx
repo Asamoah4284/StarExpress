@@ -94,29 +94,39 @@ export default function Packages() {
     /** @type {{ id: string, name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number } | null} */ (null),
   )
 
+  const [saveSuccess, setSaveSuccess] = React.useState(/** @type {string | null} */ (null))
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
       const price = Number(form.priceGHS)
       if (editing) {
-        const r = await updateCatalogPackage(token, editing.id, {
-          name: form.name.trim(),
-          priceGHS: price,
-          dataLimit: form.dataLimit.trim(),
-          status: form.status,
-        })
+        const editLocationId =
+          isAdmin && locationFilterId !== "all" ? locationFilterId : ""
+        const r = await updateCatalogPackage(
+          token,
+          editing.id,
+          {
+            name: form.name.trim(),
+            priceGHS: price,
+            dataLimit: form.dataLimit.trim(),
+            status: form.status,
+          },
+          editLocationId ? { locationId: editLocationId } : undefined,
+        )
         if (!r.ok) throw new Error(r.error || "Update failed")
-      } else {
-        const r = await createCatalogPackage(token, {
-          name: form.name.trim(),
-          priceGHS: price,
-          dataLimit: form.dataLimit.trim(),
-          status: form.status,
-        })
-        if (!r.ok) throw new Error(r.error || "Create failed")
+        return { mode: /** @type {"edit"} */ ("edit"), forked: Boolean(r.forked) }
       }
+      const r = await createCatalogPackage(token, {
+        name: form.name.trim(),
+        priceGHS: price,
+        dataLimit: form.dataLimit.trim(),
+        status: form.status,
+      })
+      if (!r.ok) throw new Error(r.error || "Create failed")
+      return { mode: /** @type {"create"} */ ("create"), forked: false }
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
       queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
@@ -124,6 +134,13 @@ export default function Packages() {
       setEditing(null)
       setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
       setFormError(null)
+      if (result?.mode === "edit" && result.forked) {
+        setSaveSuccess(
+          `Changes applied to ${locationFilterLabel} only. A separate package copy was created for this hostel; other hostels keep the original.`,
+        )
+      } else {
+        setSaveSuccess(null)
+      }
     },
     onError: (err) => {
       setFormError(err instanceof Error ? err.message : "Request failed")
@@ -484,6 +501,22 @@ export default function Packages() {
         </p>
       ) : null}
 
+      {saveSuccess ? (
+        <div
+          className="text-foreground bg-primary/10 border-primary/25 flex items-start justify-between gap-3 rounded-md border px-3 py-2 text-sm"
+          role="status"
+        >
+          <span>{saveSuccess}</span>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground text-xs underline"
+            onClick={() => setSaveSuccess(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
       {catalog.error ? (
         <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
@@ -580,6 +613,24 @@ export default function Packages() {
             <DialogTitle>{editing ? "Edit package" : "Add package"}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
+            {editing && isAdmin && locationFilterId !== "all" ? (
+              <p
+                className="bg-primary/10 text-foreground border-primary/25 rounded-md border px-2 py-1.5 text-xs"
+                role="status"
+              >
+                Saving for <span className="font-medium">{locationFilterLabel}</span> only.
+                If this package is also used at other hostels, a separate copy is created for this
+                hostel and its vouchers/sales are moved onto it — other hostels keep the original.
+              </p>
+            ) : editing ? (
+              <p
+                className="bg-muted/60 text-muted-foreground rounded-md border px-2 py-1.5 text-xs"
+                role="status"
+              >
+                Editing the global package — applies to every hostel still sharing this package.
+                To change only one hostel, filter to that hostel first.
+              </p>
+            ) : null}
             {formError ? (
               <p className="text-destructive bg-destructive/10 rounded-md px-2 py-1.5 text-sm" role="alert">
                 {formError}

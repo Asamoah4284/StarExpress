@@ -7,13 +7,13 @@ export function getApiBaseUrl() {
 /** Default app name (sidebar, breadcrumbs) when settings API is unavailable. */
 export function getDefaultAppName() {
   const v = import.meta.env.VITE_APP_NAME
-  return typeof v === "string" && v.trim() ? v.trim() : "StarExpress"
+  return typeof v === "string" && v.trim() ? v.trim() : "Starexpress"
 }
 
 /** Default company name (exports, reports) when settings API is unavailable. */
 export function getDefaultCompanyName() {
   const v = import.meta.env.VITE_COMPANY_NAME
-  return typeof v === "string" && v.trim() ? v.trim() : "StarExpress Admin"
+  return typeof v === "string" && v.trim() ? v.trim() : "Starexpress Admin"
 }
 
 /** Fallback commission rate (0–1) when settings API is unavailable. Admin can change live rate in Settings. */

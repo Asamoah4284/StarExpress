@@ -19,7 +19,7 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} storageKey="starexpress-theme">
+      <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} storageKey="Starexpress-theme">
         <BrowserRouter>
           <AuthProvider>
             <App />

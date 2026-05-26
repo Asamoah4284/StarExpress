@@ -78,7 +78,7 @@ export async function connectMongo(uri) {
     }
   }
 
-  const dbName = process.env.MONGODB_DB_NAME || "starexpress"
+  const dbName = process.env.MONGODB_DB_NAME || "Starexpress"
   const options = mongoClientOptionsFromEnv()
   client = Object.keys(options).length ? new MongoClient(uri, options) : new MongoClient(uri)
   await client.connect()

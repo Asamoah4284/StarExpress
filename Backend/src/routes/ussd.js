@@ -17,10 +17,16 @@ import {
   buildPackageAvailabilityFilter,
   fulfillUssdVoucherSale,
 } from "../services/voucherSaleFulfillment.js"
+import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { sendUssdVoucherSms } from "../services/ussdVoucherSms.js"
 
-const MAX_PACKAGES_IN_MENU = 8
+// Upper cap on how many active packages we fetch per location. USSD sessions are short-lived
+// so this only bounds the DB result size — the actual menu is paginated below.
+const MAX_PACKAGES_IN_MENU = 24
 const MAX_LOCATIONS_IN_MENU = 8
+// USSD turns are limited to ~160–180 characters by most gateways, so we paginate package lists
+// and surface a trailing "More" entry to advance to the next page.
+const PACKAGES_PER_PAGE = 4
 
 /**
  * @param {{
@@ -128,7 +134,97 @@ export function createUssdRouter(deps) {
   }
 
   function menuWelcome() {
-    return `Welcome to Tabitacum WiFi\n1) Buy voucher\n2) Exit\n`
+    return `WELCOME TO TABITACUM-WIFI\n1) Buy voucher\n2) Retrieve voucher\n3) Exit\n`
+  }
+
+  // How many of the caller's recent vouchers to surface when they pick "Retrieve voucher".
+  // Keep small so the response fits one USSD turn (~160 chars).
+  const RETRIEVE_VOUCHER_LIMIT = 3
+
+  /**
+   * Match a sale's stored `customerPhone` whether it was saved by USSD (E.164-without-plus,
+   * e.g. "233241234567") or typed by an admin in any of "0241234567", "+233241234567", or
+   * with spaces in between. We match on the trailing 9 national digits with optional
+   * non-digit separators so all of those formats hit.
+   *
+   * @param {string} formattedPhone The output of `formatPhoneNumber` (e.g. "233241234567").
+   */
+  function customerPhoneTrailingDigitsRegex(formattedPhone) {
+    const national = String(formattedPhone || "").slice(-9)
+    if (national.length < 7) return null
+    const pattern = national.split("").join("\\D*")
+    return new RegExp(`${pattern}$`)
+  }
+
+  /**
+   * Compact date label for USSD output: "26 May".
+   * Accepts ISO strings ("2026-05-26..."), "YYYY-MM-DD", or anything Date can parse.
+   * @param {unknown} value
+   */
+  function formatVoucherDateLabel(value) {
+    if (!value) return ""
+    const d = new Date(String(value))
+    if (Number.isNaN(d.getTime())) {
+      const m = String(value).match(/(\d{4})-(\d{2})-(\d{2})/)
+      if (!m) return ""
+      const day = Number(m[3])
+      const monthIdx = Number(m[2]) - 1
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+      return `${day} ${months[monthIdx] || ""}`.trim()
+    }
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    return `${d.getDate()} ${months[d.getMonth()]}`
+  }
+
+  /**
+   * Look up the caller's most recent voucher sales by phone. Sales without a `voucherCode`
+   * (e.g. cancelled or failed fulfilment) are filtered out.
+   * @param {string} formattedPhone
+   */
+  async function findRecentVouchersForPhone(formattedPhone) {
+    const regex = customerPhoneTrailingDigitsRegex(formattedPhone)
+    if (!regex) return []
+    const docs = await sales
+      .find({
+        customerPhone: { $regex: regex },
+        voucherCode: { $exists: true, $nin: [null, ""] },
+      })
+      .sort({ date: -1, _id: -1 })
+      .limit(RETRIEVE_VOUCHER_LIMIT)
+      .toArray()
+    return docs.map((d) => ({
+      voucherCode: String(d.voucherCode || "").trim(),
+      packageName: typeof d.packageType === "string" && d.packageType.trim() ? d.packageType.trim() : "WiFi",
+      date: formatVoucherDateLabel(d.date),
+    }))
+  }
+
+  /**
+   * Build the "Retrieve voucher" USSD response from the caller's recent sales.
+   * @param {string} formattedPhone
+   */
+  async function buildRetrieveVoucherResponse(formattedPhone) {
+    const items = await findRecentVouchersForPhone(formattedPhone)
+    if (items.length === 0) {
+      return {
+        message:
+          "No vouchers found for this number.\nIf you just paid, wait a moment and dial again, or contact support.",
+        reply: false,
+      }
+    }
+    const [latest, ...older] = items
+    const lines = [
+      "Your voucher:",
+      latest.voucherCode,
+      `${latest.packageName}${latest.date ? ` - ${latest.date}` : ""}`,
+    ]
+    if (older.length > 0) {
+      lines.push("", "Earlier:")
+      for (const v of older) {
+        lines.push(`- ${v.voucherCode}${v.date ? ` (${v.date})` : ""}`)
+      }
+    }
+    return { message: lines.join("\n"), reply: false }
   }
 
   /**
@@ -168,18 +264,38 @@ export function createUssdRouter(deps) {
     const list = []
     for (const pkg of activePkgs) {
       const packageId = String(pkg._id)
+      const resolved = resolvePackageForLocation(pkg, locationId)
+      if (resolved.status && resolved.status !== "Active") continue
       const remaining = await vouchers.countDocuments(buildPackageAvailabilityFilter(packageId, locationId))
       if (remaining > 0) {
         list.push({
           packageId,
-          name: typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : packageId,
-          priceGHS: Number(pkg.priceGHS) || 0,
-          dataLimit: typeof pkg.dataLimit === "string" ? pkg.dataLimit.trim() : "",
+          name: resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId,
+          priceGHS: resolved.priceGHS,
+          dataLimit: resolved.dataLimit,
           remaining,
         })
       }
     }
     return list
+  }
+
+  /**
+   * Build one page of the package menu plus a trailing "More" entry when more pages remain.
+   * The "More" option always takes the next slot after the visible packages on this page.
+   *
+   * @param {{ name: string, priceGHS: number }[]} packageList
+   * @param {number} page
+   * @returns {{ lines: string[], pageSize: number, hasMore: boolean, moreOption: number }}
+   */
+  function buildPackageMenuPage(packageList, page) {
+    const safePage = Number.isFinite(page) && page >= 0 ? Math.floor(page) : 0
+    const start = safePage * PACKAGES_PER_PAGE
+    const slice = packageList.slice(start, start + PACKAGES_PER_PAGE)
+    const lines = slice.map((p, i) => `${i + 1}) ${p.name} - GHS ${p.priceGHS}`)
+    const hasMore = start + slice.length < packageList.length
+    if (hasMore) lines.push(`${slice.length + 1}) More`)
+    return { lines, pageSize: slice.length, hasMore, moreOption: slice.length + 1 }
   }
 
   /**
@@ -207,10 +323,11 @@ export function createUssdRouter(deps) {
       step: "select_package",
       locationId,
       packageList,
+      packagePage: 0,
     })
 
     const locName = typeof loc.name === "string" && loc.name.trim() ? loc.name.trim() : locationId
-    const lines = packageList.map((p, i) => `${i + 1}) ${p.name} - GHS ${p.priceGHS}`)
+    const { lines } = buildPackageMenuPage(packageList, 0)
     return {
       message: `${locName}\nSelect package:\n${lines.join("\n")}`,
       reply: true,
@@ -245,7 +362,7 @@ export function createUssdRouter(deps) {
       const locationList = await getLocationsForUssdMenu()
       res.json({
         status: "ok",
-        service: "starexpress-ussd",
+        service: "Starexpress-ussd",
         shortcode: USSD_SHORTCODE,
         fallbackLocationId: getUssdFallbackLocationId() || null,
         locationsWithStock: locationList.length,
@@ -254,7 +371,7 @@ export function createUssdRouter(deps) {
     } catch (err) {
       res.json({
         status: "ok",
-        service: "starexpress-ussd",
+        service: "Starexpress-ussd",
         shortcode: USSD_SHORTCODE,
         timestamp: new Date().toISOString(),
       })
@@ -367,9 +484,14 @@ export function createUssdRouter(deps) {
             return res.json(buyFlow)
           }
           if (input === "2") {
+            const retrieveResponse = await buildRetrieveVoucherResponse(phone)
+            await sessions.updateSession(sessionId, { step: "completed" })
+            return res.json(retrieveResponse)
+          }
+          if (input === "3") {
             await sessions.updateSession(sessionId, { step: "completed" })
             return res.json({
-              message: "Thank you for using StarExpress. Goodbye!",
+              message: "Thank you for using Starexpress. Goodbye!",
               reply: false,
             })
           }
@@ -396,17 +518,33 @@ export function createUssdRouter(deps) {
 
         case "select_package": {
           const packageList = Array.isArray(session?.packageList) ? session.packageList : []
+          const currentPage =
+            Number.isFinite(Number(session?.packagePage)) && Number(session?.packagePage) >= 0
+              ? Math.floor(Number(session.packagePage))
+              : 0
+          const { pageSize, hasMore, moreOption } = buildPackageMenuPage(packageList, currentPage)
           const num = parseInt(input, 10)
-          if (!Number.isFinite(num) || num < 1 || num > packageList.length) {
-            const lines = packageList.map((/** @type {{ name: string, priceGHS: number }} */ p, i) =>
-              `${i + 1}) ${p.name} - GHS ${p.priceGHS}`,
-            )
+
+          if (hasMore && Number.isFinite(num) && num === moreOption) {
+            const nextPage = currentPage + 1
+            await sessions.updateSession(sessionId, { packagePage: nextPage })
+            const next = buildPackageMenuPage(packageList, nextPage)
+            return res.json({
+              message: `Select package:\n${next.lines.join("\n")}`,
+              reply: true,
+            })
+          }
+
+          if (!Number.isFinite(num) || num < 1 || num > pageSize) {
+            const { lines } = buildPackageMenuPage(packageList, currentPage)
             return res.json({
               message: `Invalid option.\nSelect package:\n${lines.join("\n")}`,
               reply: true,
             })
           }
-          const chosen = packageList[num - 1]
+
+          const fullIndex = currentPage * PACKAGES_PER_PAGE + (num - 1)
+          const chosen = packageList[fullIndex]
           await sessions.updateSession(sessionId, {
             step: "confirm_pay",
             selectedPackage: {
@@ -494,7 +632,7 @@ export function createUssdRouter(deps) {
           if (input === "2") {
             await sessions.updateSession(sessionId, { step: "completed" })
             return res.json({
-              message: "Purchase cancelled. Thank you for using StarExpress.",
+              message: "Purchase cancelled. Thank you for using Starexpress.",
               reply: false,
             })
           }

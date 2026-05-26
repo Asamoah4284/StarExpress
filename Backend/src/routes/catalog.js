@@ -4,6 +4,7 @@ import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { appendAuditLog } from "../lib/appendAuditLog.js"
 import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
 import { sendSms } from "../services/sms.js"
+import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -880,13 +881,6 @@ export function createCatalogRouter(deps) {
 
       const pkg = await packages.findOne({ _id: packageId })
       if (!pkg) return res.status(400).json({ error: "Unknown package." })
-      if (pkg.status !== "Active") {
-        return res.status(400).json({ error: "Only active packages can be sold." })
-      }
-      const priceGHS = Number(pkg.priceGHS)
-      if (!Number.isFinite(priceGHS) || priceGHS < 0) {
-        return res.status(400).json({ error: "Invalid package price." })
-      }
 
       let locationId = ""
       if (req.auth.role === "Admin") {
@@ -906,6 +900,15 @@ export function createCatalogRouter(deps) {
         locationId = String(loc._id)
       }
 
+      const resolved = resolvePackageForLocation(pkg, locationId)
+      if (resolved.status !== "Active") {
+        return res.status(400).json({ error: "Only active packages can be sold." })
+      }
+      const priceGHS = resolved.priceGHS
+      if (!Number.isFinite(priceGHS) || priceGHS < 0) {
+        return res.status(400).json({ error: "Invalid package price." })
+      }
+
       const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
       const voucherToUse = await vouchers.findOne(availFilter)
       if (!voucherToUse) {
@@ -914,9 +917,8 @@ export function createCatalogRouter(deps) {
         })
       }
 
-      const packageType = typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : packageId
-      const packageDataLimit =
-        typeof pkg.dataLimit === "string" && pkg.dataLimit.trim() ? pkg.dataLimit.trim() : ""
+      const packageType = resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId
+      const packageDataLimit = resolved.dataLimit && resolved.dataLimit.trim() ? resolved.dataLimit.trim() : ""
       const voucherCode = voucherDisplayCode(voucherToUse)
       const date = new Date().toISOString().slice(0, 10)
       const saleId = `sale-${randomUUID().slice(0, 12)}`
@@ -1229,30 +1231,110 @@ export function createCatalogRouter(deps) {
   router.patch("/packages/:id", requireAdmin, async (req, res) => {
     try {
       const id = req.params.id
+      const locationIdQuery = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
+      const locationIdBody = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+      const locationIdRaw = locationIdQuery || locationIdBody
+      const locationId = locationIdRaw && locationIdRaw !== "all" ? locationIdRaw : ""
+
       /** @type {Record<string, unknown>} */
-      const $set = {}
+      const fields = {}
       if (typeof req.body?.name === "string") {
         const name = req.body.name.trim()
         if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
-        $set.name = name
+        fields.name = name
       }
-      if (typeof req.body?.dataLimit === "string") $set.dataLimit = req.body.dataLimit.trim()
-      if (typeof req.body?.status === "string") $set.status = req.body.status.trim()
+      if (typeof req.body?.dataLimit === "string") fields.dataLimit = req.body.dataLimit.trim()
+      if (typeof req.body?.status === "string") fields.status = req.body.status.trim()
       if (req.body?.priceGHS !== undefined) {
         const priceGHS = Number(req.body.priceGHS)
         if (!Number.isFinite(priceGHS) || priceGHS < 0) return res.status(400).json({ error: "Invalid price." })
-        $set.priceGHS = priceGHS
+        fields.priceGHS = priceGHS
       }
-      if (Object.keys($set).length === 0) {
+      if (Object.keys(fields).length === 0) {
         return res.status(400).json({ error: "No valid fields to update." })
       }
-      const r = await packages.updateOne({ _id: id }, { $set })
+
+      const existing = await packages.findOne({ _id: id })
+      if (!existing) return res.status(404).json({ error: "Package not found." })
+
+      // Scoped edit: only this hostel's view should change. Fork the package when it's actually
+      // shared with other locations so the original keeps serving them unchanged.
+      if (locationId) {
+        const loc = await locations.findOne({ _id: locationId })
+        if (!loc) return res.status(404).json({ error: "Unknown location." })
+        const locName = typeof loc.name === "string" && loc.name.trim() ? loc.name.trim() : locationId
+
+        const otherLocationVoucherCount = await vouchers.countDocuments({
+          packageId: id,
+          locationId: { $ne: locationId },
+        })
+        const otherLocationSaleCount = await sales.countDocuments({
+          packageId: id,
+          locationId: { $ne: locationId },
+        })
+        const sharedWithOtherLocations = otherLocationVoucherCount > 0 || otherLocationSaleCount > 0
+
+        if (sharedWithOtherLocations) {
+          const newId = `pkg-${randomUUID().slice(0, 8)}`
+          /** @type {import("mongodb").Document} */
+          const forked = {
+            _id: newId,
+            name: typeof existing.name === "string" ? existing.name : "",
+            priceGHS:
+              typeof existing.priceGHS === "number"
+                ? existing.priceGHS
+                : Number(existing.priceGHS) || 0,
+            dataLimit: typeof existing.dataLimit === "string" ? existing.dataLimit : "",
+            status: typeof existing.status === "string" ? existing.status : "Active",
+            stockUnits: 0,
+            ...fields,
+          }
+          await packages.insertOne(forked)
+
+          /** @type {Record<string, unknown>} */
+          const voucherSet = { packageId: newId }
+          if (typeof fields.name === "string") voucherSet.packageName = fields.name
+          await vouchers.updateMany(
+            { packageId: id, locationId },
+            { $set: voucherSet },
+          )
+
+          /** @type {Record<string, unknown>} */
+          const salesSet = { packageId: newId }
+          if (typeof fields.name === "string") salesSet.packageType = fields.name
+          await sales.updateMany(
+            { packageId: id, locationId },
+            { $set: salesSet },
+          )
+
+          await syncPackageStockUnitsFromVouchers(vouchers, packages)
+          const saved = await packages.findOne({ _id: newId })
+          if (!saved) return res.status(500).json({ error: "Failed to load forked package." })
+
+          await appendAuditLog(
+            auditLogs,
+            req.auth,
+            `Forked package "${existing.name}" (${id}) for location "${locName}" (${locationId}) into "${saved.name}" (${newId})`,
+          )
+          return res.json({ package: toPackage(saved), forked: true, fromPackageId: id })
+        }
+        // Not shared with any other location — safe to edit in place.
+      }
+
+      const r = await packages.updateOne({ _id: id }, { $set: fields })
       if (r.matchedCount === 0) return res.status(404).json({ error: "Package not found." })
+
+      // Keep voucher/sales display fields in sync with the package they reference.
+      if (typeof fields.name === "string") {
+        await vouchers.updateMany({ packageId: id }, { $set: { packageName: fields.name } })
+        await sales.updateMany({ packageId: id }, { $set: { packageType: fields.name } })
+      }
+
       await syncPackageStockUnitsFromVouchers(vouchers, packages)
       const doc = await packages.findOne({ _id: id })
       if (!doc) return res.status(404).json({ error: "Package not found." })
       await appendAuditLog(auditLogs, req.auth, `Updated package "${doc.name}" (${id})`)
-      res.json({ package: toPackage(doc) })
+      res.json({ package: toPackage(doc), forked: false })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)

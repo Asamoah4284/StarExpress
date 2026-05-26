@@ -7,13 +7,13 @@ const LOGO_DATA_URL_RE = /^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i
 /** @returns {string} */
 export function defaultAppName() {
   const raw = process.env.APP_NAME
-  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "StarExpress"
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "Starexpress"
 }
 
 /** @returns {string} */
 export function defaultCompanyName() {
   const raw = process.env.COMPANY_NAME
-  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "StarExpress Admin"
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "Starexpress Admin"
 }
 
 /**

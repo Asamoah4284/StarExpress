@@ -10,7 +10,7 @@ function livenessHandler(_req, res) {
   res.json({
     ok: true,
     status: "live",
-    service: "starexpress-api",
+    service: "Starexpress-api",
     uptimeSeconds: Math.floor((Date.now() - serverStartedAt) / 1000),
   })
 }
@@ -24,7 +24,7 @@ async function readinessHandler(_req, res) {
     res.json({
       ok: true,
       status: "ready",
-      service: "starexpress-api",
+      service: "Starexpress-api",
       uptimeSeconds: Math.floor((Date.now() - serverStartedAt) / 1000),
       mongo: { ok: true },
     })
@@ -32,7 +32,7 @@ async function readinessHandler(_req, res) {
     res.status(503).json({
       ok: false,
       status: "not_ready",
-      service: "starexpress-api",
+      service: "Starexpress-api",
       mongo: { ok: false },
     })
   }

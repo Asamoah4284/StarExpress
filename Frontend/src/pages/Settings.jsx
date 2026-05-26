@@ -240,7 +240,7 @@ export default function Settings() {
                 value={appName}
                 onChange={(e) => setAppName(e.target.value)}
                 disabled={settingsQuery.isLoading || saveProfileMutation.isPending}
-                placeholder="StarExpress"
+                placeholder="Starexpress"
               />
               <p className="text-muted-foreground text-xs">Shown in the sidebar, breadcrumbs, and sign-in pages.</p>
             </div>
@@ -251,7 +251,7 @@ export default function Settings() {
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
                 disabled={settingsQuery.isLoading || saveProfileMutation.isPending}
-                placeholder="StarExpress Admin"
+                placeholder="Starexpress Admin"
               />
               <p className="text-muted-foreground text-xs">Included in CSV exports.</p>
             </div>
