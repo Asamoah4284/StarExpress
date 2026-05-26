@@ -9,7 +9,7 @@ if (!uri) {
 
 const client = new MongoClient(uri)
 await client.connect()
-const db = client.db(process.env.MONGODB_DB_NAME || "Starexpress")
+const db = client.db(process.env.MONGODB_DB_NAME || "starexpress")
 const locs = await db.collection("locations").find({}).project({ _id: 1, name: 1 }).toArray()
 
 if (!locs.length) {

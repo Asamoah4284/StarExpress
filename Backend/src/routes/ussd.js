@@ -254,9 +254,10 @@ export function createUssdRouter(deps) {
   async function getPackagesForUssdMenu(locationId) {
     if (!locationId) return []
 
+    // Fetch by price ascending so cheaper plans are surfaced first in the USSD menu.
     const activePkgs = await packages
       .find({ status: "Active" })
-      .sort({ name: 1 })
+      .sort({ priceGHS: 1, name: 1 })
       .limit(MAX_PACKAGES_IN_MENU)
       .toArray()
 
@@ -277,7 +278,44 @@ export function createUssdRouter(deps) {
         })
       }
     }
+    // Resolve-aware sort: handles any leftover legacy per-location override prices that may differ
+    // from the base price returned by the Mongo sort above.
+    list.sort((a, b) => {
+      const pa = Number(a.priceGHS)
+      const pb = Number(b.priceGHS)
+      if (!Number.isFinite(pa) && !Number.isFinite(pb)) return 0
+      if (!Number.isFinite(pa)) return 1
+      if (!Number.isFinite(pb)) return -1
+      if (pa !== pb) return pa - pb
+      return String(a.name).localeCompare(String(b.name))
+    })
     return list
+  }
+
+  // Hard cap on how many characters of a package name we render in the USSD menu.
+  // Keeps the per-line length predictable so 4 entries + "5) More" + the location header
+  // all fit within a single USSD turn (~160 chars).
+  const PACKAGE_NAME_MAX_LEN = 22
+
+  /**
+   * @param {string} name
+   */
+  function shortenPackageName(name) {
+    const t = typeof name === "string" ? name.trim() : ""
+    if (!t) return ""
+    if (t.length <= PACKAGE_NAME_MAX_LEN) return t
+    return `${t.slice(0, PACKAGE_NAME_MAX_LEN - 1).trimEnd()}…`
+  }
+
+  /**
+   * Format a price as "GHS{N}" — drops the decimal when whole, keeps two places otherwise.
+   * @param {number | string} value
+   */
+  function formatPriceForUssd(value) {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return "GHS?"
+    if (Number.isInteger(n)) return `GHS${n}`
+    return `GHS${n.toFixed(2).replace(/\.?0+$/, "")}`
   }
 
   /**
@@ -292,7 +330,9 @@ export function createUssdRouter(deps) {
     const safePage = Number.isFinite(page) && page >= 0 ? Math.floor(page) : 0
     const start = safePage * PACKAGES_PER_PAGE
     const slice = packageList.slice(start, start + PACKAGES_PER_PAGE)
-    const lines = slice.map((p, i) => `${i + 1}) ${p.name} - GHS ${p.priceGHS}`)
+    const lines = slice.map(
+      (p, i) => `${i + 1}) ${shortenPackageName(p.name)} ${formatPriceForUssd(p.priceGHS)}`,
+    )
     const hasMore = start + slice.length < packageList.length
     if (hasMore) lines.push(`${slice.length + 1}) More`)
     return { lines, pageSize: slice.length, hasMore, moreOption: slice.length + 1 }

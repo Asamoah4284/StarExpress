@@ -16,7 +16,7 @@ let externalref = ref
 if (!externalref) {
   const client = new MongoClient(process.env.MONGODB_URI)
   await client.connect()
-  const db = client.db(process.env.MONGODB_DB_NAME || "Starexpress")
+  const db = client.db(process.env.MONGODB_DB_NAME || "starexpress")
   const session = await db
     .collection("ussd_sessions")
     .findOne({ paymentReference: { $ne: null }, step: "payment" }, { sort: { updatedAt: -1 } })
