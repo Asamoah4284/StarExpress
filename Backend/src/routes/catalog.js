@@ -7,10 +7,11 @@ import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
 import { sendSms } from "../services/sms.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import {
-  confirmAgentMoMoPin,
-  getAgentMoMoPaymentStatus,
-  initiateAgentMoMoSale,
-} from "../services/agentSalePayment.js"
+  billingEmailFromPhone,
+  generateAgentPaymentReference,
+  initializeMoolreEmbedLink,
+  verifyMoolrePaymentWithRetry,
+} from "../lib/moolreEmbedPayment.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -152,6 +153,9 @@ function toSale(d) {
       ? { voucherCode: d.voucherCode.trim() }
       : {}),
     ...(typeof d.channel === "string" && d.channel.trim() ? { channel: d.channel.trim() } : {}),
+    ...(typeof d.paymentReference === "string" && d.paymentReference.trim()
+      ? { paymentReference: d.paymentReference.trim() }
+      : {}),
     ...(typeof d.soldByUserId === "string" && d.soldByUserId.trim()
       ? { soldByUserId: d.soldByUserId.trim() }
       : {}),
@@ -252,6 +256,37 @@ async function findConflictingLocationForSalesAgent(locations, users, agentUserI
     if (resolved === agentUserId) return loc
   }
   return null
+}
+
+const UNASSIGNED_MANAGER_LABEL = "—"
+
+/**
+ * Move a sales agent to a new location by clearing their link on every other site.
+ * @param {import("mongodb").Collection} locations
+ * @param {import("mongodb").Collection} users
+ * @param {string} agentUserId
+ * @param {string | undefined} keepLocationId
+ */
+async function clearSalesAgentFromOtherLocations(locations, users, agentUserId, keepLocationId) {
+  const byIdFilter = { managerUserId: agentUserId }
+  if (keepLocationId) byIdFilter._id = { $ne: keepLocationId }
+  await locations.updateMany(byIdFilter, {
+    $unset: { managerUserId: "" },
+    $set: { manager: UNASSIGNED_MANAGER_LABEL },
+  })
+
+  const q = keepLocationId ? { _id: { $ne: keepLocationId } } : {}
+  const locs = await locations.find(q).project({ _id: 1, manager: 1, managerUserId: 1 }).toArray()
+  for (const loc of locs) {
+    if (loc.managerUserId) continue
+    const resolved = await tryResolveUniqueSalesAgentIdFromManagerName(users, String(loc.manager || ""))
+    if (resolved === agentUserId) {
+      await locations.updateOne(
+        { _id: loc._id },
+        { $unset: { managerUserId: "" }, $set: { manager: UNASSIGNED_MANAGER_LABEL } },
+      )
+    }
+  }
 }
 
 const VOUCHER_LIST_MAX_LIMIT = 100
@@ -501,12 +536,11 @@ function requireSalesAgentOrAdmin(req, res, next) {
  *   auditLogs: import("mongodb").Collection
  *   vouchers: import("mongodb").Collection
  *   users: import("mongodb").Collection
- *   ussdSessions: import("mongodb").Collection
  *   jwtSecret: string
  * }} deps
  */
 export function createCatalogRouter(deps) {
-  const { locations, packages, sales, disputes, auditLogs, vouchers, users, ussdSessions, jwtSecret } = deps
+  const { locations, packages, sales, disputes, auditLogs, vouchers, users, jwtSecret } = deps
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
 
@@ -920,129 +954,88 @@ export function createCatalogRouter(deps) {
     }
   })
 
-  router.post("/sales/initiate-momo", requireSalesAgentOrAdmin, async (req, res) => {
+  router.post("/sales/initialize-moolre-payment", requireSalesAgentOrAdmin, async (req, res) => {
     try {
-      const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
       const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
       const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
-      const locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
-      const paymentNetwork =
-        typeof req.body?.paymentNetwork === "string" ? req.body.paymentNetwork.trim() : ""
-
+      const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
-      if (customerPhone.length < 7 || customerPhone.length > 32) {
-        return res.status(400).json({ error: "Customer phone must be between 7 and 32 characters." })
-      }
-      if (customerPhone.replace(/\D/g, "").length < 7) {
-        return res.status(400).json({ error: "Customer phone must include at least 7 digits." })
+      const phoneDigits = customerPhone.replace(/\D/g, "")
+      if (customerPhone.length < 7 || customerPhone.length > 32 || phoneDigits.length < 7) {
+        return res.status(400).json({ error: "Customer phone must be valid (at least 7 digits)." })
       }
 
-      const result = await initiateAgentMoMoSale({
-        packages,
-        vouchers,
-        locations,
-        users,
-        ussdSessions,
-        sales,
-        auditLogs,
-        auth: { userId: req.auth.userId, role: req.auth.role },
-        packageId,
-        customerPhone,
-        paymentNetwork: paymentNetwork || undefined,
-        locationId,
-        findConflictingLocationForSalesAgent,
+      const billingEmail = billingEmailFromPhone(customerPhone)
+      if (!billingEmail) {
+        return res.status(400).json({ error: "A valid customer phone is required to start MoMo payment." })
+      }
+
+      const pkg = await packages.findOne({ _id: packageId })
+      if (!pkg) return res.status(400).json({ error: "Unknown package." })
+
+      let locationId = ""
+      if (req.auth.role === "Admin") {
+        locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+        if (!locationId) {
+          return res.status(400).json({ error: "locationId is required when starting payment as administrator." })
+        }
+        const loc = await locations.findOne({ _id: locationId })
+        if (!loc) return res.status(400).json({ error: "Unknown location." })
+      } else {
+        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        if (!loc) {
+          return res.status(403).json({
+            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
+          })
+        }
+        locationId = String(loc._id)
+      }
+
+      const resolved = resolvePackageForLocation(pkg, locationId)
+      if (resolved.status !== "Active") {
+        return res.status(400).json({ error: "Only active packages can be sold." })
+      }
+      const priceGHS = resolved.priceGHS
+      if (!Number.isFinite(priceGHS) || priceGHS <= 0) {
+        return res.status(400).json({ error: "Invalid package price." })
+      }
+
+      const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
+      const available = await vouchers.findOne(availFilter, { projection: { _id: 1 } })
+      if (!available) {
+        return res.status(400).json({ error: "No vouchers available for this package at this wifi location." })
+      }
+
+      const paymentReference = generateAgentPaymentReference(req.auth.userId)
+      const init = await initializeMoolreEmbedLink({
+        amount: priceGHS,
+        email: billingEmail,
+        externalref: paymentReference,
+        metadata: {
+          userId: String(req.auth.userId),
+          packageId,
+          locationId,
+          orderType: "agent_sale",
+        },
       })
 
-      if (!result.ok) {
-        return res.status(result.status || 500).json({ error: result.error || "Could not start payment." })
+      if (!init.ok) {
+        return res.status(400).json({ error: init.error || "Failed to initialize payment." })
       }
 
-      return res.status(200).json({
-        phase: result.phase,
-        paymentReference: result.paymentReference,
-        sessionId: result.sessionId,
-        shortcode: result.shortcode,
-        detectedNetwork: result.detectedNetwork,
-        message: result.message,
-        moolreCode: result.moolreCode,
+      res.json({
+        success: true,
+        data: {
+          authorization_url: init.authorization_url,
+          reference: paymentReference,
+          redirect_url: init.redirect_url,
+          amount: priceGHS,
+        },
       })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
-      return res.status(status).json({ error })
-    }
-  })
-
-  router.post("/sales/confirm-momo", requireSalesAgentOrAdmin, async (req, res) => {
-    try {
-      const paymentReference =
-        typeof req.body?.paymentReference === "string" ? req.body.paymentReference.trim() : ""
-      const pin = typeof req.body?.pin === "string" ? req.body.pin.trim() : ""
-
-      if (!paymentReference) return res.status(400).json({ error: "paymentReference is required." })
-      if (!pin) return res.status(400).json({ error: "Customer PIN is required." })
-
-      const result = await confirmAgentMoMoPin({
-        ussdSessions,
-        packages,
-        vouchers,
-        sales,
-        auditLogs,
-        auth: { userId: req.auth.userId, role: req.auth.role },
-        paymentReference,
-        pin,
-      })
-
-      if (!result.ok) {
-        return res.status(result.status || 500).json({
-          error: result.error || "Could not confirm payment.",
-          moolreCode: result.moolreCode,
-        })
-      }
-
-      return res.status(200).json({
-        phase: result.phase,
-        paymentReference: result.paymentReference,
-        message: result.message,
-        moolreCode: result.moolreCode,
-      })
-    } catch (err) {
-      console.error(err)
-      const { status, error } = mongoHttpError(err)
-      return res.status(status).json({ error })
-    }
-  })
-
-  router.get("/sales/momo-status/:paymentReference", requireSalesAgentOrAdmin, async (req, res) => {
-    try {
-      const paymentReference =
-        typeof req.params?.paymentReference === "string" ? req.params.paymentReference.trim() : ""
-      if (!paymentReference) return res.status(400).json({ error: "paymentReference is required." })
-
-      const result = await getAgentMoMoPaymentStatus({
-        ussdSessions,
-        packages,
-        vouchers,
-        sales,
-        auditLogs,
-        paymentReference,
-      })
-
-      if (!result.ok) {
-        return res.status(result.status || 404).json({ error: result.error || "Payment not found." })
-      }
-
-      return res.json({
-        status: result.status,
-        message: result.message,
-        voucherCode: result.voucherCode,
-        smsSent: result.smsSent,
-        sale: result.sale ? toSale(result.sale) : undefined,
-      })
-    } catch (err) {
-      console.error(err)
-      const { status, error } = mongoHttpError(err)
-      return res.status(status).json({ error })
+      res.status(status).json({ error })
     }
   })
 
@@ -1051,8 +1044,10 @@ export function createCatalogRouter(deps) {
       const customerNameRaw = typeof req.body?.customerName === "string" ? req.body.customerName.trim() : ""
       const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
       const paymentNumberRaw = typeof req.body?.paymentNumber === "string" ? req.body.paymentNumber.trim() : ""
+      const paymentReferenceRaw =
+        typeof req.body?.paymentReference === "string" ? req.body.paymentReference.trim() : ""
       const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
-      const paymentNumber = paymentNumberRaw
+      let paymentNumber = paymentNumberRaw
       const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
       const phoneDigits = customerPhone.replace(/\D/g, "")
@@ -1065,6 +1060,12 @@ export function createCatalogRouter(deps) {
       const customerName = customerNameRaw.length >= 2 ? customerNameRaw : customerPhone
       if (paymentNumber.length > 64) {
         return res.status(400).json({ error: "Payment number must be at most 64 characters." })
+      }
+
+      if (req.auth.role === ROLE_SALES_AGENT && !paymentReferenceRaw) {
+        return res.status(400).json({
+          error: "MoMo payment is required. Collect payment via Moolre before completing the sale.",
+        })
       }
 
       const pkg = await packages.findOne({ _id: packageId })
@@ -1097,6 +1098,32 @@ export function createCatalogRouter(deps) {
         return res.status(400).json({ error: "Invalid package price." })
       }
 
+      let paymentReference = paymentReferenceRaw
+      if (paymentReference) {
+        const existingPaid = await sales.findOne({ paymentReference })
+        if (existingPaid) {
+          return res.status(200).json({ sale: toSale(existingPaid), smsSent: true, idempotent: true })
+        }
+
+        if (!paymentReference.startsWith("SE-AGENT-")) {
+          return res.status(400).json({ error: "Invalid payment reference for agent MoMo sale." })
+        }
+
+        const verified = await verifyMoolrePaymentWithRetry(paymentReference)
+        if (!verified.ok) {
+          return res.status(400).json({ error: verified.error || "Payment not verified." })
+        }
+
+        const amountPaid = Number(verified.amountPaid)
+        if (!Number.isFinite(amountPaid) || Math.abs(amountPaid - priceGHS) >= 0.02) {
+          return res.status(400).json({
+            error: `Payment amount mismatch. Expected GH₵${priceGHS.toFixed(2)}, received GH₵${Number.isFinite(amountPaid) ? amountPaid.toFixed(2) : "?"}.`,
+          })
+        }
+
+        if (!paymentNumber) paymentNumber = customerPhone
+      }
+
       const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
       const voucherToUse = await vouchers.findOne(availFilter)
       if (!voucherToUse) {
@@ -1126,8 +1153,9 @@ export function createCatalogRouter(deps) {
         status: "Completed",
         voucherId: String(voucherToUse._id),
         voucherCode,
-        channel: "agent",
+        channel: paymentReference ? "agent_momo" : "agent",
         soldByUserId: req.auth.userId,
+        ...(paymentReference ? { paymentReference } : {}),
       }
 
       await sales.insertOne(saleDoc)
@@ -1245,12 +1273,7 @@ export function createCatalogRouter(deps) {
       if (managerUserId) {
         const agent = await getActiveSalesAgentName(users, managerUserId)
         if (!agent.ok) return res.status(400).json({ error: agent.error })
-        const taken = await findConflictingLocationForSalesAgent(locations, users, managerUserId, undefined)
-        if (taken) {
-          return res.status(409).json({
-            error: `This sales agent is already assigned to location "${taken.name}". Each agent can only manage one location.`,
-          })
-        }
+        await clearSalesAgentFromOtherLocations(locations, users, managerUserId, undefined)
         doc = { _id: id, name, address, manager: agent.name, managerUserId, totalSales }
       } else {
         if (!managerText) return res.status(400).json({ error: "Manager is required." })
@@ -1258,12 +1281,7 @@ export function createCatalogRouter(deps) {
         if (resolvedId) {
           const agent = await getActiveSalesAgentName(users, resolvedId)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
-          const taken = await findConflictingLocationForSalesAgent(locations, users, resolvedId, undefined)
-          if (taken) {
-            return res.status(409).json({
-              error: `This sales agent is already assigned to location "${taken.name}". Each agent can only manage one location.`,
-            })
-          }
+          await clearSalesAgentFromOtherLocations(locations, users, resolvedId, undefined)
           doc = { _id: id, name, address, manager: agent.name, managerUserId: resolvedId, totalSales }
         } else {
           doc = { _id: id, name, address, manager: managerText, totalSales }
@@ -1313,12 +1331,7 @@ export function createCatalogRouter(deps) {
           const uid = managerUserIdRaw.trim()
           const agent = await getActiveSalesAgentName(users, uid)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
-          const taken = await findConflictingLocationForSalesAgent(locations, users, uid, id)
-          if (taken) {
-            return res.status(409).json({
-              error: `This sales agent is already assigned to location "${taken.name}". Each agent can only manage one location.`,
-            })
-          }
+          await clearSalesAgentFromOtherLocations(locations, users, uid, id)
           $set.managerUserId = uid
           $set.manager = agent.name
         } else {
@@ -1330,12 +1343,7 @@ export function createCatalogRouter(deps) {
         if (resolvedId) {
           const agent = await getActiveSalesAgentName(users, resolvedId)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
-          const taken = await findConflictingLocationForSalesAgent(locations, users, resolvedId, id)
-          if (taken) {
-            return res.status(409).json({
-              error: `This sales agent is already assigned to location "${taken.name}". Each agent can only manage one location.`,
-            })
-          }
+          await clearSalesAgentFromOtherLocations(locations, users, resolvedId, id)
           $set.manager = agent.name
           $set.managerUserId = resolvedId
         } else {

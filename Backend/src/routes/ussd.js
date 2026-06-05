@@ -15,9 +15,10 @@ import { getMoolreWebhookPayload, parseMoolrePaymentEvent } from "../lib/moolreW
 import {
   buildLocationAvailabilityFilter,
   buildPackageAvailabilityFilter,
+  fulfillUssdVoucherSale,
 } from "../services/voucherSaleFulfillment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
-import { processPaymentSuccess } from "../services/paymentCompletion.js"
+import { sendUssdVoucherSms } from "../services/ussdVoucherSms.js"
 
 // Upper cap on how many active packages we fetch per location. USSD sessions are short-lived
 // so this only bounds the DB result size — the actual menu is paginated below.
@@ -47,13 +48,76 @@ export function createUssdRouter(deps) {
     return String(process.env.USSD_DEFAULT_LOCATION_ID || "").trim()
   }
 
-  /** @param {string} paymentReference @param {string} [source] */
+  /**
+   * Fulfill voucher sale + SMS after Moolre confirms payment (webhook or status poll).
+   * @param {string} paymentReference
+   * @param {string} source
+   */
   async function processUssdPaymentSuccess(paymentReference, source = "webhook") {
-    return processPaymentSuccess(
+    const existingSale = await sales.findOne({ paymentReference })
+    if (existingSale) {
+      console.log(`[ussd-pay] ${source} idempotent`, paymentReference, existingSale._id)
+      if (existingSale.voucherCode && existingSale.customerPhone && existingSale.smsSent !== true) {
+        const sms = await sendUssdVoucherSms({
+          to: String(existingSale.customerPhone),
+          packageName: String(existingSale.packageType || "WiFi"),
+          voucherCode: String(existingSale.voucherCode),
+        })
+        if (sms.success) {
+          await sales.updateOne({ _id: existingSale._id }, { $set: { smsSent: true } })
+        }
+      }
+      return { ok: true, status: "already_processed", saleId: existingSale._id }
+    }
+
+    const ussdSession = await sessions.findByPaymentReference(paymentReference)
+    if (!ussdSession) {
+      console.warn(`[ussd-pay] ${source} no session for`, paymentReference)
+      return { ok: false, status: "no_session" }
+    }
+
+    const selected = ussdSession.selectedPackage
+    const packageId = selected?.packageId
+    const locationId = ussdSession.locationId || getUssdFallbackLocationId()
+    const customerPhone = ussdSession.phone
+
+    if (!packageId || !locationId || !customerPhone) {
+      console.error(`[ussd-pay] ${source} invalid session`, paymentReference)
+      return { ok: false, status: "invalid_session" }
+    }
+
+    const result = await fulfillUssdVoucherSale({
+      packages,
+      vouchers,
+      sales,
+      auditLogs,
       paymentReference,
-      { ussdSessions, packages, vouchers, sales, auditLogs },
-      source,
+      customerPhone: String(customerPhone),
+      packageId: String(packageId),
+      locationId: String(locationId),
+    })
+
+    await sessions.updateSession(String(ussdSession._id), { step: "completed" })
+
+    if (!result.ok) {
+      console.error(`[ussd-pay] ${source} fulfillment failed`, paymentReference, result.error)
+      return { ok: false, status: "fulfillment_failed", error: result.error }
+    }
+
+    console.log(
+      `[ussd-pay] ${source} success`,
+      paymentReference,
+      result.voucherCode,
+      "smsSent=",
+      result.smsSent,
     )
+    return {
+      ok: true,
+      status: "success",
+      saleId: result.sale?._id,
+      voucherCode: result.voucherCode,
+      smsSent: result.smsSent,
+    }
   }
 
   /** @param {string} paymentReference */

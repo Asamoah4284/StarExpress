@@ -17,12 +17,14 @@ import UploadedVouchers from "@/pages/UploadedVouchers.jsx"
 import Vouchers from "@/pages/Vouchers.jsx"
 import RevenueSplit from "@/pages/RevenueSplit.jsx"
 import AgentCommissions from "@/pages/AgentCommissions.jsx"
+import AgentPaymentSuccess from "@/pages/AgentPaymentSuccess.jsx"
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
+      <Route path="/agent-payment-success" element={<AgentPaymentSuccess />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<MainLayout />}>
           <Route index element={<Dashboard />} />

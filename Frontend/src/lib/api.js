@@ -647,92 +647,10 @@ export async function deleteCatalogPackage(token, id) {
  *   customerPhone: string
  *   customerName?: string
  *   paymentNumber?: string
+ *   paymentReference?: string
  *   locationId?: string
  * }} body
  */
-/**
- * @param {string} token
- * @param {{
- *   packageId: string
- *   customerPhone: string
- *   locationId?: string
- *   paymentNetwork?: string
- * }} body
- */
-export async function initiateAgentMoMoSale(token, body) {
-  const { res, data } = await parseJsonResponse("/api/catalog/sales/initiate-momo", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
-    return { ok: false, error: msg }
-  }
-  if (typeof data !== "object" || data === null || typeof data.paymentReference !== "string") {
-    return { ok: false, error: "Unexpected response from server." }
-  }
-  return {
-    ok: true,
-    phase: typeof data.phase === "string" ? data.phase : "pin",
-    paymentReference: data.paymentReference,
-    sessionId: typeof data.sessionId === "string" ? data.sessionId : "",
-    shortcode: typeof data.shortcode === "string" ? data.shortcode : "",
-    message: typeof data.message === "string" ? data.message : "",
-    moolreCode: typeof data.moolreCode === "string" ? data.moolreCode : undefined,
-  }
-}
-
-/**
- * @param {string} token
- * @param {{ paymentReference: string, pin: string }} body
- */
-export async function confirmAgentMoMoPin(token, body) {
-  const { res, data } = await parseJsonResponse("/api/catalog/sales/confirm-momo", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
-    return { ok: false, error: msg }
-  }
-  if (typeof data !== "object" || data === null) {
-    return { ok: false, error: "Unexpected response from server." }
-  }
-  return {
-    ok: true,
-    phase: typeof data.phase === "string" ? data.phase : "momo",
-    paymentReference: typeof data.paymentReference === "string" ? data.paymentReference : body.paymentReference,
-    message: typeof data.message === "string" ? data.message : "",
-    moolreCode: typeof data.moolreCode === "string" ? data.moolreCode : undefined,
-  }
-}
-
-/** @param {string} token @param {string} paymentReference */
-export async function fetchAgentMoMoStatus(token, paymentReference) {
-  const path = `/api/catalog/sales/momo-status/${encodeURIComponent(paymentReference)}`
-  const { res, data } = await parseJsonResponse(path, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!res.ok) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
-    return { ok: false, error: msg }
-  }
-  if (typeof data !== "object" || data === null || typeof data.status !== "string") {
-    return { ok: false, error: "Unexpected response from server." }
-  }
-  return {
-    ok: true,
-    status: data.status,
-    message: typeof data.message === "string" ? data.message : "",
-    voucherCode: typeof data.voucherCode === "string" ? data.voucherCode : undefined,
-    smsSent: data.smsSent === true,
-    sale: typeof data.sale === "object" && data.sale !== null ? data.sale : undefined,
-  }
-}
-
 export async function createCatalogSale(token, body) {
   const { res, data } = await parseJsonResponse("/api/catalog/sales", {
     method: "POST",
@@ -747,6 +665,44 @@ export async function createCatalogSale(token, body) {
     return { ok: false, error: "Unexpected response from server." }
   }
   return { ok: true, sale: data.sale }
+}
+
+/**
+ * Start Moolre embed payment for an agent product sale (MoMo prompt on customer phone).
+ * @param {string} token
+ * @param {{ packageId: string, customerPhone: string, locationId?: string }} body
+ */
+export async function initializeAgentMoolrePayment(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/sales/initialize-moolre-payment", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok || !data || typeof data !== "object" || data.success !== true) {
+    const msg =
+      typeof data === "object" && data && "error" in data
+        ? String(data.error)
+        : typeof data === "object" && data && "message" in data
+          ? String(data.message)
+          : res.statusText
+    return { ok: false, error: msg }
+  }
+  const payload = data.data
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    typeof payload.authorization_url !== "string" ||
+    typeof payload.reference !== "string"
+  ) {
+    return { ok: false, error: "Unexpected response from payment gateway." }
+  }
+  return {
+    ok: true,
+    authorization_url: payload.authorization_url,
+    reference: payload.reference,
+    redirect_url: typeof payload.redirect_url === "string" ? payload.redirect_url : null,
+    amount: typeof payload.amount === "number" ? payload.amount : null,
+  }
 }
 
 /** @param {string} token @param {string} id */

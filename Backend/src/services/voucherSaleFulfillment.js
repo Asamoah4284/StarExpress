@@ -77,25 +77,11 @@ async function syncPackageStockForLocation(packagesCol, vouchersCol, packageId, 
  *   customerPhone: string
  *   packageId: string
  *   locationId: string
- *   channel?: "ussd" | "agent"
- *   soldByUserId?: string | null
- *   auditActor?: string
  * }} opts
  */
 export async function fulfillUssdVoucherSale(opts) {
-  const {
-    packages,
-    vouchers,
-    sales,
-    auditLogs,
-    paymentReference,
-    customerPhone,
-    packageId,
-    locationId,
-    channel = "ussd",
-    soldByUserId = null,
-    auditActor = "USSD",
-  } = opts
+  const { packages, vouchers, sales, auditLogs, paymentReference, customerPhone, packageId, locationId } =
+    opts
 
   const existing = await sales.findOne({ paymentReference })
   if (existing) {
@@ -126,8 +112,7 @@ export async function fulfillUssdVoucherSale(opts) {
   const voucherCode = voucherDisplayCode(voucherToUse)
   const soldAt = new Date().toISOString()
   const date = soldAt.slice(0, 10)
-  const saleId =
-    channel === "agent" ? `sale-agent-${randomUUID().slice(0, 12)}` : `sale-ussd-${randomUUID().slice(0, 12)}`
+  const saleId = `sale-ussd-${randomUUID().slice(0, 12)}`
 
   const saleDoc = {
     _id: saleId,
@@ -144,9 +129,8 @@ export async function fulfillUssdVoucherSale(opts) {
     voucherId: String(voucherToUse._id),
     voucherCode,
     paymentReference,
-    channel,
+    channel: "ussd",
     smsSent: false,
-    ...(soldByUserId ? { soldByUserId } : {}),
   }
 
   await sales.insertOne(saleDoc)
@@ -184,11 +168,10 @@ export async function fulfillUssdVoucherSale(opts) {
   }
 
   try {
-    const channelLabel = channel === "agent" ? "Agent MoMo sale" : "USSD sale"
     await auditLogs.insertOne({
       _id: `audit-${randomUUID().slice(0, 12)}`,
-      actor: auditActor,
-      action: `${channelLabel} ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference}`,
+      actor: "USSD",
+      action: `USSD sale ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference}`,
       at: new Date().toISOString(),
     })
   } catch (e) {

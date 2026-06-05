@@ -447,24 +447,17 @@ export default function Locations() {
                       {filteredAgents.map((agent) => {
                         const isSelected = form.salesAgentId === agent.id
                         const takenAt = agentTakenElsewhere.get(agent.id)
-                        const isTaken = Boolean(takenAt) && !isSelected
+                        const willMove = Boolean(takenAt) && !isSelected
                         return (
                           <li key={agent.id}>
                             <button
                               type="button"
-                              disabled={isTaken}
-                              title={
-                                isTaken
-                                  ? `Already assigned to ${takenAt}. Each sales agent can only manage one location.`
-                                  : undefined
-                              }
+                              title={willMove ? `Will move this agent from ${takenAt} to this location.` : undefined}
                               className={cn(
                                 "flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm outline-none hover:bg-accent focus-visible:bg-accent",
                                 isSelected && "bg-accent",
-                                isTaken && "cursor-not-allowed opacity-50 hover:bg-transparent",
                               )}
                               onClick={() => {
-                                if (isTaken) return
                                 setForm((f) => ({
                                   ...f,
                                   salesAgentId: agent.id,
@@ -480,8 +473,10 @@ export default function Locations() {
                               <span className="min-w-0 flex-1">
                                 <span className="block font-medium">{agent.name}</span>
                                 <span className="text-muted-foreground block text-xs">{agent.email}</span>
-                                {isTaken ? (
-                                  <span className="text-muted-foreground block text-xs">Assigned to {takenAt}</span>
+                                {willMove ? (
+                                  <span className="text-muted-foreground block text-xs">
+                                    Currently at {takenAt} — will move here on save
+                                  </span>
                                 ) : null}
                               </span>
                             </button>
@@ -499,7 +494,25 @@ export default function Locations() {
                     ) : null}
                   </ScrollArea>
                   {editing ? (
-                    <div className="border-t p-2">
+                    <div className="border-t p-2 space-y-1">
+                      {form.salesAgentId ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground h-8 w-full text-xs"
+                          onClick={() => {
+                            setForm((f) => ({
+                              ...f,
+                              salesAgentId: null,
+                              legacyManager: "—",
+                            }))
+                            setAgentPickerOpen(false)
+                          }}
+                        >
+                          Remove sales agent assignment
+                        </Button>
+                      ) : null}
                       <Button
                         type="button"
                         variant="ghost"
@@ -539,6 +552,18 @@ export default function Locations() {
                     No team user matched this location’s current manager. Edit the label or pick a sales agent above.
                   </p>
                 </div>
+              ) : null}
+              {editing && form.salesAgentId && agentTakenElsewhere.has(form.salesAgentId) ? (
+                <p className="text-muted-foreground text-xs">
+                  Saving will move this agent from{" "}
+                  <span className="text-foreground font-medium">{agentTakenElsewhere.get(form.salesAgentId)}</span> to
+                  this location.
+                </p>
+              ) : null}
+              {editing ? (
+                <p className="text-muted-foreground text-xs">
+                  Pick a different sales agent anytime, or remove the assignment and save.
+                </p>
               ) : null}
             </div>
             <div className="space-y-1.5">
