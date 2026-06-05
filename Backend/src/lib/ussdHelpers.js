@@ -122,12 +122,42 @@ export function getMoolrePaymentAuthHeaders() {
 }
 
 function shouldIncludePaymentCallbackInRequest() {
-  if (String(process.env.MOOLRE_DIRECT_DEBIT_INCLUDE_CALLBACK || "").toLowerCase() === "true") {
-    return true
+  // Moolre direct debit: register webhook in dashboard only. Sending callback in the body
+  // can break repeat posts (same externalref after TP17) — see As-market integration.
+  return String(process.env.MOOLRE_DIRECT_DEBIT_INCLUDE_CALLBACK || "").toLowerCase() === "true"
+}
+
+/**
+ * Moolre expects otpcode + reference on every direct-debit POST (use "" when unused).
+ * @param {{
+ *   channel: string
+ *   payerPhone: string
+ *   amount: number
+ *   reference: string
+ *   sessionId: string
+ *   otp?: string
+ * }} params
+ */
+function buildMoolreDirectDebitPayload({ channel, payerPhone, amount, reference, sessionId, otp = "" }) {
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    type: 1,
+    channel: String(channel),
+    currency: "GHS",
+    payer: payerPhone || "",
+    amount: String(amount),
+    externalref: reference,
+    otpcode: otp || "",
+    reference: "",
+    sessionid: String(sessionId || ""),
+    accountnumber: MOOLRE_ACCOUNT_NUMBER,
   }
-  if (process.env.MOOLRE_PAYMENT_CALLBACK_URL) return true
-  const base = BACKEND_URL.replace(/\/$/, "")
-  return base.startsWith("https://") && !base.includes("localhost")
+  if (shouldIncludePaymentCallbackInRequest()) {
+    const callbackUrl = getMoolrePaymentCallbackUrl()
+    payload.callback = callbackUrl
+    payload.redirect = callbackUrl
+  }
+  return payload
 }
 
 /**
@@ -351,6 +381,64 @@ export async function persistMoolreInitOnSession(sessionStore, sessionId, momoRe
   }
 }
 
+/**
+ * After OTP verify (TP17), POST again with otpcode "" to trigger TR099 — same as USSD Pay.
+ * @param {string} reference
+ * @param {Record<string, unknown>} pinPayload
+ * @param {Record<string, string>} authHeaders
+ * @param {string} channel
+ */
+async function triggerMoolrePinPrompt(reference, pinPayload, authHeaders, channel) {
+  const pinDelayMs = Number(process.env.USSD_MOMO_START_DELAY_MS) || 1500
+  console.log("[ussd-momo] triggering PIN prompt after verification", {
+    reference,
+    channel,
+    pinDelayMs,
+  })
+  await sleepMs(pinDelayMs)
+
+  console.log("[ussd-momo] POST payment (pin prompt)", {
+    reference: pinPayload.externalref,
+    amount: pinPayload.amount,
+    channel: pinPayload.channel,
+    payer: pinPayload.payer,
+    hasOtp: false,
+    hasCallback: "callback" in pinPayload,
+  })
+
+  const pinParsed = await parseMoolrePaymentPost(pinPayload, authHeaders)
+  if (!pinParsed.ok) {
+    console.error("[ussd-momo] PIN prompt failed", pinParsed.message, pinParsed.raw)
+    return {
+      success: false,
+      reference,
+      message: pinParsed.message || "Could not send MoMo PIN prompt after verification.",
+      provider: "moolre",
+      moolreCode: pinParsed.code || undefined,
+    }
+  }
+
+  console.log("[ussd-momo] pin prompt response", { code: pinParsed.code, message: pinParsed.message })
+
+  if (pinParsed.code === "TR099") {
+    console.log("[ussd-momo] TR099 — MoMo PIN prompt sent", { reference, channel })
+    return moolrePaymentSuccess(reference, pinParsed, "PIN_PROMPT_SENT")
+  }
+
+  if (pinParsed.code === "TP14") {
+    return moolrePaymentSuccess(reference, pinParsed, "OTP_REQUIRED")
+  }
+
+  return {
+    success: false,
+    reference,
+    provider: "moolre",
+    message: `Verification succeeded but Moolre did not send the PIN prompt (${pinParsed.code || "unknown"}).`,
+    moolreCode: pinParsed.code,
+    data: pinParsed.data,
+  }
+}
+
 export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {}) {
   const {
     packageName = "WiFi package",
@@ -382,27 +470,17 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
 
   try {
     const payerPhone = formattedPhone?.startsWith("233") ? `0${formattedPhone.slice(3)}` : formattedPhone
-    const callbackUrl = getMoolrePaymentCallbackUrl()
     const otp = typeof otpCode === "string" ? otpCode.trim() : ""
 
-    /** @type {Record<string, unknown>} */
-    const directDebitPayload = {
-      type: 1,
-      channel: String(channel),
-      currency: "GHS",
-      payer: payerPhone || "",
-      amount: String(amount),
-      externalref: reference,
-      sessionid: String(sessionId || ""),
-      accountnumber: MOOLRE_ACCOUNT_NUMBER,
-    }
-    if (otp) {
-      directDebitPayload.otpcode = otp
-    }
-    if (shouldIncludePaymentCallbackInRequest()) {
-      directDebitPayload.callback = callbackUrl
-      directDebitPayload.redirect = callbackUrl
-    }
+    const makePayload = (otpValue = "") =>
+      buildMoolreDirectDebitPayload({
+        channel,
+        payerPhone,
+        amount,
+        reference,
+        sessionId,
+        otp: otpValue,
+      })
 
     console.log("[ussd-momo] POST payment (init)", {
       reference,
@@ -412,10 +490,43 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       payer: payerPhone,
       packageName,
       hasOtp: Boolean(otp),
-      callback: shouldIncludePaymentCallbackInRequest() ? callbackUrl : "(omitted)",
+      callback: shouldIncludePaymentCallbackInRequest() ? getMoolrePaymentCallbackUrl() : "(omitted)",
     })
 
-    const parsed = await parseMoolrePaymentPost(directDebitPayload, authHeaders)
+    // OTP submit: verify code, then trigger PIN prompt (second POST with otpcode "").
+    if (otp) {
+      const verifyParsed = await parseMoolrePaymentPost(makePayload(otp), authHeaders)
+      if (!verifyParsed.ok) {
+        console.error("[ussd-momo] OTP verify failed", verifyParsed.message, verifyParsed.raw)
+        return {
+          success: false,
+          reference,
+          message: verifyParsed.message || "OTP verification failed.",
+          provider: "moolre",
+          moolreCode: verifyParsed.code || undefined,
+        }
+      }
+
+      console.log("[ussd-momo] OTP verify OK", { code: verifyParsed.code, message: verifyParsed.message })
+
+      if (verifyParsed.code === "TP14") {
+        return {
+          success: false,
+          reference,
+          message: "Invalid or expired verification code. Check the SMS and try again.",
+          provider: "moolre",
+          moolreCode: verifyParsed.code,
+        }
+      }
+
+      if (verifyParsed.code === "TR099") {
+        return moolrePaymentSuccess(reference, verifyParsed, "PIN_PROMPT_SENT")
+      }
+
+      return triggerMoolrePinPrompt(reference, makePayload(""), authHeaders, channel)
+    }
+
+    const parsed = await parseMoolrePaymentPost(makePayload(""), authHeaders)
     if (!parsed.ok) {
       console.error("[ussd-momo] init failed", parsed.httpStatus, parsed.message, parsed.raw)
       return {
@@ -442,71 +553,6 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     if (parsed.code === "TR099") {
       console.log("[ussd-momo] TR099 — MoMo PIN prompt sent", { reference, channel })
       return moolrePaymentSuccess(reference, parsed, "PIN_PROMPT_SENT")
-    }
-
-    if (otp && parsed.code === "TP14") {
-      return {
-        success: false,
-        reference,
-        message: "Invalid or expired verification code. Check the SMS and try again.",
-        provider: "moolre",
-        moolreCode: parsed.code,
-      }
-    }
-
-    // TP17 = SMS verification accepted. Same as USSD "Pay" — POST again WITHOUT otpcode to trigger TR099.
-    if (parsed.code === "TP17") {
-      const pinDelayMs = Number(process.env.USSD_MOMO_START_DELAY_MS) || 1500
-      console.log("[ussd-momo] TP17 — verification OK; triggering PIN prompt (USSD Pay step)", {
-        reference,
-        channel,
-        pinDelayMs,
-      })
-      await sleepMs(pinDelayMs)
-
-      /** @type {Record<string, unknown>} */
-      const pinPayload = { ...directDebitPayload }
-      delete pinPayload.otpcode
-
-      console.log("[ussd-momo] POST payment (pin prompt)", {
-        reference,
-        amount,
-        channel,
-        payer: payerPhone,
-        hasOtp: false,
-      })
-
-      const pinParsed = await parseMoolrePaymentPost(pinPayload, authHeaders)
-      if (!pinParsed.ok) {
-        console.error("[ussd-momo] PIN prompt failed after TP17", pinParsed.message, pinParsed.raw)
-        return {
-          success: false,
-          reference,
-          message: pinParsed.message || "Could not send MoMo PIN prompt after verification.",
-          provider: "moolre",
-          moolreCode: pinParsed.code || parsed.code,
-        }
-      }
-
-      console.log("[ussd-momo] pin prompt response", { code: pinParsed.code, message: pinParsed.message })
-
-      if (pinParsed.code === "TR099") {
-        console.log("[ussd-momo] TR099 — MoMo PIN prompt sent after TP17", { reference, channel })
-        return moolrePaymentSuccess(reference, pinParsed, "PIN_PROMPT_SENT")
-      }
-
-      if (pinParsed.code === "TP14") {
-        return moolrePaymentSuccess(reference, pinParsed, "OTP_REQUIRED")
-      }
-
-      return {
-        success: false,
-        reference,
-        provider: "moolre",
-        message: `Verification succeeded but Moolre did not send the PIN prompt (${pinParsed.code || "unknown"}).`,
-        moolreCode: pinParsed.code,
-        data: pinParsed.data,
-      }
     }
 
     console.warn("[ussd-momo] unexpected Moolre success code — no PIN prompt registered", {
