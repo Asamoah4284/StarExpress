@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Link } from "react-router-dom"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { Calendar, DollarSign, Percent, ShoppingCart, Wallet } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -66,7 +66,18 @@ function countDayTrend(delta) {
 const SALES_BREAKDOWN_CHART_HEIGHT = 340
 
 export default function Dashboard() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const { user, token, authReady } = useAuth()
+  const [flashMessage, setFlashMessage] = React.useState(/** @type {string | null} */ (null))
+
+  React.useEffect(() => {
+    const msg = location.state?.flashMessage
+    if (typeof msg === "string" && msg.trim()) {
+      setFlashMessage(msg.trim())
+      navigate(location.pathname, { replace: true, state: {} })
+    }
+  }, [location.pathname, location.state, navigate])
   const isAdmin = user?.role === "Admin"
   const isSalesAgent = user?.role === ROLE_SALES_AGENT
   const catalog = useCatalog()
@@ -200,6 +211,15 @@ export default function Dashboard() {
       ) : null}
 
       <PageHeader title="Overview" description={overviewDescription} />
+
+      {flashMessage ? (
+        <p
+          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100"
+          role="status"
+        >
+          {flashMessage}
+        </p>
+      ) : null}
 
       <Card className="border-border/80 shadow-sm">
         <CardHeader className="pb-3">

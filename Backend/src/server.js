@@ -13,6 +13,7 @@ import {
   getAppSettingsCollection,
   getSignupOtpsCollection,
   getUssdSessionsCollection,
+  getAgentPaymentPendingCollection,
 } from "./db/mongo.js"
 import { UserStore } from "./userStore.js"
 import { SignupOtpStore } from "./lib/signupOtpStore.js"
@@ -23,6 +24,7 @@ import { createCatalogRouter } from "./routes/catalog.js"
 import { createSettingsRouter } from "./routes/settings.js"
 import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
 import { createUssdRouter } from "./routes/ussd.js"
+import { createMoolrePaymentSuccessHandler } from "./lib/moolrePaymentSuccessPage.js"
 
 /** @param {string} key */
 function envTruthy(key) {
@@ -148,6 +150,7 @@ async function main() {
 
   const { router: ussdRouter, handleMoolrePaymentWebhook } = createUssdRouter({
     ussdSessions: getUssdSessionsCollection(),
+    agentPaymentPending: getAgentPaymentPendingCollection(),
     packages: getPackagesCollection(),
     vouchers: getVouchersCollection(),
     sales: getSalesCollection(),
@@ -155,6 +158,17 @@ async function main() {
     locations: getLocationsCollection(),
   })
   app.use("/ussd", ussdRouter)
+  // Moolre redirects the embed iframe here after customer approves MoMo (must be public HTTPS).
+  app.get(
+    "/api/moolre/payment-success",
+    createMoolrePaymentSuccessHandler({
+      agentPaymentPending: getAgentPaymentPendingCollection(),
+      packages: getPackagesCollection(),
+      vouchers: getVouchersCollection(),
+      sales: getSalesCollection(),
+      auditLogs: getAuditLogsCollection(),
+    }),
+  )
   // Moolre wallet → Wallet Settings → API → Callback URL
   app.post("/api/moolre/callback", handleMoolrePaymentWebhook)
 
@@ -169,6 +183,7 @@ async function main() {
       vouchers: getVouchersCollection(),
       users: getUsersCollection(),
       ussdSessions: getUssdSessionsCollection(),
+      agentPaymentPending: getAgentPaymentPendingCollection(),
       jwtSecret: JWT_SECRET,
     }),
   )

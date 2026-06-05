@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { checkMoolrePaymentStatus } from "./moolrePaymentStatus.js"
+import { resolveMoolreRedirectUrl, resolveMoolreWebhookUrl } from "./moolrePaymentUrls.js"
 import { getMoolrePaymentAuthHeaders } from "./ussdHelpers.js"
 
 const MOOLRE_ACCOUNT_NUMBER = process.env.MOOLRE_ACCOUNT_NUMBER
@@ -37,10 +38,18 @@ export async function initializeMoolreEmbedLink(opts) {
     return { ok: false, error: "Payment gateway not configured. Contact support." }
   }
 
-  const backendUrl = process.env.BACKEND_URL || process.env.API_URL || "http://127.0.0.1:4000"
-  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173"
-  const webhookUrl = `${backendUrl.replace(/\/$/, "")}/api/moolre/callback`
-  const redirectUrl = `${frontendUrl.replace(/\/$/, "")}/agent-payment-success`
+  const webhookUrl = resolveMoolreWebhookUrl()
+  const redirectBase = resolveMoolreRedirectUrl()
+  const redirectUrl = `${redirectBase}${redirectBase.includes("?") ? "&" : "?"}externalref=${encodeURIComponent(externalref)}`
+
+  console.log("[moolre-init] embed/link request", {
+    externalref,
+    amount,
+    email: maskEmail(email),
+    webhookUrl,
+    redirectUrl,
+    metadataKeys: Object.keys(metadata),
+  })
 
   const payload = {
     type: 1,
@@ -70,15 +79,29 @@ export async function initializeMoolreEmbedLink(opts) {
   try {
     data = text ? JSON.parse(text) : null
   } catch {
+    console.error("[moolre-init] invalid JSON response", {
+      externalref,
+      httpStatus: response.status,
+      bodyPreview: text.slice(0, 400),
+    })
     return { ok: false, error: "Invalid response from payment gateway." }
   }
 
   const status = Number(data?.status)
+  console.log("[moolre-init] embed/link response", {
+    externalref,
+    httpStatus: response.status,
+    moolreStatus: status,
+    message: data?.message,
+    hasAuthUrl: Boolean(data?.data && typeof data.data === "object"),
+  })
+
   if (!response.ok || (status !== 1 && status !== 200)) {
     const msg =
       data && typeof data === "object" && "message" in data && data.message
         ? String(data.message)
         : "Payment initialization failed"
+    console.error("[moolre-init] failed", { externalref, httpStatus: response.status, msg })
     return { ok: false, error: msg }
   }
 
@@ -99,8 +122,10 @@ export async function initializeMoolreEmbedLink(opts) {
  * @param {string} paymentReference
  */
 export async function verifyMoolrePaymentWithRetry(paymentReference) {
-  const delays = [0, 2000, 3000, 4000]
+  const delays = [0, 2000, 3000, 4000, 5000, 6000]
   let lastMessage = "Payment verification failed"
+
+  console.log("[moolre-verify] start", { paymentReference, attempts: delays.length })
 
   for (let attempt = 0; attempt < delays.length; attempt++) {
     if (delays[attempt] > 0) {
@@ -108,6 +133,15 @@ export async function verifyMoolrePaymentWithRetry(paymentReference) {
     }
 
     const status = await checkMoolrePaymentStatus(paymentReference)
+    console.log("[moolre-verify] poll", {
+      paymentReference,
+      attempt: attempt + 1,
+      ok: status.ok,
+      isPaid: status.isPaid,
+      txStatusNum: status.txStatusNum,
+      message: status.message || status.error,
+    })
+
     if (!status.ok) {
       lastMessage = status.error || status.message || lastMessage
       break
@@ -115,15 +149,28 @@ export async function verifyMoolrePaymentWithRetry(paymentReference) {
 
     if (status.isPaid) {
       const amountPaid = Number(status.data?.amount ?? status.data?.Amount ?? 0)
+      console.log("[moolre-verify] paid", { paymentReference, amountPaid })
       return { ok: true, amountPaid, data: status.data }
     }
 
     if (status.txStatusNum === 2) {
+      console.warn("[moolre-verify] failed/cancelled", { paymentReference })
       return { ok: false, error: "Payment failed or was cancelled." }
     }
 
     lastMessage = "Payment is still processing. Please wait and try again."
   }
 
+  console.warn("[moolre-verify] exhausted retries", { paymentReference, lastMessage })
   return { ok: false, error: lastMessage }
+}
+
+/**
+ * @param {string} email
+ */
+function maskEmail(email) {
+  const s = String(email || "")
+  const at = s.indexOf("@")
+  if (at <= 1) return "***"
+  return `${s.slice(0, 2)}***${s.slice(at)}`
 }

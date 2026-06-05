@@ -12,6 +12,8 @@ import {
   initializeMoolreEmbedLink,
   verifyMoolrePaymentWithRetry,
 } from "../lib/moolreEmbedPayment.js"
+import { markAgentPaymentPendingCompleted, saveAgentPaymentPending } from "../lib/agentMomoPayment.js"
+import { ensureSaleVoucherSmsSent } from "../lib/saleVoucherSms.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -540,7 +542,8 @@ function requireSalesAgentOrAdmin(req, res, next) {
  * }} deps
  */
 export function createCatalogRouter(deps) {
-  const { locations, packages, sales, disputes, auditLogs, vouchers, users, jwtSecret } = deps
+  const { locations, packages, sales, disputes, auditLogs, vouchers, users, agentPaymentPending, jwtSecret } =
+    deps
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
 
@@ -1007,6 +1010,17 @@ export function createCatalogRouter(deps) {
       }
 
       const paymentReference = generateAgentPaymentReference(req.auth.userId)
+      if (agentPaymentPending) {
+        await saveAgentPaymentPending(agentPaymentPending, {
+          paymentReference,
+          customerPhone,
+          packageId,
+          locationId,
+          agentUserId: req.auth.userId,
+          amount: priceGHS,
+        })
+      }
+
       const init = await initializeMoolreEmbedLink({
         amount: priceGHS,
         email: billingEmail,
@@ -1020,8 +1034,19 @@ export function createCatalogRouter(deps) {
       })
 
       if (!init.ok) {
+        if (agentPaymentPending) {
+          await agentPaymentPending.deleteOne({ _id: paymentReference }).catch(() => {})
+        }
         return res.status(400).json({ error: init.error || "Failed to initialize payment." })
       }
+
+      console.log("[agent-momo] init ok", {
+        paymentReference,
+        packageId,
+        locationId,
+        amount: priceGHS,
+        redirectUrl: init.redirect_url,
+      })
 
       res.json({
         success: true,
@@ -1102,14 +1127,43 @@ export function createCatalogRouter(deps) {
       if (paymentReference) {
         const existingPaid = await sales.findOne({ paymentReference })
         if (existingPaid) {
-          return res.status(200).json({ sale: toSale(existingPaid), smsSent: true, idempotent: true })
+          const sms = await ensureSaleVoucherSmsSent({
+            sale: existingPaid,
+            packages,
+            sales,
+            source: "catalog-sale-idempotent",
+          })
+          console.log("[agent-momo] catalog idempotent sale", {
+            paymentReference,
+            saleId: existingPaid._id,
+            smsSent: sms.smsSent,
+            smsRetried: sms.sent,
+          })
+          if (agentPaymentPending) {
+            await markAgentPaymentPendingCompleted(agentPaymentPending, paymentReference, {
+              saleId: String(existingPaid._id),
+              smsSent: sms.smsSent,
+            })
+          }
+          return res.status(200).json({
+            sale: toSale(sms.sale || existingPaid),
+            smsSent: sms.smsSent,
+            idempotent: true,
+          })
         }
 
         if (!paymentReference.startsWith("SE-AGENT-")) {
           return res.status(400).json({ error: "Invalid payment reference for agent MoMo sale." })
         }
 
+        console.log("[agent-momo] verifying payment", { paymentReference, packageId, locationId })
         const verified = await verifyMoolrePaymentWithRetry(paymentReference)
+        console.log("[agent-momo] verify result", {
+          paymentReference,
+          ok: verified.ok,
+          amountPaid: verified.amountPaid,
+          error: verified.error,
+        })
         if (!verified.ok) {
           return res.status(400).json({ error: verified.error || "Payment not verified." })
         }
@@ -1155,7 +1209,7 @@ export function createCatalogRouter(deps) {
         voucherCode,
         channel: paymentReference ? "agent_momo" : "agent",
         soldByUserId: req.auth.userId,
-        ...(paymentReference ? { paymentReference } : {}),
+        ...(paymentReference ? { paymentReference, smsSent: false } : {}),
       }
 
       await sales.insertOne(saleDoc)
@@ -1178,12 +1232,16 @@ export function createCatalogRouter(deps) {
       }
 
       const smsMessage = buildSaleVoucherSmsMessage(packageType, packageDataLimit, voucherCode)
+      let smsSent = false
       try {
         const smsResult = await sendSms({ to: customerPhone, message: smsMessage })
         if (smsResult.skipped) {
           console.warn(
             `[catalog] Sale ${saleId}: SMS skipped (no MOOLRE_API_KEY) — voucher ${voucherCode} → ${customerPhone}`,
           )
+        } else {
+          smsSent = true
+          await sales.updateOne({ _id: saleId }, { $set: { smsSent: true } })
         }
       } catch (smsErr) {
         const restoredColumns = clearVoucherUsedColumns(
@@ -1202,12 +1260,19 @@ export function createCatalogRouter(deps) {
 
       await syncPackageStockUnitsFromVouchers(vouchers, packages)
 
+      if (paymentReference && agentPaymentPending) {
+        await markAgentPaymentPendingCompleted(agentPaymentPending, paymentReference, {
+          saleId,
+          smsSent,
+        })
+      }
+
       await appendAuditLog(
         auditLogs,
         req.auth,
         `Sale ${saleId}: ${customerPhone}${paymentNumber ? ` · pay ${paymentNumber}` : ""} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ${locationId}`,
       )
-      res.status(201).json({ sale: toSale(saleDoc), smsSent: true })
+      res.status(201).json({ sale: toSale({ ...saleDoc, smsSent }), smsSent })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)

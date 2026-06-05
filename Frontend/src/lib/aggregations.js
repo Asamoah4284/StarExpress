@@ -13,6 +13,7 @@ export function filterSalesByLocation(allSales, locationId) {
 /** Self-serve USSD purchases — inventory at a location but not credited to the assigned agent. */
 export const SALE_CHANNEL_USSD = "ussd"
 export const SALE_CHANNEL_AGENT = "agent"
+export const SALE_CHANNEL_AGENT_MOMO = "agent_momo"
 
 /**
  * Sales that count toward a sales agent's dashboard KPIs and commission.
@@ -20,7 +21,10 @@ export const SALE_CHANNEL_AGENT = "agent"
  */
 export function filterSalesForAgentAttribution(sales) {
   if (!Array.isArray(sales)) return []
-  return sales.filter((s) => s.channel !== SALE_CHANNEL_USSD)
+  return sales.filter((s) => {
+    const channel = typeof s.channel === "string" ? s.channel.trim() : ""
+    return channel !== SALE_CHANNEL_USSD
+  })
 }
 
 /** ISO `YYYY-MM-DD` for Monday of the week containing `isoDate`. */

@@ -664,7 +664,37 @@ export async function createCatalogSale(token, body) {
   if (typeof data !== "object" || data === null || typeof data.sale !== "object" || data.sale === null) {
     return { ok: false, error: "Unexpected response from server." }
   }
-  return { ok: true, sale: data.sale }
+  return {
+    ok: true,
+    sale: data.sale,
+    smsSent: data.smsSent === true,
+    idempotent: data.idempotent === true,
+  }
+}
+
+/**
+ * Complete an agent MoMo sale — retries while Moolre status or webhook fulfillment catches up.
+ * @param {string} token
+ * @param {Parameters<typeof createCatalogSale>[1]} body
+ */
+export async function createCatalogSaleWithPaymentRetry(token, body) {
+  const delays = [0, 1500, 2000, 2500, 3000, 3500, 4000, 5000]
+  let lastError = "Sale failed"
+
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    if (delays[attempt] > 0) {
+      await new Promise((r) => setTimeout(r, delays[attempt]))
+    }
+    const result = await createCatalogSale(token, body)
+    if (result.ok) return result
+
+    lastError = result.error || lastError
+    const retryable =
+      /processing|verified|confirm|wait/i.test(lastError) || /payment not verified/i.test(lastError)
+    if (!retryable) break
+  }
+
+  return { ok: false, error: lastError }
 }
 
 /**

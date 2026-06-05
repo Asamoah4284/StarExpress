@@ -19,6 +19,7 @@ import {
 } from "../services/voucherSaleFulfillment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { sendUssdVoucherSms } from "../services/ussdVoucherSms.js"
+import { isAgentPaymentReference, processAgentMomoPaymentSuccess } from "../lib/agentMomoPayment.js"
 
 // Upper cap on how many active packages we fetch per location. USSD sessions are short-lived
 // so this only bounds the DB result size — the actual menu is paginated below.
@@ -31,6 +32,7 @@ const PACKAGES_PER_PAGE = 4
 /**
  * @param {{
  *   ussdSessions: import("mongodb").Collection
+ *   agentPaymentPending: import("mongodb").Collection
  *   packages: import("mongodb").Collection
  *   vouchers: import("mongodb").Collection
  *   sales: import("mongodb").Collection
@@ -39,7 +41,7 @@ const PACKAGES_PER_PAGE = 4
  * }} deps
  */
 export function createUssdRouter(deps) {
-  const { ussdSessions, packages, vouchers, sales, auditLogs, locations } = deps
+  const { ussdSessions, agentPaymentPending, packages, vouchers, sales, auditLogs, locations } = deps
   const sessions = createUssdSessionStore(ussdSessions)
   const router = express.Router()
 
@@ -68,6 +70,19 @@ export function createUssdRouter(deps) {
         }
       }
       return { ok: true, status: "already_processed", saleId: existingSale._id }
+    }
+
+    if (isAgentPaymentReference(paymentReference)) {
+      console.log(`[ussd-pay] ${source} routing agent MoMo ref`, paymentReference)
+      return processAgentMomoPaymentSuccess({
+        pending: agentPaymentPending,
+        packages,
+        vouchers,
+        sales,
+        auditLogs,
+        paymentReference,
+        source,
+      })
     }
 
     const ussdSession = await sessions.findByPaymentReference(paymentReference)
@@ -713,21 +728,25 @@ export function createUssdRouter(deps) {
       const payload = getMoolreWebhookPayload(req)
       const event = parseMoolrePaymentEvent(payload)
 
-      console.log("[ussd-webhook] received", {
+      console.log("[moolre-webhook] received", {
         reference: event.reference,
         txStatusNum: event.txStatusNum,
+        isSuccess: event.isSuccess,
+        isFailed: event.isFailed,
+        isPending: event.isPending,
         code: event.code,
         contentType: req.get("content-type"),
         bodyKeys: Object.keys(payload || {}),
+        payloadPreview: JSON.stringify(payload).slice(0, 1500),
       })
 
       if (!verifyMoolreWebhook(payload, req.headers)) {
-        console.error("[ussd-webhook] invalid secret")
+        console.error("[moolre-webhook] invalid secret")
         return res.status(401).json({ error: "Invalid webhook" })
       }
 
       if (!event.reference) {
-        console.error("[ussd-webhook] missing externalref", JSON.stringify(payload).slice(0, 500))
+        console.error("[moolre-webhook] missing externalref", JSON.stringify(payload).slice(0, 500))
         return res.status(200).json({ received: true, error: "Missing externalref" })
       }
 
@@ -746,9 +765,10 @@ export function createUssdRouter(deps) {
       }
 
       const outcome = await processUssdPaymentSuccess(event.reference, "webhook")
+      console.log("[moolre-webhook] outcome", { reference: event.reference, outcome })
       return res.status(200).json({ received: true, ...outcome })
     } catch (err) {
-      console.error("[ussd-webhook] error", err)
+      console.error("[moolre-webhook] error", err)
       return res.status(200).json({
         received: true,
         error: err instanceof Error ? err.message : "Webhook processing failed",

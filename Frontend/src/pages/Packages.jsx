@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useNavigate } from "react-router-dom"
 import { Trash2 } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
@@ -28,6 +29,7 @@ import { MoolrePayment } from "@/components/payments/MoolrePayment.jsx"
 import {
   createCatalogPackage,
   createCatalogSale,
+  createCatalogSaleWithPaymentRetry,
   deleteCatalogPackage,
   fetchPackageStock,
   fetchPackageVoucherInventory,
@@ -39,6 +41,7 @@ import { ROLE_ADMIN, ROLE_SALES_AGENT } from "@/lib/roles.js"
 import { formatCedis } from "@/lib/utils"
 
 export default function Packages() {
+  const navigate = useNavigate()
   const { token, user } = useAuth()
   const catalog = useCatalog()
   const queryClient = useQueryClient()
@@ -279,11 +282,13 @@ export default function Packages() {
           throw new Error("MoMo payment is required before completing an agent sale.")
         }
       }
-      const result = await createCatalogSale(token, saleBody)
+      const result = paymentReference
+        ? await createCatalogSaleWithPaymentRetry(token, saleBody)
+        : await createCatalogSale(token, saleBody)
       if (!result.ok) throw new Error(result.error || "Sale failed")
-      return result.sale
+      return { sale: result.sale, paymentReference: paymentReference ?? null }
     },
-    onSuccess: (sale) => {
+    onSuccess: ({ sale, paymentReference }) => {
       queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
       queryClient.invalidateQueries({ queryKey: ["package-stock"] })
@@ -291,19 +296,29 @@ export default function Packages() {
       queryClient.invalidateQueries({ queryKey: ["vouchers"] })
       queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
       queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+
       const code = sale?.voucherCode
-      setSellSuccess(
-        code
-          ? `Sale recorded. Voucher ${code} was sent by SMS to the customer and marked as used.`
-          : "Sale recorded. Voucher SMS was sent and marked as used.",
-      )
-      setSellOpen(false)
+      const successMsg = code
+        ? `Sale recorded. Voucher ${code} was sent by SMS to the customer and marked as used.`
+        : "Sale recorded. Voucher SMS was sent and marked as used."
+
       resetMoolreState()
       sellRowRef.current = null
       setSellPkg(null)
       setSellCustomerPhone("")
       setSellLocationId(locations[0]?.id ?? "")
       setSellError(null)
+      setSellOpen(false)
+
+      if (paymentReference && isSalesAgent) {
+        navigate("/", {
+          replace: true,
+          state: { flashMessage: successMsg },
+        })
+        return
+      }
+
+      setSellSuccess(successMsg)
     },
     onError: (err) => {
       setSellError(err instanceof Error ? err.message : "Request failed")

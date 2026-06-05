@@ -23,6 +23,8 @@ let appSettingsCollection = null
 let signupOtpsCollection = null
 /** @type {import("mongodb").Collection | null} */
 let ussdSessionsCollection = null
+/** @type {import("mongodb").Collection | null} */
+let agentPaymentPendingCollection = null
 
 /** @param {string | undefined} value */
 function parseMongoFamilyEnv(value) {
@@ -93,6 +95,7 @@ export async function connectMongo(uri) {
   appSettingsCollection = db.collection("app_settings")
   signupOtpsCollection = db.collection("signup_otps")
   ussdSessionsCollection = db.collection("ussd_sessions")
+  agentPaymentPendingCollection = db.collection("agent_payment_pending")
   await usersCollection.createIndex({ email_normalized: 1 }, { unique: true })
   try {
     await usersCollection.createIndex({ phone_normalized: 1 }, { unique: true, sparse: true })
@@ -103,6 +106,7 @@ export async function connectMongo(uri) {
   await signupOtpsCollection.createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 })
   await ussdSessionsCollection.createIndex({ paymentReference: 1 }, { sparse: true })
   await ussdSessionsCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+  await agentPaymentPendingCollection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 7 })
   try {
     await locationsCollection.createIndex({ managerUserId: 1 }, { unique: true, sparse: true })
   } catch (e) {
@@ -164,6 +168,11 @@ export function getUssdSessionsCollection() {
   return ussdSessionsCollection
 }
 
+export function getAgentPaymentPendingCollection() {
+  if (!agentPaymentPendingCollection) throw new Error("MongoDB not connected. Call connectMongo first.")
+  return agentPaymentPendingCollection
+}
+
 export async function closeMongo() {
   if (client) {
     await client.close()
@@ -178,6 +187,7 @@ export async function closeMongo() {
   appSettingsCollection = null
   signupOtpsCollection = null
   ussdSessionsCollection = null
+  agentPaymentPendingCollection = null
 }
 }
 

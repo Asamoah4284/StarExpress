@@ -71,6 +71,7 @@ export function MoolrePayment({
 
       return (
         lower.includes("agent-payment-success") ||
+        lower.includes("/api/moolre/payment-success") ||
         lower.includes("payment-success") ||
         lower.includes("/success") ||
         lower.includes("?success=") ||
@@ -100,9 +101,29 @@ export function MoolrePayment({
         handlePaymentDetected(url)
       }
     } catch {
-      // Cross-origin while on Moolre — wait for redirect to our success URL
+      // Cross-origin while on Moolre — wait for redirect or postMessage from success page
     }
   }, [handlePaymentDetected, isSuccessUrl])
+
+  React.useEffect(() => {
+    if (!open) return
+
+    const onMessage = (/** @type {MessageEvent} */ event) => {
+      const data = event.data
+      if (!data || typeof data !== "object") return
+      if (data.type !== "moolre-payment-success") return
+
+      const ref =
+        (typeof data.reference === "string" && data.reference) ||
+        (typeof data.externalref === "string" && data.externalref) ||
+        paymentReference ||
+        ""
+      handlePaymentDetected(ref ? `?reference=${encodeURIComponent(ref)}` : "")
+    }
+
+    window.addEventListener("message", onMessage)
+    return () => window.removeEventListener("message", onMessage)
+  }, [open, handlePaymentDetected, paymentReference])
 
   const handleCancel = () => {
     successFiredRef.current = false
