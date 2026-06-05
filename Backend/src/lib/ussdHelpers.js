@@ -329,8 +329,11 @@ function buildMoolreDirectDebitPayload(params) {
     accountnumber: MOOLRE_ACCOUNT_NUMBER,
   }
 
-  const otp = typeof params.otpcode === "string" ? params.otpcode.trim() : ""
-  if (otp) payload.otpcode = otp
+  // Only include otpcode when it is a non-empty string — never for undefined, null, or "".
+  if (typeof params.otpcode === "string") {
+    const otp = params.otpcode.trim()
+    if (otp.length > 0) payload.otpcode = otp
+  }
 
   const moolreRef =
     typeof params.moolreTransactionId === "string" ? params.moolreTransactionId.trim() : ""
@@ -397,7 +400,8 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
 
   try {
     const payerPhone = formattedPhone?.startsWith("233") ? `0${formattedPhone.slice(3)}` : formattedPhone
-    const otpValue = typeof otpcode === "string" ? otpcode.trim() : ""
+    const otpValue =
+      typeof otpcode === "string" && otpcode.trim().length > 0 ? otpcode.trim() : undefined
 
     const directDebitPayload = buildMoolreDirectDebitPayload({
       channel,
@@ -405,7 +409,7 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       amount,
       externalref: reference,
       sessionId,
-      otpcode: otpValue || undefined,
+      otpcode: otpValue,
       moolreTransactionId,
       includeCallback,
     })
@@ -567,6 +571,7 @@ export async function submitMoMoPaymentWithOtp(msisdn, amount, sessionId, option
     reference: options.reference,
     network: options.network,
     networkOverride: options.networkOverride,
+    otpcode: undefined,
     moolreTransactionId: moolreTxnId,
     includeCallback: false,
     paymentPhase: "debit",
@@ -583,6 +588,7 @@ export async function submitMoMoPaymentWithOtp(msisdn, amount, sessionId, option
       reference: options.reference,
       network: options.network,
       networkOverride: options.networkOverride,
+      otpcode: undefined,
       includeCallback: true,
       paymentPhase: "debit-retry",
     })
