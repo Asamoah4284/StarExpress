@@ -55,7 +55,21 @@ async function parseJsonResponse(path, init = {}) {
     try {
       data = JSON.parse(text)
     } catch {
-      data = { error: text }
+      const cannotRoute = text.match(/Cannot (?:POST|GET|PUT|PATCH|DELETE)\s+(\S+)/i)
+      const apiBase = getApiBaseUrl()
+      if (cannotRoute) {
+        data = {
+          error: apiBase
+            ? `API route ${cannotRoute[1]} was not found on ${apiBase} (${res.status}). Redeploy the backend, then restart it (e.g. pm2 restart).`
+            : `API route ${cannotRoute[1]} was not found (${res.status}). Set VITE_API_BASE_URL to your backend URL, run npm run build, and redeploy the frontend.`,
+        }
+      } else if (text.includes("<!DOCTYPE") || text.includes("<html")) {
+        data = {
+          error: `Server returned HTML instead of JSON (${res.status}). The frontend may be calling the wrong host — set VITE_API_BASE_URL=https://starexpress.quickxlearn.com and rebuild.`,
+        }
+      } else {
+        data = { error: text.length > 400 ? `${text.slice(0, 400)}…` : text }
+      }
     }
   }
   return { res, data }
@@ -681,19 +695,39 @@ export async function initiateAgentSalePayment(token, body) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
     return { ok: false, error: msg }
   }
-  if (
-    typeof data !== "object" ||
-    data === null ||
-    typeof data.paymentReference !== "string" ||
-    data.status !== "pending"
-  ) {
+  if (typeof data !== "object" || data === null || typeof data.paymentReference !== "string") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  if (data.status !== "pending" && data.status !== "otp_required") {
     return { ok: false, error: "Unexpected response from server." }
   }
   return {
     ok: true,
+    status: data.status,
     paymentReference: data.paymentReference,
     message: typeof data.message === "string" ? data.message : undefined,
     amount: typeof data.amount === "number" ? data.amount : undefined,
+  }
+}
+
+/** @param {string} token @param {{ paymentReference: string, otpCode: string }} body */
+export async function submitAgentSalePaymentOtp(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/sales/submit-payment-otp", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || data.status !== "pending") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return {
+    ok: true,
+    paymentReference: typeof data.paymentReference === "string" ? data.paymentReference : body.paymentReference,
+    message: typeof data.message === "string" ? data.message : undefined,
   }
 }
 

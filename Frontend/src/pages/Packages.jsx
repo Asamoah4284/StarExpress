@@ -31,6 +31,7 @@ import {
   fetchPackageStock,
   fetchPackageVoucherInventory,
   initiateAgentSalePayment,
+  submitAgentSalePaymentOtp,
   updateCatalogPackage,
 } from "@/lib/api.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
@@ -94,7 +95,9 @@ export default function Packages() {
   const [sellError, setSellError] = React.useState(null)
   const [sellSuccess, setSellSuccess] = React.useState(/** @type {string | null} */ (null))
   const [sellAwaitingPayment, setSellAwaitingPayment] = React.useState(false)
+  const [sellAwaitingOtp, setSellAwaitingOtp] = React.useState(false)
   const [sellPaymentRef, setSellPaymentRef] = React.useState(/** @type {string | null} */ (null))
+  const [sellMomoOtp, setSellMomoOtp] = React.useState("")
   const sellPaymentStartedAtRef = React.useRef(/** @type {number | null} */ (null))
 
   const sellRowRef = React.useRef(
@@ -270,7 +273,9 @@ export default function Packages() {
           : "Payment received and sale completed.",
       )
       setSellAwaitingPayment(false)
+      setSellAwaitingOtp(false)
       setSellPaymentRef(null)
+      setSellMomoOtp("")
       sellPaymentStartedAtRef.current = null
       setSellOpen(false)
       sellRowRef.current = null
@@ -317,9 +322,16 @@ export default function Packages() {
       return result
     },
     onSuccess: (result) => {
-      setSellAwaitingPayment(true)
       setSellPaymentRef(result.paymentReference)
-      sellPaymentStartedAtRef.current = Date.now()
+      if (result.status === "otp_required") {
+        setSellAwaitingOtp(true)
+        setSellAwaitingPayment(false)
+        sellPaymentStartedAtRef.current = null
+      } else {
+        setSellAwaitingOtp(false)
+        setSellAwaitingPayment(true)
+        sellPaymentStartedAtRef.current = Date.now()
+      }
       setSellError(null)
     },
     onError: (err) => {
@@ -378,6 +390,33 @@ export default function Packages() {
     }
   }, [sellAwaitingPayment, sellPaymentRef, token, completeAgentSale])
 
+  const otpMutation = useMutation({
+    mutationFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      if (!sellPaymentRef) throw new Error("No payment in progress")
+      const otpCode = sellMomoOtp.trim()
+      if (!/^\d{4,8}$/.test(otpCode)) {
+        throw new Error("Enter the verification code from the customer's SMS (4–8 digits).")
+      }
+      const result = await submitAgentSalePaymentOtp(token, {
+        paymentReference: sellPaymentRef,
+        otpCode,
+      })
+      if (!result.ok) throw new Error(result.error || "Could not verify code")
+      return result
+    },
+    onSuccess: () => {
+      setSellAwaitingOtp(false)
+      setSellAwaitingPayment(true)
+      setSellMomoOtp("")
+      sellPaymentStartedAtRef.current = Date.now()
+      setSellError(null)
+    },
+    onError: (err) => {
+      setSellError(err instanceof Error ? err.message : "Verification failed")
+    },
+  })
+
   const resetForm = () => {
     setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
     setEditing(null)
@@ -414,7 +453,9 @@ export default function Packages() {
       setSellError(null)
       setSellSuccess(null)
       setSellAwaitingPayment(false)
+      setSellAwaitingOtp(false)
       setSellPaymentRef(null)
+      setSellMomoOtp("")
       sellPaymentStartedAtRef.current = null
       setSellOpen(true)
     },
@@ -776,7 +817,9 @@ export default function Packages() {
             setSellError(null)
             setSellSuccess(null)
             setSellAwaitingPayment(false)
+            setSellAwaitingOtp(false)
             setSellPaymentRef(null)
+            setSellMomoOtp("")
             sellPaymentStartedAtRef.current = null
           }
         }}
@@ -787,12 +830,31 @@ export default function Packages() {
           </DialogHeader>
           {sellPkg ? (
             <div className="grid gap-3 py-2">
-              {sellAwaitingPayment ? (
-                <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm" role="status">
-                  Payment prompt sent to <span className="font-medium">{sellCustomerPhone}</span>. Ask the
-                  customer to approve the MoMo charge and enter their PIN on their phone. The voucher will be
-                  sent by SMS after payment.
+              {sellAwaitingOtp ? (
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm" role="status">
+                  Moolre sent a one-time verification SMS to{" "}
+                  <span className="font-medium">{sellCustomerPhone}</span>. Ask the customer for that code,
+                  enter it below, then they will receive the MoMo PIN prompt on their phone.
                 </p>
+              ) : sellAwaitingPayment ? (
+                <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm" role="status">
+                  MoMo PIN prompt sent to <span className="font-medium">{sellCustomerPhone}</span>. Ask the
+                  customer to approve the charge and enter their PIN. The WiFi voucher will be sent by SMS after
+                  payment.
+                </p>
+              ) : null}
+              {sellAwaitingOtp ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="sell-momo-otp">Moolre verification code (from customer SMS)</Label>
+                  <Input
+                    id="sell-momo-otp"
+                    inputMode="numeric"
+                    value={sellMomoOtp}
+                    onChange={(e) => setSellMomoOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                    placeholder="e.g. 123456"
+                    autoComplete="one-time-code"
+                  />
+                </div>
               ) : null}
               {sellError ? (
                 <p className="text-destructive bg-destructive/10 rounded-md px-2 py-1.5 text-sm" role="alert">
@@ -855,27 +917,37 @@ export default function Packages() {
             <Button type="button" variant="outline" onClick={() => setSellOpen(false)}>
               Cancel
             </Button>
-            <Button
-              type="button"
-              onClick={confirmSell}
-              disabled={
-                sellAwaitingPayment ||
-                sellMutation.isPending ||
-                !sellPhoneValid ||
-                (isAdmin && (!sellLocationId || locations.length === 0)) ||
-                (isSalesAgent && !agentStore) ||
-                !sellStockLocationId ||
-                sellStockQuery.isLoading ||
-                sellStockQuery.isError ||
-                sellStockRemaining === 0
-              }
-            >
-              {sellAwaitingPayment
-                ? "Waiting for payment…"
-                : sellMutation.isPending
-                  ? "Sending payment prompt…"
-                  : "Confirm sale"}
-            </Button>
+            {sellAwaitingOtp ? (
+              <Button
+                type="button"
+                onClick={() => otpMutation.mutate()}
+                disabled={otpMutation.isPending || !/^\d{4,8}$/.test(sellMomoOtp.trim())}
+              >
+                {otpMutation.isPending ? "Sending PIN prompt…" : "Send PIN prompt"}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                onClick={confirmSell}
+                disabled={
+                  sellAwaitingPayment ||
+                  sellMutation.isPending ||
+                  !sellPhoneValid ||
+                  (isAdmin && (!sellLocationId || locations.length === 0)) ||
+                  (isSalesAgent && !agentStore) ||
+                  !sellStockLocationId ||
+                  sellStockQuery.isLoading ||
+                  sellStockQuery.isError ||
+                  sellStockRemaining === 0
+                }
+              >
+                {sellAwaitingPayment
+                  ? "Waiting for PIN approval…"
+                  : sellMutation.isPending
+                    ? "Contacting MoMo…"
+                    : "Confirm sale"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

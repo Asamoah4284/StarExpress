@@ -1021,6 +1021,22 @@ export function createCatalogRouter(deps) {
         })
       }
 
+      if (momoResult.action === "OTP_REQUIRED") {
+        await appendAuditLog(
+          auditLogs,
+          req.auth,
+          `Agent payment OTP step ${paymentReference}: ${formattedPhone} · ${packageName} · ${priceGHS} GHS`,
+        )
+        return res.status(202).json({
+          status: "otp_required",
+          paymentReference,
+          customerPhone: formattedPhone,
+          amount: priceGHS,
+          message:
+            "Moolre sent a one-time verification SMS to the customer. Enter that code below to trigger the MoMo PIN prompt on their phone.",
+        })
+      }
+
       scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
 
       await appendAuditLog(
@@ -1035,8 +1051,67 @@ export function createCatalogRouter(deps) {
         customerPhone: formattedPhone,
         amount: priceGHS,
         message:
-          "Payment prompt sent to the customer's phone. Ask them to approve the MoMo payment and enter their PIN.",
+          "MoMo PIN prompt sent to the customer's phone. Ask them to approve the payment and enter their PIN.",
         mock: momoResult.mock === true,
+      })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.post("/sales/submit-payment-otp", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const paymentReference =
+        typeof req.body?.paymentReference === "string" ? req.body.paymentReference.trim() : ""
+      const otpCode = typeof req.body?.otpCode === "string" ? req.body.otpCode.trim() : ""
+      if (!paymentReference) return res.status(400).json({ error: "paymentReference is required." })
+      if (!/^\d{4,8}$/.test(otpCode)) {
+        return res.status(400).json({ error: "Enter the verification code from the customer's SMS (4–8 digits)." })
+      }
+
+      const paymentSession = await agentPaymentSessions.findByPaymentReference(paymentReference)
+      if (!paymentSession || paymentSession.channel !== "agent") {
+        return res.status(404).json({ error: "Payment session not found." })
+      }
+      if (req.auth.role !== "Admin" && paymentSession.soldByUserId !== req.auth.userId) {
+        return res.status(403).json({ error: "You can only complete payments you initiated." })
+      }
+
+      const selected = paymentSession.selectedPackage
+      const amount = Number(selected?.priceGHS) || 0
+      const phone = String(paymentSession.phone || "")
+      if (!phone || !selected?.packageId || amount <= 0) {
+        return res.status(400).json({ error: "Payment session is incomplete or expired." })
+      }
+
+      const network = getNetworkFromMsisdn(phone)
+      const momoResult = await initiateMoMoPayment(phone, amount, String(paymentSession._id), {
+        packageName: selected.name || "WiFi package",
+        reference: paymentReference,
+        network,
+        otpCode,
+      })
+
+      if (!momoResult?.success) {
+        return res.status(502).json({
+          error: momoResult?.message || "Could not trigger MoMo PIN prompt. Check the code and try again.",
+        })
+      }
+
+      if (momoResult.action === "OTP_REQUIRED") {
+        return res.status(400).json({
+          error: "Verification code was not accepted. Ask the customer for the latest SMS code from Moolre.",
+        })
+      }
+
+      scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
+
+      res.status(202).json({
+        status: "pending",
+        paymentReference,
+        message: "MoMo PIN prompt sent to the customer's phone. Ask them to approve and enter their PIN.",
       })
     } catch (err) {
       console.error(err)

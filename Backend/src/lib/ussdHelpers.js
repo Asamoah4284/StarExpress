@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 
 const MOOLRE_USERNAME = process.env.MOOLRE_USERNAME
 const MOOLRE_PUBLIC_KEY = process.env.MOOLRE_PUBLIC_KEY
+const MOOLRE_PRIVATE_KEY = process.env.MOOLRE_PRIVATE_KEY || process.env.MOOLRE_SECRET_KEY || ""
 const MOOLRE_ACCOUNT_NUMBER = process.env.MOOLRE_ACCOUNT_NUMBER
 const MOOLRE_WEBHOOK_SECRET = process.env.MOOLRE_WEBHOOK_SECRET
 const BACKEND_URL =
@@ -89,9 +90,22 @@ function isMoolreApiSuccess(data) {
 
 export function getMoolrePaymentCallbackUrl() {
   const explicit = String(process.env.MOOLRE_PAYMENT_CALLBACK_URL || "").trim()
-  if (explicit) return explicit.replace(/\/$/, "")
-  const base = BACKEND_URL.replace(/\/$/, "")
-  return `${base}/api/moolre/callback`
+  const raw = explicit || `${BACKEND_URL.replace(/\/$/, "")}/api/moolre/callback`
+  return raw.replace(/([^:]\/)\/+/g, "$1").replace(/\/$/, "")
+}
+
+/** @returns {Record<string, string>} */
+function getMoolrePaymentAuthHeaders() {
+  const headers = {
+    "X-API-USER": MOOLRE_USERNAME || "",
+    "Content-Type": "application/json",
+  }
+  if (MOOLRE_PRIVATE_KEY) {
+    headers["X-API-KEY"] = MOOLRE_PRIVATE_KEY
+  } else if (MOOLRE_PUBLIC_KEY) {
+    headers["X-API-PUBKEY"] = MOOLRE_PUBLIC_KEY
+  }
+  return headers
 }
 
 function shouldIncludePaymentCallbackInRequest() {
@@ -206,7 +220,7 @@ export function verifyMoolreWebhook(payload, headers = {}) {
  * @param {string} msisdn
  * @param {number} amount
  * @param {string} sessionId
- * @param {{ packageName?: string, description?: string, reference?: string, network?: string, moolreNetwork?: number | null }} options
+ * @param {{ packageName?: string, description?: string, reference?: string, network?: string, moolreNetwork?: number | null, otpCode?: string }} options
  */
 const MOOLRE_PAYMENT_URL = "https://api.moolre.com/open/transact/payment"
 
@@ -236,6 +250,7 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     reference: preGeneratedReference = null,
     network: networkHint = null,
     moolreNetwork: moolreNetworkCode = null,
+    otpCode = null,
   } = options
 
   const formattedPhone = formatPhoneNumber(msisdn)
@@ -256,15 +271,12 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     }
   }
 
-  const authHeaders = {
-    "X-API-USER": MOOLRE_USERNAME,
-    "X-API-PUBKEY": MOOLRE_PUBLIC_KEY,
-    "Content-Type": "application/json",
-  }
+  const authHeaders = getMoolrePaymentAuthHeaders()
 
   try {
     const payerPhone = formattedPhone?.startsWith("233") ? `0${formattedPhone.slice(3)}` : formattedPhone
     const callbackUrl = getMoolrePaymentCallbackUrl()
+    const otp = typeof otpCode === "string" ? otpCode.trim() : ""
 
     /** @type {Record<string, unknown>} */
     const directDebitPayload = {
@@ -274,13 +286,16 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       payer: payerPhone || "",
       amount: String(amount),
       externalref: reference,
-      otpcode: "",
-      reference: "",
       sessionid: String(sessionId || ""),
       accountnumber: MOOLRE_ACCOUNT_NUMBER,
     }
-    directDebitPayload.callback = callbackUrl
-    directDebitPayload.redirect = callbackUrl
+    if (otp) {
+      directDebitPayload.otpcode = otp
+    }
+    if (shouldIncludePaymentCallbackInRequest()) {
+      directDebitPayload.callback = callbackUrl
+      directDebitPayload.redirect = callbackUrl
+    }
 
     console.log("[ussd-momo] POST payment (init)", {
       reference,
@@ -289,7 +304,8 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       moolreUssdNetwork: moolreNetworkCode,
       payer: payerPhone,
       packageName,
-      callback: callbackUrl,
+      hasOtp: Boolean(otp),
+      callback: shouldIncludePaymentCallbackInRequest() ? callbackUrl : "(omitted)",
     })
 
     const { response, data, responseText } = await postMoolrePayment(directDebitPayload, authHeaders)
@@ -310,29 +326,55 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     const code = String(data?.code || "").toUpperCase()
     console.log("[ussd-momo] init OK", { code, message: data?.message })
 
-    // TP14 = SMS verification required before MoMo can be used
-    if (code === "TP14") {
-      return {
-        success: false,
+    // TP14 = Moolre sent a one-time SMS code to the payer. Re-post the SAME externalref with otpcode
+    // to trigger the MoMo PIN prompt (TR099). Do not treat as a hard failure.
+    if (code === "TP14" && !otp) {
+      console.log("[ussd-momo] TP14 — payer must submit Moolre SMS code, then PIN prompt follows", {
         reference,
-        message: "Complete the SMS verification from Moolre, then try again.",
+        channel,
+      })
+      return {
+        success: true,
+        reference,
         provider: "moolre",
+        action: "OTP_REQUIRED",
+        message:
+          "Moolre sent a one-time verification SMS to the customer. Submit that code to trigger the MoMo PIN prompt.",
+        data: data?.data || data,
         moolreCode: code,
       }
     }
 
-    // TR099 = payment request initiated; MoMo PIN prompt is sent on this single call.
-    // Do NOT POST again with the same externalref — Moolre returns TP13 (duplicate ref).
+    // TR099 = MoMo PIN approval prompt sent to payer's phone.
     if (code === "TR099") {
-      console.log("[ussd-momo] TR099 — MoMo prompt should appear on payer phone", { reference, channel })
+      console.log("[ussd-momo] TR099 — MoMo PIN prompt sent", { reference, channel })
+      return {
+        success: true,
+        reference,
+        provider: "moolre",
+        action: "PIN_PROMPT_SENT",
+        message: "MoMo PIN prompt sent to the customer's phone.",
+        data: data?.data || data,
+        moolreCode: code,
+      }
+    }
+
+    if (otp && code === "TP14") {
+      return {
+        success: false,
+        reference,
+        message: "Invalid or expired verification code. Check the SMS and try again.",
+        provider: "moolre",
+        moolreCode: code,
+      }
     }
 
     return {
       success: true,
       reference,
       provider: "moolre",
-      action: "PROMPT_TRIGGERED",
-      message: "Payment prompt sent. Enter your MoMo PIN to approve.",
+      action: "PIN_PROMPT_SENT",
+      message: "Payment request sent. Customer should approve with their MoMo PIN.",
       data: data?.data || data,
       moolreCode: code,
     }
