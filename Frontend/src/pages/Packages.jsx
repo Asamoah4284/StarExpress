@@ -26,15 +26,19 @@ import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import {
   createCatalogPackage,
-  createCatalogSale,
   deleteCatalogPackage,
+  fetchAgentSalePaymentStatus,
   fetchPackageStock,
   fetchPackageVoucherInventory,
+  initiateAgentSalePayment,
   updateCatalogPackage,
 } from "@/lib/api.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
 import { ROLE_ADMIN, ROLE_SALES_AGENT } from "@/lib/roles.js"
 import { formatCedis } from "@/lib/utils"
+
+const PAYMENT_POLL_INTERVAL_MS = 3000
+const PAYMENT_POLL_TIMEOUT_MS = 3 * 60 * 1000
 
 export default function Packages() {
   const { token, user } = useAuth()
@@ -89,6 +93,9 @@ export default function Packages() {
   const [sellLocationId, setSellLocationId] = React.useState("")
   const [sellError, setSellError] = React.useState(null)
   const [sellSuccess, setSellSuccess] = React.useState(/** @type {string | null} */ (null))
+  const [sellAwaitingPayment, setSellAwaitingPayment] = React.useState(false)
+  const [sellPaymentRef, setSellPaymentRef] = React.useState(/** @type {string | null} */ (null))
+  const sellPaymentStartedAtRef = React.useRef(/** @type {number | null} */ (null))
 
   const sellRowRef = React.useRef(
     /** @type {{ id: string, name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number } | null} */ (null),
@@ -241,6 +248,40 @@ export default function Packages() {
         ? "—"
         : String(sellStockRemaining ?? 0)
 
+  const invalidateSaleQueries = React.useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["catalog"] })
+    queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+    queryClient.invalidateQueries({ queryKey: ["package-stock"] })
+    queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
+    queryClient.invalidateQueries({ queryKey: ["vouchers"] })
+    queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
+    queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+  }, [queryClient])
+
+  const completeAgentSale = React.useCallback(
+    (/** @type {{ voucherCode?: string, smsSent?: boolean }} */ result) => {
+      invalidateSaleQueries()
+      const code = result.voucherCode
+      setSellSuccess(
+        code
+          ? result.smsSent
+            ? `Payment received. Voucher ${code} was sent by SMS to the customer.`
+            : `Payment received. Voucher ${code} was issued but SMS delivery may have failed — check with the customer.`
+          : "Payment received and sale completed.",
+      )
+      setSellAwaitingPayment(false)
+      setSellPaymentRef(null)
+      sellPaymentStartedAtRef.current = null
+      setSellOpen(false)
+      sellRowRef.current = null
+      setSellPkg(null)
+      setSellCustomerPhone("")
+      setSellLocationId(locations[0]?.id ?? "")
+      setSellError(null)
+    },
+    [invalidateSaleQueries, locations],
+  )
+
   const sellMutation = useMutation({
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
@@ -256,7 +297,7 @@ export default function Packages() {
       let result
       if (isAdmin) {
         if (!sellLocationId) throw new Error("Choose a wifi location for this sale.")
-        result = await createCatalogSale(token, {
+        result = await initiateAgentSalePayment(token, {
           packageId: row.id,
           customerPhone,
           locationId: sellLocationId,
@@ -267,39 +308,75 @@ export default function Packages() {
             "No wifi location is linked to your account. Ask an administrator to assign you to a location.",
           )
         }
-        result = await createCatalogSale(token, {
+        result = await initiateAgentSalePayment(token, {
           packageId: row.id,
           customerPhone,
         })
       }
-      if (!result.ok) throw new Error(result.error || "Sale failed")
-      return result.sale
+      if (!result.ok) throw new Error(result.error || "Could not send payment prompt")
+      return result
     },
-    onSuccess: (sale) => {
-      queryClient.invalidateQueries({ queryKey: ["catalog"] })
-      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
-      queryClient.invalidateQueries({ queryKey: ["package-stock"] })
-      queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
-      queryClient.invalidateQueries({ queryKey: ["vouchers"] })
-      queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
-      queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
-      const code = sale?.voucherCode
-      setSellSuccess(
-        code
-          ? `Sale recorded. Voucher ${code} was sent by SMS to the customer and marked as used.`
-          : "Sale recorded. Voucher SMS was sent and marked as used.",
-      )
-      setSellOpen(false)
-      sellRowRef.current = null
-      setSellPkg(null)
-      setSellCustomerPhone("")
-      setSellLocationId(locations[0]?.id ?? "")
+    onSuccess: (result) => {
+      setSellAwaitingPayment(true)
+      setSellPaymentRef(result.paymentReference)
+      sellPaymentStartedAtRef.current = Date.now()
       setSellError(null)
     },
     onError: (err) => {
       setSellError(err instanceof Error ? err.message : "Request failed")
     },
   })
+
+  React.useEffect(() => {
+    if (!sellAwaitingPayment || !sellPaymentRef || !token) return
+
+    let cancelled = false
+
+    const poll = async () => {
+      if (cancelled) return
+      const startedAt = sellPaymentStartedAtRef.current ?? Date.now()
+      if (Date.now() - startedAt > PAYMENT_POLL_TIMEOUT_MS) {
+        setSellAwaitingPayment(false)
+        setSellPaymentRef(null)
+        sellPaymentStartedAtRef.current = null
+        setSellError("Payment timed out. Ask the customer to try again or check their MoMo wallet.")
+        return
+      }
+
+      const status = await fetchAgentSalePaymentStatus(token, sellPaymentRef)
+      if (cancelled) return
+
+      if (!status.ok) {
+        setSellError(status.error || "Could not check payment status")
+        return
+      }
+
+      if (status.status === "completed") {
+        completeAgentSale({
+          voucherCode: status.voucherCode ?? status.sale?.voucherCode,
+          smsSent: status.smsSent,
+        })
+        return
+      }
+
+      if (status.status === "failed") {
+        setSellAwaitingPayment(false)
+        setSellPaymentRef(null)
+        sellPaymentStartedAtRef.current = null
+        setSellError(status.message || "Payment was not completed.")
+      }
+    }
+
+    void poll()
+    const timer = window.setInterval(() => {
+      void poll()
+    }, PAYMENT_POLL_INTERVAL_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [sellAwaitingPayment, sellPaymentRef, token, completeAgentSale])
 
   const resetForm = () => {
     setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
@@ -336,6 +413,9 @@ export default function Packages() {
       setSellLocationId(defaultLoc)
       setSellError(null)
       setSellSuccess(null)
+      setSellAwaitingPayment(false)
+      setSellPaymentRef(null)
+      sellPaymentStartedAtRef.current = null
       setSellOpen(true)
     },
     [locations, isAdmin, locationFilterId],
@@ -484,8 +564,8 @@ export default function Packages() {
   const pageDescription = isAdmin
     ? locationFilterId === "all"
       ? "Package catalog with live voucher inventory (total uploaded and remaining unused across all wifi locations)."
-      : `Voucher totals and remaining stock at ${locationFilterLabel}. Tap Sell to record a sale at this location.`
-    : "Packages at your wifi location with voucher totals and remaining stock. Tap Sell to record a sale."
+      : `Voucher totals and remaining stock at ${locationFilterLabel}. Tap Sell to send a MoMo payment prompt to the customer.`
+    : "Packages at your wifi location with voucher totals and remaining stock. Tap Sell to send a MoMo payment prompt to the customer."
 
   return (
     <div className="space-y-6">
@@ -695,6 +775,9 @@ export default function Packages() {
             setSellCustomerPhone("")
             setSellError(null)
             setSellSuccess(null)
+            setSellAwaitingPayment(false)
+            setSellPaymentRef(null)
+            sellPaymentStartedAtRef.current = null
           }
         }}
       >
@@ -704,6 +787,13 @@ export default function Packages() {
           </DialogHeader>
           {sellPkg ? (
             <div className="grid gap-3 py-2">
+              {sellAwaitingPayment ? (
+                <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm" role="status">
+                  Payment prompt sent to <span className="font-medium">{sellCustomerPhone}</span>. Ask the
+                  customer to approve the MoMo charge and enter their PIN on their phone. The voucher will be
+                  sent by SMS after payment.
+                </p>
+              ) : null}
               {sellError ? (
                 <p className="text-destructive bg-destructive/10 rounded-md px-2 py-1.5 text-sm" role="alert">
                   {sellError}
@@ -728,6 +818,7 @@ export default function Packages() {
                   onChange={(e) => setSellCustomerPhone(e.target.value)}
                   placeholder="e.g. 0241234567"
                   autoComplete="tel"
+                  disabled={sellAwaitingPayment || sellMutation.isPending}
                 />
               </div>
               {isAdmin ? (
@@ -768,6 +859,7 @@ export default function Packages() {
               type="button"
               onClick={confirmSell}
               disabled={
+                sellAwaitingPayment ||
                 sellMutation.isPending ||
                 !sellPhoneValid ||
                 (isAdmin && (!sellLocationId || locations.length === 0)) ||
@@ -778,7 +870,11 @@ export default function Packages() {
                 sellStockRemaining === 0
               }
             >
-              {sellMutation.isPending ? "Sending voucher…" : "Confirm sale"}
+              {sellAwaitingPayment
+                ? "Waiting for payment…"
+                : sellMutation.isPending
+                  ? "Sending payment prompt…"
+                  : "Confirm sale"}
             </Button>
           </DialogFooter>
         </DialogContent>

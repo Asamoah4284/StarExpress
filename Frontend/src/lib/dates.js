@@ -68,6 +68,22 @@ export function formatDateForInput(d) {
 }
 
 /**
+ * Display a sale timestamp for tables and exports.
+ * Uses full ISO `soldAt` when present; falls back to date-only legacy rows.
+ * @param {string | undefined | null} soldAt
+ * @param {string | undefined | null} dateFallback
+ */
+export function formatSaleDateTime(soldAt, dateFallback) {
+  const raw = typeof soldAt === "string" && soldAt.trim() ? soldAt.trim() : ""
+  if (raw) {
+    const d = new Date(raw)
+    if (isValid(d)) return format(d, "yyyy-MM-dd, h:mm:ss a")
+  }
+  const day = typeof dateFallback === "string" ? dateFallback.trim() : ""
+  return day || "—"
+}
+
+/**
  * @param {Date} d
  * @returns {string} ISO `YYYY-MM-DD` (local calendar date)
  */

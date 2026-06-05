@@ -50,6 +50,38 @@ export function createUssdSessionStore(col) {
     async findByPaymentReference(paymentReference) {
       return col.findOne({ paymentReference })
     },
+
+    /**
+     * Agent-initiated MoMo sale — customer approves PIN on their phone; webhook fulfills voucher + SMS.
+     * @param {{
+     *   sessionId: string
+     *   phone: string
+     *   locationId: string
+     *   soldByUserId: string
+     *   paymentReference: string
+     *   selectedPackage: { packageId: string, name: string, priceGHS: number, dataLimit?: string }
+     * }} doc
+     */
+    async createAgentPaymentSession(doc) {
+      const now = new Date()
+      await col.insertOne({
+        _id: doc.sessionId,
+        channel: "agent",
+        phone: doc.phone,
+        network: null,
+        moolreNetwork: null,
+        locationId: doc.locationId,
+        step: "payment",
+        locationList: [],
+        packageList: [],
+        selectedPackage: doc.selectedPackage,
+        paymentReference: doc.paymentReference,
+        soldByUserId: doc.soldByUserId,
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
+      })
+    },
   }
 }
 

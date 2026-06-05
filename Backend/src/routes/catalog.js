@@ -2,9 +2,19 @@ import express from "express"
 import { randomUUID } from "node:crypto"
 import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { appendAuditLog } from "../lib/appendAuditLog.js"
+import { backfillSaleSoldAt } from "../lib/backfillSaleSoldAt.js"
 import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
 import { sendSms } from "../services/sms.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
+import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
+import {
+  formatPhoneNumber,
+  generateAgentPaymentReference,
+  getNetworkFromMsisdn,
+  initiateMoMoPayment,
+} from "../lib/ussdHelpers.js"
+import { scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
+import { createMoolrePaymentFulfillment } from "../services/moolrePaymentFulfillment.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -140,6 +150,7 @@ function toSale(d) {
     amount: d.amount,
     locationId: d.locationId,
     date: d.date,
+    ...(typeof d.soldAt === "string" && d.soldAt.trim() ? { soldAt: d.soldAt.trim() } : {}),
     status: d.status,
     ...(typeof d.voucherCode === "string" && d.voucherCode.trim()
       ? { voucherCode: d.voucherCode.trim() }
@@ -263,11 +274,62 @@ function parseVoucherListQuery(req) {
   const packageId = typeof req.query.packageId === "string" ? req.query.packageId.trim() : ""
   const locationId = typeof req.query.locationId === "string" ? req.query.locationId.trim() : ""
   const status = typeof req.query.status === "string" ? req.query.status.trim().toLowerCase() : "all"
-  return { page, limit, packageId, locationId, status }
+  const search = typeof req.query.search === "string" ? req.query.search.trim().slice(0, 64) : ""
+  return { page, limit, packageId, locationId, status, search }
+}
+
+/** @param {string} value */
+function escapeRegexLiteral(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 /**
- * @param {{ packageId?: string, locationId?: string, status?: string }} q
+ * Case-insensitive search across voucher id, metadata, and imported CSV column values.
+ * @param {string} search
+ * @returns {import("mongodb").Document | null}
+ */
+function buildVoucherSearchFilter(search) {
+  const term = typeof search === "string" ? search.trim() : ""
+  if (!term) return null
+  const pattern = escapeRegexLiteral(term)
+  return {
+    $or: [
+      { _id: { $regex: pattern, $options: "i" } },
+      { voucherCode: { $regex: pattern, $options: "i" } },
+      { locationName: { $regex: pattern, $options: "i" } },
+      { packageName: { $regex: pattern, $options: "i" } },
+      { locationId: { $regex: pattern, $options: "i" } },
+      { packageId: { $regex: pattern, $options: "i" } },
+      { batchId: { $regex: pattern, $options: "i" } },
+      { sourceFileName: { $regex: pattern, $options: "i" } },
+      {
+        $expr: {
+          $gt: [
+            {
+              $size: {
+                $filter: {
+                  input: { $objectToArray: { $ifNull: ["$columns", {}] } },
+                  as: "col",
+                  cond: {
+                    $regexMatch: {
+                      input: { $toString: "$$col.v" },
+                      regex: pattern,
+                      options: "i",
+                    },
+                  },
+                },
+              },
+            },
+            0,
+          ],
+        },
+      },
+    ],
+  }
+}
+
+/**
+ * @param {{ packageId?: string, locationId?: string, status?: string, search?: string }} q
  * @returns {import("mongodb").Document}
  */
 function buildVoucherMongoFilter(q) {
@@ -286,6 +348,8 @@ function buildVoucherMongoFilter(q) {
   } else if (q.status === "unused") {
     and.push({ $nor: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }] })
   }
+  const searchFilter = buildVoucherSearchFilter(q.search ?? "")
+  if (searchFilter) and.push(searchFilter)
   if (and.length === 0) return {}
   if (and.length === 1) return and[0]
   return { $and: and }
@@ -441,13 +505,22 @@ function requireSalesAgentOrAdmin(req, res, next) {
  *   auditLogs: import("mongodb").Collection
  *   vouchers: import("mongodb").Collection
  *   users: import("mongodb").Collection
+ *   ussdSessions: import("mongodb").Collection
  *   jwtSecret: string
  * }} deps
  */
 export function createCatalogRouter(deps) {
-  const { locations, packages, sales, disputes, auditLogs, vouchers, users, jwtSecret } = deps
+  const { locations, packages, sales, disputes, auditLogs, vouchers, users, ussdSessions, jwtSecret } = deps
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
+  const agentPaymentSessions = createUssdSessionStore(ussdSessions)
+  const paymentFulfillment = createMoolrePaymentFulfillment({
+    ussdSessions,
+    packages,
+    vouchers,
+    sales,
+    auditLogs,
+  })
 
   router.get("/audit-logs", requireAdmin, async (_req, res) => {
     try {
@@ -565,16 +638,15 @@ export function createCatalogRouter(deps) {
     try {
       const q = parseVoucherListQuery(req)
       const filter = buildVoucherMongoFilter(q)
-      const skip = (q.page - 1) * q.limit
-      const [docs, total] = await Promise.all([
-        vouchers.find(filter).sort({ uploadedAt: -1 }).skip(skip).limit(q.limit).toArray(),
-        vouchers.countDocuments(filter),
-      ])
+      const total = await vouchers.countDocuments(filter)
       const totalPages = Math.max(1, Math.ceil(total / q.limit))
+      const page = Math.min(q.page, totalPages)
+      const skip = (page - 1) * q.limit
+      const docs = await vouchers.find(filter).sort({ uploadedAt: -1 }).skip(skip).limit(q.limit).toArray()
       res.json({
         vouchers: docs.map(toVoucher),
         total,
-        page: q.page,
+        page,
         limit: q.limit,
         totalPages,
       })
@@ -810,9 +882,11 @@ export function createCatalogRouter(deps) {
 
   router.get("/", async (req, res) => {
     try {
+      await backfillSaleSoldAt(sales, auditLogs)
+
       const [locDocs, saleDocs, disputeDocs, auditDocs, saleCount] = await Promise.all([
         locations.find({}).sort({ name: 1 }).toArray(),
-        sales.find({}).sort({ date: -1 }).toArray(),
+        sales.find({}).sort({ soldAt: -1, date: -1, _id: -1 }).toArray(),
         disputes.find({}).sort({ date: -1 }).toArray(),
         auditLogs.find({}).sort({ at: -1 }).toArray(),
         sales.countDocuments({}),
@@ -850,6 +924,169 @@ export function createCatalogRouter(deps) {
         disputes: disputeDocs.map(toDispute),
         auditLogs: auditDocs.map(toAudit),
         packageVoucherInventory,
+      })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.post("/sales/initiate-payment", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
+      const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
+      const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
+      if (!packageId) return res.status(400).json({ error: "packageId is required." })
+      const phoneDigits = customerPhone.replace(/\D/g, "")
+      if (customerPhone.length < 7 || customerPhone.length > 32) {
+        return res.status(400).json({ error: "Customer phone must be between 7 and 32 characters." })
+      }
+      if (phoneDigits.length < 7) {
+        return res.status(400).json({ error: "Customer phone must include at least 7 digits." })
+      }
+
+      const formattedPhone = formatPhoneNumber(customerPhone)
+      if (!formattedPhone) {
+        return res.status(400).json({ error: "Customer phone number is not valid." })
+      }
+
+      const pkg = await packages.findOne({ _id: packageId })
+      if (!pkg) return res.status(400).json({ error: "Unknown package." })
+
+      let locationId = ""
+      if (req.auth.role === "Admin") {
+        locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+        if (!locationId) {
+          return res.status(400).json({ error: "locationId is required when recording a sale as administrator." })
+        }
+        const loc = await locations.findOne({ _id: locationId })
+        if (!loc) return res.status(400).json({ error: "Unknown location." })
+      } else {
+        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        if (!loc) {
+          return res.status(403).json({
+            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
+          })
+        }
+        locationId = String(loc._id)
+      }
+
+      const resolved = resolvePackageForLocation(pkg, locationId)
+      if (resolved.status !== "Active") {
+        return res.status(400).json({ error: "Only active packages can be sold." })
+      }
+      const priceGHS = resolved.priceGHS
+      if (!Number.isFinite(priceGHS) || priceGHS <= 0) {
+        return res.status(400).json({ error: "Invalid package price." })
+      }
+
+      const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
+      const voucherAvailable = await vouchers.findOne(availFilter, { projection: { _id: 1 } })
+      if (!voucherAvailable) {
+        return res.status(400).json({
+          error: "No vouchers available for this package at this wifi location.",
+        })
+      }
+
+      const packageName = resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId
+      const sessionId = `agent-${randomUUID()}`
+      const paymentReference = generateAgentPaymentReference(sessionId)
+
+      await agentPaymentSessions.createAgentPaymentSession({
+        sessionId,
+        phone: formattedPhone,
+        locationId,
+        soldByUserId: req.auth.userId,
+        paymentReference,
+        selectedPackage: {
+          packageId,
+          name: packageName,
+          priceGHS,
+          dataLimit: resolved.dataLimit && resolved.dataLimit.trim() ? resolved.dataLimit.trim() : "",
+        },
+      })
+
+      const network = getNetworkFromMsisdn(formattedPhone)
+      const momoResult = await initiateMoMoPayment(formattedPhone, priceGHS, sessionId, {
+        packageName,
+        reference: paymentReference,
+        network,
+      })
+
+      if (!momoResult?.success) {
+        await ussdSessions.deleteOne({ _id: sessionId })
+        return res.status(502).json({
+          error: momoResult?.message || "Could not send payment prompt to the customer's phone.",
+        })
+      }
+
+      scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
+
+      await appendAuditLog(
+        auditLogs,
+        req.auth,
+        `Agent payment initiated ${paymentReference}: ${formattedPhone} · ${packageName} · ${priceGHS} GHS · ${locationId}`,
+      )
+
+      res.status(202).json({
+        status: "pending",
+        paymentReference,
+        customerPhone: formattedPhone,
+        amount: priceGHS,
+        message:
+          "Payment prompt sent to the customer's phone. Ask them to approve the MoMo payment and enter their PIN.",
+        mock: momoResult.mock === true,
+      })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.get("/sales/payment-status/:paymentReference", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const paymentReference =
+        typeof req.params?.paymentReference === "string" ? req.params.paymentReference.trim() : ""
+      if (!paymentReference) return res.status(400).json({ error: "paymentReference is required." })
+
+      const paymentSession = await agentPaymentSessions.findByPaymentReference(paymentReference)
+      if (!paymentSession || paymentSession.channel !== "agent") {
+        return res.status(404).json({ error: "Payment session not found." })
+      }
+      if (req.auth.role !== "Admin" && paymentSession.soldByUserId !== req.auth.userId) {
+        return res.status(403).json({ error: "You can only check payments you initiated." })
+      }
+
+      let sale = await sales.findOne({ paymentReference })
+      if (!sale) {
+        await paymentFulfillment.tryConfirmPaymentFromPoll(paymentReference)
+        sale = await sales.findOne({ paymentReference })
+      }
+
+      if (sale) {
+        return res.json({
+          status: "completed",
+          paymentReference,
+          sale: toSale(sale),
+          smsSent: sale.smsSent === true,
+          voucherCode: typeof sale.voucherCode === "string" ? sale.voucherCode : undefined,
+        })
+      }
+
+      if (paymentSession.step === "completed") {
+        return res.json({
+          status: "failed",
+          paymentReference,
+          message: "Payment was not completed or voucher fulfillment failed.",
+        })
+      }
+
+      return res.json({
+        status: "pending",
+        paymentReference,
+        message: "Waiting for the customer to approve the MoMo payment on their phone.",
       })
     } catch (err) {
       console.error(err)
@@ -920,7 +1157,8 @@ export function createCatalogRouter(deps) {
       const packageType = resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId
       const packageDataLimit = resolved.dataLimit && resolved.dataLimit.trim() ? resolved.dataLimit.trim() : ""
       const voucherCode = voucherDisplayCode(voucherToUse)
-      const date = new Date().toISOString().slice(0, 10)
+      const soldAt = new Date().toISOString()
+      const date = soldAt.slice(0, 10)
       const saleId = `sale-${randomUUID().slice(0, 12)}`
 
       const saleDoc = {
@@ -933,6 +1171,7 @@ export function createCatalogRouter(deps) {
         amount: priceGHS,
         locationId,
         date,
+        soldAt,
         status: "Completed",
         voucherId: String(voucherToUse._id),
         voucherCode,

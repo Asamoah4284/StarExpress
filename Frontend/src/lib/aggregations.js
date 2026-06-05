@@ -516,12 +516,11 @@ export function salesToCsv(rows, options = {}) {
   }
   const header = [
     "id",
-    "customerName",
     "customerPhone",
-    "paymentNumber",
     "packageType",
     "amount",
     "locationId",
+    "soldAt",
     "date",
     "status",
   ]
@@ -530,12 +529,11 @@ export function salesToCsv(rows, options = {}) {
     lines.push(
       [
         r.id,
-        `"${String(r.customerName).replace(/"/g, '""')}"`,
         `"${String(r.customerPhone ?? "").replace(/"/g, '""')}"`,
-        `"${String(r.paymentNumber ?? "").replace(/"/g, '""')}"`,
         `"${String(r.packageType).replace(/"/g, '""')}"`,
         r.amount,
         r.locationId,
+        `"${String(r.soldAt ?? "").replace(/"/g, '""')}"`,
         r.date,
         r.status,
       ].join(","),

@@ -168,6 +168,7 @@ async function main() {
       auditLogs: getAuditLogsCollection(),
       vouchers: getVouchersCollection(),
       users: getUsersCollection(),
+      ussdSessions: getUssdSessionsCollection(),
       jwtSecret: JWT_SECRET,
     }),
   )

@@ -77,11 +77,23 @@ async function syncPackageStockForLocation(packagesCol, vouchersCol, packageId, 
  *   customerPhone: string
  *   packageId: string
  *   locationId: string
+ *   channel?: "ussd" | "agent"
+ *   soldByUserId?: string
  * }} opts
  */
 export async function fulfillUssdVoucherSale(opts) {
-  const { packages, vouchers, sales, auditLogs, paymentReference, customerPhone, packageId, locationId } =
-    opts
+  const {
+    packages,
+    vouchers,
+    sales,
+    auditLogs,
+    paymentReference,
+    customerPhone,
+    packageId,
+    locationId,
+    channel = "ussd",
+    soldByUserId,
+  } = opts
 
   const existing = await sales.findOne({ paymentReference })
   if (existing) {
@@ -110,9 +122,12 @@ export async function fulfillUssdVoucherSale(opts) {
   const packageType = resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId
   const packageDataLimit = resolved.dataLimit && resolved.dataLimit.trim() ? resolved.dataLimit.trim() : ""
   const voucherCode = voucherDisplayCode(voucherToUse)
-  const date = new Date().toISOString().slice(0, 10)
-  const saleId = `sale-ussd-${randomUUID().slice(0, 12)}`
+  const soldAt = new Date().toISOString()
+  const date = soldAt.slice(0, 10)
+  const saleId =
+    channel === "agent" ? `sale-agent-${randomUUID().slice(0, 12)}` : `sale-ussd-${randomUUID().slice(0, 12)}`
 
+  /** @type {Record<string, unknown>} */
   const saleDoc = {
     _id: saleId,
     customerName: customerPhone,
@@ -123,12 +138,16 @@ export async function fulfillUssdVoucherSale(opts) {
     amount: priceGHS,
     locationId,
     date,
+    soldAt,
     status: "Completed",
     voucherId: String(voucherToUse._id),
     voucherCode,
     paymentReference,
-    channel: "ussd",
+    channel,
     smsSent: false,
+  }
+  if (soldByUserId) {
+    saleDoc.soldByUserId = soldByUserId
   }
 
   await sales.insertOne(saleDoc)
@@ -166,14 +185,16 @@ export async function fulfillUssdVoucherSale(opts) {
   }
 
   try {
+    const actor = channel === "agent" ? `Agent ${soldByUserId || "unknown"}` : "USSD"
+    const label = channel === "agent" ? "Agent sale" : "USSD sale"
     await auditLogs.insertOne({
       _id: `audit-${randomUUID().slice(0, 12)}`,
-      actor: "USSD",
-      action: `USSD sale ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference}`,
+      actor,
+      action: `${label} ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference}`,
       at: new Date().toISOString(),
     })
   } catch (e) {
-    console.error("[ussd] audit log failed", e)
+    console.error("[moolre-sale] audit log failed", e)
   }
 
   return {

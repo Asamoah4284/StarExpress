@@ -34,12 +34,18 @@ function mobileFieldLabel(header) {
 function getMobileHero(record) {
   if (!record || typeof record !== "object") return null
   const r = /** @type {Record<string, unknown>} */ (record)
-  if (typeof r.customerName === "string" && r.customerName.trim()) {
+  const phone =
+    typeof r.customerPhone === "string" && r.customerPhone.trim()
+      ? r.customerPhone.trim()
+      : typeof r.customerName === "string" && r.customerName.trim()
+        ? r.customerName.trim()
+        : ""
+  if (phone) {
     const id = r.id != null ? String(r.id) : null
     return {
-      title: r.customerName.trim(),
+      title: phone,
       subtitle: id ? `Sale ID · ${id}` : null,
-      skipIds: new Set(["customerName", "id"]),
+      skipIds: new Set(["customerName", "customerPhone", "id"]),
     }
   }
   if (typeof r.email === "string" && typeof r.role === "string") {
@@ -93,10 +99,20 @@ export function DataTable({
   className,
   /** When true, columns respect width constraints and long text wraps instead of overlapping. */
   fixedLayout = false,
+  /**
+   * When true, filtering runs only when the user clicks Search or presses Enter.
+   * Default false — filter updates as the user types.
+   */
+  searchOnButton = false,
 }) {
   const [internalFilter, setInternalFilter] = React.useState("")
+  const [searchDraft, setSearchDraft] = React.useState("")
   const globalFilter = controlledFilter ?? internalFilter
   const setGlobalFilter = onGlobalFilterChange ?? setInternalFilter
+
+  React.useEffect(() => {
+    if (controlledFilter !== undefined) setSearchDraft(controlledFilter)
+  }, [controlledFilter])
 
   // TanStack Table returns unstable function references; React Compiler skips memoization here.
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table
@@ -113,16 +129,59 @@ export function DataTable({
     initialState: { pagination: { pageSize }, sorting: initialSorting ?? [] },
   })
 
+  const applySearch = React.useCallback(() => {
+    const query = searchDraft.trim()
+    setGlobalFilter(query)
+    table.setPageIndex(0)
+  }, [searchDraft, setGlobalFilter, table])
+
+  const clearSearch = React.useCallback(() => {
+    setSearchDraft("")
+    setGlobalFilter("")
+    table.setPageIndex(0)
+  }, [setGlobalFilter, table])
+
+  const handleSearchInputChange = (/** @type {React.ChangeEvent<HTMLInputElement>} */ e) => {
+    const value = e.target.value
+    setSearchDraft(value)
+    if (!searchOnButton) {
+      setGlobalFilter(value)
+      table.setPageIndex(0)
+    }
+  }
+
+  const handleSearchKeyDown = (/** @type {React.KeyboardEvent<HTMLInputElement>} */ e) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      applySearch()
+    }
+  }
+
   return (
     <div className={cn("space-y-3", className)}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <Input
-          placeholder={searchPlaceholder}
-          value={globalFilter}
-          onChange={(e) => setGlobalFilter(e.target.value)}
-          className="max-w-sm border-border bg-card shadow-none"
-          aria-label="Search table"
-        />
+        <div className="flex w-full max-w-xl flex-col gap-2 sm:flex-row sm:items-center">
+          <Input
+            placeholder={searchPlaceholder}
+            value={searchOnButton ? searchDraft : globalFilter}
+            onChange={handleSearchInputChange}
+            onKeyDown={searchOnButton ? handleSearchKeyDown : undefined}
+            className="border-border bg-card flex-1 shadow-none"
+            aria-label="Search table"
+          />
+          {searchOnButton ? (
+            <>
+              <Button type="button" className="shrink-0" onClick={applySearch}>
+                Search
+              </Button>
+              {globalFilter ? (
+                <Button type="button" variant="outline" className="shrink-0" onClick={clearSearch}>
+                  Clear
+                </Button>
+              ) : null}
+            </>
+          ) : null}
+        </div>
         <p className="text-muted-foreground text-sm">
           {table.getFilteredRowModel().rows.length} row(s)
         </p>

@@ -31,6 +31,16 @@ export function generatePaymentReference(sessionId) {
 }
 
 /**
+ * @param {string} sessionId
+ */
+export function generateAgentPaymentReference(sessionId) {
+  const timestamp = Date.now().toString(36).toUpperCase()
+  const random = crypto.randomBytes(4).toString("hex").toUpperCase()
+  const sid = String(sessionId || "").slice(0, 8)
+  return `SE-AGENT-${sid}-${timestamp}-${random}`
+}
+
+/**
  * @param {string | null | undefined} msisdn
  */
 export function getNetworkFromMsisdn(msisdn) {

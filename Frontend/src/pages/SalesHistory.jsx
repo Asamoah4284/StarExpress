@@ -18,6 +18,7 @@ import { useCompanyName } from "@/hooks/useAppSettings.js"
 import { filterSalesByDateRange, filterSalesByLocation, salesToCsv } from "@/lib/aggregations.js"
 import {
   formatDateRangeLabel,
+  formatSaleDateTime,
   getLastNDaysRange,
   isCompleteDateRange,
   localDateToIso,
@@ -62,7 +63,11 @@ export default function SalesHistory() {
         localDateToIso(dateRange.to),
       )
     }
-    return [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+    return [...rows].sort((a, b) => {
+      const ta = a.soldAt || `${a.date}T00:00:00`
+      const tb = b.soldAt || `${b.date}T00:00:00`
+      return ta < tb ? 1 : ta > tb ? -1 : 0
+    })
   }, [catalog.data, locationId, dateRange, rangeComplete])
 
   const columns = React.useMemo(
@@ -70,18 +75,9 @@ export default function SalesHistory() {
       const locations = catalog.data?.locations ?? []
       return [
         { accessorKey: "id", header: "Sale ID" },
-        { accessorKey: "customerName", header: "Customer Name" },
         {
           accessorKey: "customerPhone",
           header: "Phone",
-          cell: ({ getValue }) => {
-            const v = getValue()
-            return v ? String(v) : "—"
-          },
-        },
-        {
-          accessorKey: "paymentNumber",
-          header: "Payment #",
           cell: ({ getValue }) => {
             const v = getValue()
             return v ? String(v) : "—"
@@ -106,7 +102,16 @@ export default function SalesHistory() {
           header: "Location",
           cell: ({ getValue }) => locationNameById(getValue(), locations),
         },
-        { accessorKey: "date", header: "Date" },
+        {
+          id: "soldAt",
+          accessorFn: (row) => row.soldAt || row.date,
+          header: "Date & time",
+          cell: ({ row }) => (
+            <span className="tabular-nums whitespace-nowrap">
+              {formatSaleDateTime(row.original.soldAt, row.original.date)}
+            </span>
+          ),
+        },
         {
           accessorKey: "status",
           header: "Status",

@@ -6,6 +6,7 @@ import { ServerVouchersTable } from "@/components/vouchers/ServerVouchersTable.j
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -26,6 +27,7 @@ import { ROLE_ADMIN } from "@/lib/roles.js"
 /** @typedef {"all" | "unassigned" | string} PackageFilter */
 
 const DEFAULT_PAGE_SIZE = 25
+const SEARCH_DEBOUNCE_MS = 350
 
 export default function UploadedVouchers() {
   const { token, user, authReady } = useAuth()
@@ -34,12 +36,21 @@ export default function UploadedVouchers() {
   const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = React.useState(/** @type {StatusFilter} */ ("all"))
   const [packageFilter, setPackageFilter] = React.useState(/** @type {PackageFilter} */ ("all"))
+  const [search, setSearch] = React.useState("")
+  const [debouncedSearch, setDebouncedSearch] = React.useState("")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(DEFAULT_PAGE_SIZE)
 
   React.useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim())
+    }, SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  React.useEffect(() => {
     setPage(1)
-  }, [packageFilter, statusFilter, pageSize])
+  }, [packageFilter, statusFilter, pageSize, debouncedSearch])
 
   const summaryQuery = useQuery({
     queryKey: ["vouchers-summary", token],
@@ -54,7 +65,7 @@ export default function UploadedVouchers() {
   })
 
   const vouchersQuery = useQuery({
-    queryKey: ["vouchers", token, packageFilter, statusFilter, page, pageSize],
+    queryKey: ["vouchers", token, packageFilter, statusFilter, debouncedSearch, page, pageSize],
     queryFn: async () => {
       if (!token) throw new Error("Not signed in")
       const r = await fetchVouchers(token, {
@@ -62,13 +73,26 @@ export default function UploadedVouchers() {
         limit: pageSize,
         packageId: packageFilter,
         status: statusFilter,
+        search: debouncedSearch || undefined,
       })
       if (!r.ok) throw new Error(r.error || "Failed to load vouchers")
       return r
     },
     enabled: authReady && Boolean(token) && isAdmin,
     staleTime: 30_000,
-    placeholderData: (prev) => prev,
+    placeholderData: (previousData, previousQuery) => {
+      if (!previousData || !previousQuery?.queryKey) return undefined
+      const [, , pkg, status, search, , size] = previousQuery.queryKey
+      if (
+        pkg === packageFilter &&
+        status === statusFilter &&
+        search === debouncedSearch &&
+        size === pageSize
+      ) {
+        return previousData
+      }
+      return undefined
+    },
   })
 
   const deleteMutation = useMutation({
@@ -173,17 +197,40 @@ export default function UploadedVouchers() {
 
   const list = vouchersQuery.data?.vouchers ?? []
   const filteredTotal = vouchersQuery.data?.total ?? 0
-  const totalPages = vouchersQuery.data?.totalPages ?? 1
-  const pageIndex = Math.max(0, page - 1)
+  const totalPages = Math.max(1, vouchersQuery.data?.totalPages ?? 1)
+
+  React.useEffect(() => {
+    if (vouchersQuery.isFetching) return
+    const serverPage = vouchersQuery.data?.page
+    if (typeof serverPage === "number" && serverPage >= 1 && serverPage !== page) {
+      setPage(serverPage)
+    }
+  }, [page, vouchersQuery.isFetching, vouchersQuery.data?.page])
+
+  const safePage = Number.isFinite(page) && page >= 1 ? page : 1
+  const pageIndex = Math.max(0, safePage - 1)
 
   const emptyFilterMessage =
     list.length === 0 && filteredTotal === 0 && !vouchersQuery.isLoading
       ? totalInventory > 0
-        ? "No vouchers match the current filters."
+        ? debouncedSearch
+          ? `No vouchers match "${debouncedSearch}". Try another search or clear filters.`
+          : "No vouchers match the current filters."
         : undefined
       : undefined
 
+  const clearSearch = React.useCallback(() => {
+    setSearch("")
+    setDebouncedSearch("")
+    setPage(1)
+  }, [])
+
+  const searchPending = search.trim() !== debouncedSearch
+
   const canDeletePackageScope = packageFilter !== "all" && packageFilter !== "unassigned"
+
+  const goToFirstPage = React.useCallback(() => setPage(1), [])
+  const goToLastPage = React.useCallback(() => setPage(totalPages), [totalPages])
 
   const serverPagination = React.useMemo(
     () => ({
@@ -191,23 +238,62 @@ export default function UploadedVouchers() {
       pageCount: totalPages,
       total: filteredTotal,
       pageSize,
-      onPageIndexChange: (index) => setPage(index + 1),
+      isLoading: vouchersQuery.isFetching,
+      onPageIndexChange: (index) => {
+        const nextIndex = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0
+        setPage(Math.min(totalPages, nextIndex + 1))
+      },
+      onGoToFirstPage: goToFirstPage,
+      onGoToLastPage: goToLastPage,
       onPageSizeChange: (size) => setPageSize(size),
     }),
-    [pageIndex, totalPages, filteredTotal, pageSize],
+    [pageIndex, totalPages, filteredTotal, pageSize, vouchersQuery.isFetching, goToFirstPage, goToLastPage],
   )
 
   return (
     <div className="w-full min-w-0 space-y-3">
       <PageHeader
         title="Uploaded vouchers"
-        description="Filter by package and status. Only one page loads from the server at a time."
+        description="Filter by package and status, or search voucher IDs and column values across the full inventory."
       />
 
       <Card className="border-border bg-card w-full min-w-0 gap-2 py-2 shadow-none ring-1 ring-border">
         <CardContent className="w-full min-w-0 space-y-2 px-3 pb-3 pt-1 sm:px-4">
           {isAdmin ? (
             <>
+              <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search as you type — voucher ID, location, package, policy…"
+                  className="border-border bg-card h-8 flex-1 shadow-none"
+                  aria-label="Search vouchers"
+                />
+                {search.trim() ? (
+                  <Button type="button" size="sm" variant="outline" className="h-8 shrink-0" onClick={clearSearch}>
+                    Clear
+                  </Button>
+                ) : null}
+              </div>
+              {search.trim() || debouncedSearch ? (
+                <p className="text-muted-foreground text-xs">
+                  {searchPending || vouchersQuery.isFetching ? (
+                    <span>Searching…</span>
+                  ) : debouncedSearch ? (
+                    <>
+                      Results for{" "}
+                      <span className="text-foreground font-medium">&quot;{debouncedSearch}&quot;</span>
+                      {filteredTotal > 0 ? (
+                        <>
+                          {" "}
+                          · <span className="text-foreground font-medium">{filteredTotal.toLocaleString()}</span>{" "}
+                          match{filteredTotal === 1 ? "" : "es"}
+                        </>
+                      ) : null}
+                    </>
+                  ) : null}
+                </p>
+              ) : null}
               <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
                 <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                   <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">

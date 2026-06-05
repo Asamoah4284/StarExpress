@@ -225,7 +225,10 @@ const VoucherTableRow = React.memo(function VoucherTableRow({ voucher, columnKey
  *     pageCount: number
  *     total: number
  *     pageSize: number
+ *     isLoading?: boolean
  *     onPageIndexChange: (index: number) => void
+ *     onGoToFirstPage?: () => void
+ *     onGoToLastPage?: () => void
  *     onPageSizeChange: (size: number) => void
  *   }
  * }} props
@@ -233,6 +236,8 @@ const VoucherTableRow = React.memo(function VoucherTableRow({ voucher, columnKey
 function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId, serverPagination }) {
   const [clientPageIndex, setClientPageIndex] = React.useState(0)
   const [clientPageSize, setClientPageSize] = React.useState(DEFAULT_PAGE_SIZE)
+  const tableScrollRef = React.useRef(/** @type {HTMLDivElement | null} */ (null))
+  const listTopRef = React.useRef(/** @type {HTMLDivElement | null} */ (null))
 
   const columnKeys = React.useMemo(() => dynamicColumnKeys(vouchers), [vouchers])
 
@@ -240,9 +245,32 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
   const pageSize = serverPagination?.pageSize ?? clientPageSize
   const setPageIndex = serverPagination?.onPageIndexChange ?? setClientPageIndex
   const setPageSize = serverPagination?.onPageSizeChange ?? setClientPageSize
+  const pageLoading = Boolean(serverPagination?.isLoading)
 
   const pageCount = serverPagination?.pageCount ?? Math.max(1, Math.ceil(vouchers.length / pageSize))
   const totalCount = serverPagination?.total ?? vouchers.length
+  const safePageIndex = Number.isFinite(pageIndex) ? Math.max(0, Math.min(pageIndex, Math.max(0, pageCount - 1))) : 0
+  const safePageCount = Number.isFinite(pageCount) && pageCount > 0 ? pageCount : 1
+  const atFirstPage = safePageIndex === 0
+  const atLastPage = safePageIndex >= safePageCount - 1
+
+  const goToFirstPage = React.useCallback(() => {
+    if (atFirstPage) return
+    if (serverPagination?.onGoToFirstPage) {
+      serverPagination.onGoToFirstPage()
+      return
+    }
+    setPageIndex(0)
+  }, [atFirstPage, serverPagination, setPageIndex])
+
+  const goToLastPage = React.useCallback(() => {
+    if (atLastPage) return
+    if (serverPagination?.onGoToLastPage) {
+      serverPagination.onGoToLastPage()
+      return
+    }
+    setPageIndex(safePageCount - 1)
+  }, [atLastPage, safePageCount, serverPagination, setPageIndex])
 
   React.useEffect(() => {
     if (serverPagination) return
@@ -256,7 +284,12 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
     }
   }, [clientPageIndex, pageCount, serverPagination])
 
-  const pageStart = pageIndex * pageSize
+  React.useEffect(() => {
+    tableScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+    listTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }, [safePageIndex, pageSize])
+
+  const pageStart = safePageIndex * pageSize
   const clientPageVouchers = React.useMemo(
     () => vouchers.slice(pageStart, pageStart + pageSize),
     [vouchers, pageStart, pageSize],
@@ -273,7 +306,7 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
   }
 
   return (
-    <div className="w-full min-w-0 space-y-3">
+    <div ref={listTopRef} className="w-full min-w-0 space-y-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-muted-foreground text-xs tabular-nums">
           {totalCount.toLocaleString()} voucher{totalCount === 1 ? "" : "s"}
@@ -313,6 +346,7 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
       </div>
 
       <div
+        ref={tableScrollRef}
         className="hidden max-h-[min(70vh,85dvh)] w-full min-w-0 overflow-auto overscroll-x-contain rounded-lg border border-border [-webkit-overflow-scrolling:touch] md:block"
         role="region"
         aria-label="Voucher data table"
@@ -349,8 +383,9 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
       </div>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-muted-foreground text-sm">
-          Page {pageIndex + 1} of {pageCount}
+        <p className="text-muted-foreground text-sm tabular-nums">
+          Page {safePageIndex + 1} of {safePageCount}
+          {pageLoading ? <span className="ml-1.5 text-xs">· Loading…</span> : null}
         </p>
         <div className="flex items-center gap-2">
           <Button
@@ -358,8 +393,8 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
             variant="outline"
             size="sm"
             className="border-border bg-card shadow-none"
-            onClick={() => setPageIndex(0)}
-            disabled={pageIndex === 0}
+            onClick={goToFirstPage}
+            disabled={atFirstPage}
             aria-label="First page"
           >
             <ChevronsLeft className="size-4" />
@@ -369,8 +404,8 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
             variant="outline"
             size="sm"
             className="border-border bg-card shadow-none"
-            onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-            disabled={pageIndex === 0}
+            onClick={() => setPageIndex(Math.max(0, safePageIndex - 1))}
+            disabled={atFirstPage}
           >
             Previous
           </Button>
@@ -379,8 +414,8 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
             variant="outline"
             size="sm"
             className="border-border bg-card shadow-none"
-            onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
-            disabled={pageIndex >= pageCount - 1}
+            onClick={() => setPageIndex(Math.min(safePageCount - 1, safePageIndex + 1))}
+            disabled={atLastPage}
           >
             Next
           </Button>
@@ -389,8 +424,8 @@ function ServerVouchersTableInner({ vouchers, emptyMessage, onDelete, deletingId
             variant="outline"
             size="sm"
             className="border-border bg-card shadow-none"
-            onClick={() => setPageIndex(pageCount - 1)}
-            disabled={pageIndex >= pageCount - 1}
+            onClick={goToLastPage}
+            disabled={atLastPage}
             aria-label="Last page"
           >
             <ChevronsRight className="size-4" />
