@@ -536,7 +536,7 @@ export default function Packages() {
                   type="button"
                   size="sm"
                   variant="default"
-                  disabled={!canSellThis || sellMutation.isPending || (isSalesAgent && agentBlocked)}
+                  disabled={!canSellThis || sellBusy || (isSalesAgent && agentBlocked)}
                   onClick={() => openSell(pkg)}
                 >
                   Sell
@@ -575,7 +575,7 @@ export default function Packages() {
       openSell,
       remove,
       deleteMutation.isPending,
-      sellMutation.isPending,
+      sellBusy,
       inventoryByPackageId,
       inventoryLoading,
       inventoryError,
