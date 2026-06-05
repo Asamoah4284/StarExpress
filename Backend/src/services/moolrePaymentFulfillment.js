@@ -22,7 +22,10 @@ export function createMoolrePaymentFulfillment(deps) {
    * @param {string} paymentReference
    * @param {string} [source]
    */
-  async function processPaymentSuccess(paymentReference, source = "webhook") {
+  async function processPaymentSuccess(incomingReference, source = "webhook") {
+    const paymentSession = await sessions.findByPaymentReference(incomingReference)
+    const paymentReference = paymentSession?.paymentReference || incomingReference
+
     const existingSale = await sales.findOne({ paymentReference })
     if (existingSale) {
       console.log(`[moolre-pay] ${source} idempotent`, paymentReference, existingSale._id)
@@ -39,9 +42,8 @@ export function createMoolrePaymentFulfillment(deps) {
       return { ok: true, status: "already_processed", saleId: existingSale._id }
     }
 
-    const paymentSession = await sessions.findByPaymentReference(paymentReference)
     if (!paymentSession) {
-      console.warn(`[moolre-pay] ${source} no session for`, paymentReference)
+      console.warn(`[moolre-pay] ${source} no session for`, incomingReference)
       return { ok: false, status: "no_session" }
     }
 
@@ -106,8 +108,11 @@ export function createMoolrePaymentFulfillment(deps) {
     const paymentSession = await sessions.findByPaymentReference(paymentReference)
     const moolreTransactionId =
       typeof paymentSession?.moolreTransactionId === "string" ? paymentSession.moolreTransactionId : null
+    const moolreDebitReference =
+      typeof paymentSession?.moolreDebitReference === "string" ? paymentSession.moolreDebitReference : null
+    const statusRef = moolreDebitReference || paymentReference
 
-    const status = await checkMoolrePaymentStatus(paymentReference, { moolreTransactionId })
+    const status = await checkMoolrePaymentStatus(statusRef, { moolreTransactionId })
     if (status.isNotFound) {
       console.log(
         "[moolre-poll] payment not registered with Moolre yet",
@@ -125,7 +130,7 @@ export function createMoolrePaymentFulfillment(deps) {
     })
     if (!status.ok || !status.isPaid) return false
 
-    const outcome = await processPaymentSuccess(paymentReference, "poll")
+    const outcome = await processPaymentSuccess(statusRef, "poll")
     return outcome.ok === true
   }
 

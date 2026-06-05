@@ -46,9 +46,13 @@ export function createUssdSessionStore(col) {
       return col.findOne({ _id: sessionId })
     },
 
-    /** @param {string} paymentReference */
+    /** @param {string} paymentReference Agent ref or Moolre debit ref after OTP verify */
     async findByPaymentReference(paymentReference) {
-      return col.findOne({ paymentReference })
+      const ref = String(paymentReference || "").trim()
+      if (!ref) return null
+      return col.findOne({
+        $or: [{ paymentReference: ref }, { moolreDebitReference: ref }],
+      })
     },
 
     /**
@@ -90,5 +94,6 @@ export function createUssdSessionStore(col) {
  */
 export async function ensureUssdSessionIndexes(col) {
   await col.createIndex({ paymentReference: 1 }, { sparse: true })
+  await col.createIndex({ moolreDebitReference: 1 }, { sparse: true })
   await col.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 }
