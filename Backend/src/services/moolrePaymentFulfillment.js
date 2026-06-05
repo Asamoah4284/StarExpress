@@ -103,8 +103,26 @@ export function createMoolrePaymentFulfillment(deps) {
     const existing = await sales.findOne({ paymentReference })
     if (existing) return true
 
-    const status = await checkMoolrePaymentStatus(paymentReference)
-    console.log("[moolre-poll] status", paymentReference, status)
+    const paymentSession = await sessions.findByPaymentReference(paymentReference)
+    const moolreTransactionId =
+      typeof paymentSession?.moolreTransactionId === "string" ? paymentSession.moolreTransactionId : null
+
+    const status = await checkMoolrePaymentStatus(paymentReference, { moolreTransactionId })
+    if (status.isNotFound) {
+      console.log(
+        "[moolre-poll] payment not registered with Moolre yet",
+        paymentReference,
+        status.code,
+        status.message,
+      )
+      return false
+    }
+    console.log("[moolre-poll] status", paymentReference, {
+      code: status.code,
+      txStatusNum: status.txStatusNum,
+      isPaid: status.isPaid,
+      idtype: status.idtype,
+    })
     if (!status.ok || !status.isPaid) return false
 
     const outcome = await processPaymentSuccess(paymentReference, "poll")

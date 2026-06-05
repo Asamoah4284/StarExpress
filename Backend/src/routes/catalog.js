@@ -12,6 +12,8 @@ import {
   generateAgentPaymentReference,
   getNetworkFromMsisdn,
   initiateMoMoPayment,
+  persistMoolreInitOnSession,
+  shouldScheduleMoolrePaymentPoll,
 } from "../lib/ussdHelpers.js"
 import { scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
 import { createMoolrePaymentFulfillment } from "../services/moolrePaymentFulfillment.js"
@@ -1037,7 +1039,10 @@ export function createCatalogRouter(deps) {
         })
       }
 
-      scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
+      await persistMoolreInitOnSession(agentPaymentSessions, sessionId, momoResult)
+      if (shouldScheduleMoolrePaymentPoll(momoResult)) {
+        scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
+      }
 
       await appendAuditLog(
         auditLogs,
@@ -1106,7 +1111,10 @@ export function createCatalogRouter(deps) {
         })
       }
 
-      scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
+      await persistMoolreInitOnSession(agentPaymentSessions, String(paymentSession._id), momoResult)
+      if (shouldScheduleMoolrePaymentPoll(momoResult)) {
+        scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
+      }
 
       res.status(202).json({
         status: "pending",

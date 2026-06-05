@@ -5,6 +5,8 @@ import {
   generatePaymentReference,
   getUssdPayload,
   initiateMoMoPayment,
+  persistMoolreInitOnSession,
+  shouldScheduleMoolrePaymentPoll,
   normalizeNetworkName,
   normalizeUssdPayload,
   verifyMoolreWebhook,
@@ -567,7 +569,7 @@ export function createUssdRouter(deps) {
                 network: session?.network || normalizedNetwork,
                 moolreNetwork: moolreNet,
               })
-                .then((result) => {
+                .then(async (result) => {
                   console.log(
                     "[ussd] momo result",
                     paymentReference,
@@ -580,7 +582,14 @@ export function createUssdRouter(deps) {
                     console.error("[ussd] momo failed — user will not see PIN prompt:", result?.message)
                     return
                   }
-                  scheduleUssdPaymentStatusPoll(paymentReference, tryConfirmPaymentFromPoll)
+                  if (result.action === "OTP_REQUIRED") {
+                    console.log("[ussd] TP14 — Moolre SMS verification required; skipping status poll", paymentReference)
+                    return
+                  }
+                  await persistMoolreInitOnSession(sessions, sessionId, result)
+                  if (shouldScheduleMoolrePaymentPoll(result)) {
+                    scheduleUssdPaymentStatusPoll(paymentReference, tryConfirmPaymentFromPoll)
+                  }
                 })
                 .catch((err) => {
                   console.error("[ussd] momo error", paymentReference, err)

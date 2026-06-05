@@ -95,7 +95,7 @@ export function getMoolrePaymentCallbackUrl() {
 }
 
 /** @returns {Record<string, string>} */
-function getMoolrePaymentAuthHeaders() {
+export function getMoolrePaymentAuthHeaders() {
   const headers = {
     "X-API-USER": MOOLRE_USERNAME || "",
     "Content-Type": "application/json",
@@ -244,6 +244,49 @@ async function postMoolrePayment(payload, authHeaders) {
   return { response, data, responseText }
 }
 
+/**
+ * @param {unknown} data
+ * @returns {string | null}
+ */
+export function extractMoolreTransactionId(data) {
+  if (data == null) return null
+  if (typeof data === "string" && data.trim()) return data.trim()
+  if (typeof data === "object" && !Array.isArray(data)) {
+    const d = /** @type {Record<string, unknown>} */ (data)
+    for (const key of ["transactionid", "transactionId", "id", "paymentid"]) {
+      const v = d[key]
+      if (v != null && String(v).trim()) return String(v).trim()
+    }
+  }
+  return null
+}
+
+/**
+ * Only poll Moolre after TR099 — the PIN prompt is registered with their API.
+ * @param {{ success?: boolean, mock?: boolean, action?: string, moolreCode?: string }} momoResult
+ */
+export function shouldScheduleMoolrePaymentPoll(momoResult) {
+  if (!momoResult?.success || momoResult.mock) return false
+  if (momoResult.action === "OTP_REQUIRED") return false
+  return String(momoResult.moolreCode || "").toUpperCase() === "TR099"
+}
+
+/**
+ * @param {{ updateSession: (sessionId: string, patch: Record<string, unknown>) => Promise<unknown> }} sessionStore
+ * @param {string} sessionId
+ * @param {{ moolreCode?: string, data?: unknown }} momoResult
+ */
+export async function persistMoolreInitOnSession(sessionStore, sessionId, momoResult) {
+  const moolreTransactionId = extractMoolreTransactionId(momoResult?.data)
+  /** @type {Record<string, unknown>} */
+  const patch = {}
+  if (moolreTransactionId) patch.moolreTransactionId = moolreTransactionId
+  if (momoResult?.moolreCode) patch.moolreInitCode = momoResult.moolreCode
+  if (Object.keys(patch).length > 0) {
+    await sessionStore.updateSession(sessionId, patch)
+  }
+}
+
 export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {}) {
   const {
     packageName = "WiFi package",
@@ -369,14 +412,21 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       }
     }
 
+    console.warn("[ussd-momo] unexpected Moolre success code — no PIN prompt registered", {
+      reference,
+      code: code || "(empty)",
+      message: data?.message,
+    })
     return {
-      success: true,
+      success: false,
       reference,
       provider: "moolre",
-      action: "PIN_PROMPT_SENT",
-      message: "Payment request sent. Customer should approve with their MoMo PIN.",
-      data: data?.data || data,
+      message:
+        code === "TP14"
+          ? "Complete Moolre SMS verification first, then try again."
+          : `Moolre did not start the payment (${code || "unknown"}). The customer will not receive a PIN prompt.`,
       moolreCode: code,
+      data: data?.data || data,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
