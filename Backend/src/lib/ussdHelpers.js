@@ -51,14 +51,42 @@ export function getMoolrePaymentAuthHeaders() {
 /**
  * @param {string | null | undefined} msisdn
  */
+/**
+ * Ghana MoMo network from MSISDN prefix.
+ * 020/050 are Telecel (formerly Vodafone Ghana) — Moolre API uses channel 6, not Vodafone 15.
+ * @param {string | null | undefined} msisdn
+ */
 export function getNetworkFromMsisdn(msisdn) {
   const phone = formatPhoneNumber(msisdn)
   if (!phone) return "Unknown"
   const prefix = phone.slice(3, 5)
-  if (["24", "54", "55", "59"].includes(prefix)) return "MTN"
-  if (["20", "50"].includes(prefix)) return "Vodafone"
-  if (["26", "27", "56", "57"].includes(prefix)) return "Telecel"
+  if (["24", "25", "53", "54", "55", "59"].includes(prefix)) return "MTN"
+  if (["20", "50"].includes(prefix)) return "Telecel"
+  if (["26", "27", "56", "57"].includes(prefix)) return "AT"
   return "Unknown"
+}
+
+/**
+ * @param {string | null | undefined} raw
+ */
+export function normalizePaymentNetworkChoice(raw) {
+  const s = String(raw || "").trim()
+  if (!s || s.toLowerCase() === "auto") return null
+  if (s === "MTN") return "MTN"
+  if (s === "Telecel" || s === "Vodafone") return "Telecel"
+  if (s === "AT" || s === "AirtelTigo") return "AT"
+  return null
+}
+
+/**
+ * @param {string | null | undefined} msisdn
+ * @param {string | null | undefined} [networkOverride]
+ */
+export function resolvePaymentNetwork(msisdn, networkOverride) {
+  const chosen = normalizePaymentNetworkChoice(networkOverride)
+  if (chosen) return chosen
+  const detected = getNetworkFromMsisdn(msisdn)
+  return detected === "Unknown" ? "MTN" : detected
 }
 
 /**
@@ -75,14 +103,15 @@ export function mapUssdNetworkToPaymentChannel(moolreUssdNetwork) {
 }
 
 /**
+ * Moolre direct-debit channels: 13=MTN, 6=Telecel, 7=AT (per docs.moolre.com).
+ * Channel 15 (legacy Vodafone) does not support API top-up (TP09).
  * @param {string} network
  */
-function getMoolreChannelForNetwork(network) {
+export function getMoolreChannelForNetwork(network) {
   const n = (network || "").trim()
   if (n === "MTN") return String(process.env.MOOLRE_CHANNEL_MTN || "13")
-  if (n === "Telecel") return String(process.env.MOOLRE_CHANNEL_TELECEL || "6")
+  if (n === "Telecel" || n === "Vodafone") return String(process.env.MOOLRE_CHANNEL_TELECEL || "6")
   if (n === "AT" || n === "AirtelTigo") return String(process.env.MOOLRE_CHANNEL_AT || "7")
-  if (n === "Vodafone") return String(process.env.MOOLRE_CHANNEL_VODAFONE || "15")
   return String(process.env.MOOLRE_DIRECT_DEBIT_CHANNEL || process.env.MOOLRE_CHANNEL_MTN || "13")
 }
 
@@ -97,9 +126,12 @@ function isMoolreApiSuccess(data) {
 
 export function getMoolrePaymentCallbackUrl() {
   const explicit = String(process.env.MOOLRE_PAYMENT_CALLBACK_URL || "").trim()
-  if (explicit) return explicit.replace(/\/$/, "")
+  if (explicit) {
+    return explicit.replace(/([^:]\/)\/+/g, "$1").replace(/\/$/, "")
+  }
   const base = BACKEND_URL.replace(/\/$/, "")
-  return `${base}/api/moolre/callback`
+  const joined = `${base}/api/moolre/callback`
+  return joined.replace(/([^:]\/)\/+/g, "$1")
 }
 
 function shouldIncludePaymentCallbackInRequest() {
@@ -214,7 +246,7 @@ export function verifyMoolreWebhook(payload, headers = {}) {
  * @param {string} msisdn
  * @param {number} amount
  * @param {string} sessionId
- * @param {{ packageName?: string, description?: string, reference?: string, network?: string, moolreNetwork?: number | null, otpcode?: string }} options
+ * @param {{ packageName?: string, description?: string, reference?: string, network?: string, moolreNetwork?: number | null, otpcode?: string, networkOverride?: string }} options
  */
 const MOOLRE_PAYMENT_URL = "https://api.moolre.com/open/transact/payment"
 
@@ -245,14 +277,15 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     network: networkHint = null,
     moolreNetwork: moolreNetworkCode = null,
     otpcode = "",
+    networkOverride = null,
   } = options
 
   const formattedPhone = formatPhoneNumber(msisdn)
   const reference = preGeneratedReference || generatePaymentReference(sessionId)
 
+  const resolvedNetwork = resolvePaymentNetwork(msisdn, networkOverride || networkHint)
   const paymentChannelFromUssd = mapUssdNetworkToPaymentChannel(moolreNetworkCode ?? null)
-  const channel =
-    paymentChannelFromUssd || getMoolreChannelForNetwork(networkHint || getNetworkFromMsisdn(msisdn))
+  const channel = paymentChannelFromUssd || getMoolreChannelForNetwork(resolvedNetwork)
 
   if (!MOOLRE_USERNAME || !MOOLRE_PUBLIC_KEY || !MOOLRE_ACCOUNT_NUMBER) {
     console.warn("[ussd-momo] Moolre credentials not set; mock payment for", reference)
@@ -295,24 +328,33 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       reference,
       amount,
       channel,
+      network: resolvedNetwork,
       moolreUssdNetwork: moolreNetworkCode,
       payer: payerPhone,
       packageName,
+      otpcode: directDebitPayload.otpcode ? "(set)" : "(empty)",
       callback: callbackUrl,
     })
 
     const { response, data, responseText } = await postMoolrePayment(directDebitPayload, authHeaders)
 
     if (!response.ok || !isMoolreApiSuccess(data)) {
+      const code = data && typeof data === "object" ? String(data.code || "").toUpperCase() : ""
+      const apiMessage =
+        data && typeof data === "object" && "message" in data ? String(data.message) : "Payment initiation failed"
       console.error("[ussd-momo] init failed", response.status, data || responseText?.slice(0, 300))
+      let message = apiMessage
+      if (code === "TP09") {
+        message = `${apiMessage} Try selecting the correct network (MTN, Telecel, or AT) for this number. Used channel ${channel} (${resolvedNetwork}).`
+      }
       return {
         success: false,
         reference,
-        message:
-          (data && typeof data === "object" && "message" in data && String(data.message)) ||
-          "Payment initiation failed",
+        message,
         provider: "moolre",
-        moolreCode: data && typeof data === "object" ? data.code : undefined,
+        moolreCode: code || undefined,
+        channel,
+        network: resolvedNetwork,
       }
     }
 
@@ -328,27 +370,104 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
         message: "A verification PIN was sent to the customer's phone via SMS.",
         provider: "moolre",
         moolreCode: code,
+        channel,
+        network: resolvedNetwork,
       }
     }
 
-    // TR099 = payment request initiated; MoMo PIN prompt is sent on this single call.
-    // Do NOT POST again with the same externalref — Moolre returns TP13 (duplicate ref).
+    // TP17 = SMS OTP accepted; same externalref must be posted again (no otpcode) to trigger MoMo debit.
+    if (code === "TP17") {
+      return {
+        success: true,
+        reference,
+        action: "OTP_VERIFIED",
+        message: "Phone verified. Triggering MoMo payment prompt…",
+        provider: "moolre",
+        moolreCode: code,
+        channel,
+        network: resolvedNetwork,
+      }
+    }
+
+    // TR099 = MoMo PIN prompt sent to payer phone.
     if (code === "TR099") {
-      console.log("[ussd-momo] TR099 — MoMo prompt should appear on payer phone", { reference, channel })
+      console.log("[ussd-momo] TR099 — MoMo prompt should appear on payer phone", {
+        reference,
+        channel,
+        network: resolvedNetwork,
+      })
+      return {
+        success: true,
+        reference,
+        provider: "moolre",
+        action: "PROMPT_TRIGGERED",
+        message: "Payment prompt sent. Enter your MoMo PIN to approve.",
+        data: data?.data || data,
+        moolreCode: code,
+        channel,
+        network: resolvedNetwork,
+      }
     }
 
     return {
-      success: true,
+      success: false,
       reference,
       provider: "moolre",
-      action: "PROMPT_TRIGGERED",
-      message: "Payment prompt sent. Enter your MoMo PIN to approve.",
-      data: data?.data || data,
+      message:
+        (data && typeof data === "object" && "message" in data && String(data.message)) ||
+        `Unexpected Moolre payment response (${code || "unknown"}).`,
       moolreCode: code,
+      channel,
+      network: resolvedNetwork,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error("[ussd-momo] Error:", msg)
     return { success: false, reference, message: msg, provider: "moolre" }
+  }
+}
+
+function momoPromptDelayMs() {
+  return Number(process.env.AGENT_MOMO_START_DELAY_MS || process.env.USSD_MOMO_START_DELAY_MS) || 1500
+}
+
+/**
+ * Agent flow: submit SMS OTP, then if Moolre returns TP17 post again (same ref, no otp) for TR099 MoMo prompt.
+ * @param {string} msisdn
+ * @param {number} amount
+ * @param {string} sessionId
+ * @param {{ packageName?: string, reference: string, network?: string, networkOverride?: string, otpcode: string }} options
+ */
+export async function submitMoMoPaymentWithOtp(msisdn, amount, sessionId, options) {
+  const otpResult = await initiateMoMoPayment(msisdn, amount, sessionId, options)
+  if (otpResult.moolreCode === "TR099" || otpResult.action === "PROMPT_TRIGGERED") {
+    return otpResult
+  }
+  if (otpResult.moolreCode !== "TP17" && otpResult.action !== "OTP_VERIFIED") {
+    return otpResult
+  }
+
+  const delayMs = momoPromptDelayMs()
+  console.log("[ussd-momo] TP17 verified — triggering MoMo debit after", delayMs, "ms", options.reference)
+  await new Promise((resolve) => setTimeout(resolve, delayMs))
+
+  const debitResult = await initiateMoMoPayment(msisdn, amount, sessionId, {
+    packageName: options.packageName,
+    reference: options.reference,
+    network: options.network,
+    networkOverride: options.networkOverride,
+    otpcode: "",
+  })
+
+  if (debitResult.moolreCode === "TR099" || debitResult.action === "PROMPT_TRIGGERED") {
+    return debitResult
+  }
+
+  return {
+    ...debitResult,
+    success: false,
+    message:
+      debitResult.message ||
+      "Phone was verified but the MoMo payment prompt could not be sent. Ask the customer to check their phone or try again.",
   }
 }

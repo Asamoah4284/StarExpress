@@ -656,6 +656,7 @@ export async function deleteCatalogPackage(token, id) {
  *   packageId: string
  *   customerPhone: string
  *   locationId?: string
+ *   paymentNetwork?: string
  * }} body
  */
 export async function initiateAgentMoMoSale(token, body) {

@@ -88,6 +88,7 @@ export default function Packages() {
     /** @type {{ id: string, name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number } | null} */ (null),
   )
   const [sellCustomerPhone, setSellCustomerPhone] = React.useState("")
+  const [sellPaymentNetwork, setSellPaymentNetwork] = React.useState("auto")
   const [sellCustomerPin, setSellCustomerPin] = React.useState("")
   const [sellLocationId, setSellLocationId] = React.useState("")
   const [sellStep, setSellStep] = React.useState(/** @type {"phone" | "pin" | "momo"} */ ("phone"))
@@ -270,6 +271,7 @@ export default function Packages() {
       sellRowRef.current = null
       setSellPkg(null)
       setSellCustomerPhone("")
+      setSellPaymentNetwork("auto")
       setSellCustomerPin("")
       setSellPaymentRef("")
       setSellShortcode("")
@@ -295,12 +297,14 @@ export default function Packages() {
       }
       /** @type {Awaited<ReturnType<typeof initiateAgentMoMoSale>>} */
       let result
+      const paymentNetwork = sellPaymentNetwork !== "auto" ? sellPaymentNetwork : undefined
       if (isAdmin) {
         if (!sellLocationId) throw new Error("Choose a wifi location for this sale.")
         result = await initiateAgentMoMoSale(token, {
           packageId: row.id,
           customerPhone,
           locationId: sellLocationId,
+          paymentNetwork,
         })
       } else {
         if (!agentStore) {
@@ -311,6 +315,7 @@ export default function Packages() {
         result = await initiateAgentMoMoSale(token, {
           packageId: row.id,
           customerPhone,
+          paymentNetwork,
         })
       }
       if (!result.ok) throw new Error(result.error || "Could not start payment")
@@ -404,6 +409,7 @@ export default function Packages() {
       sellRowRef.current = row
       setSellPkg(row)
       setSellCustomerPhone("")
+      setSellPaymentNetwork("auto")
       setSellCustomerPin("")
       setSellStep("phone")
       setSellPaymentRef("")
@@ -447,6 +453,7 @@ export default function Packages() {
     sellRowRef.current = null
     setSellPkg(null)
     setSellCustomerPhone("")
+    setSellPaymentNetwork("auto")
     setSellCustomerPin("")
     setSellStep("phone")
     setSellPaymentRef("")
@@ -815,21 +822,37 @@ export default function Packages() {
                 </p>
               </div>
               {sellStep === "phone" ? (
-                <div className="space-y-1.5">
-                  <Label htmlFor="sell-phone">Customer phone</Label>
-                  <Input
-                    id="sell-phone"
-                    type="tel"
-                    inputMode="tel"
-                    value={sellCustomerPhone}
-                    onChange={(e) => setSellCustomerPhone(e.target.value)}
-                    placeholder="e.g. 0241234567"
-                    autoComplete="tel"
-                  />
-                  <p className="text-muted-foreground text-xs">
-                    Uses the same Moolre mobile-money flow as USSD ({sellShortcode || "*203*419#"}). A
-                    verification PIN is sent to this number before payment.
-                  </p>
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="sell-phone">Customer phone</Label>
+                    <Input
+                      id="sell-phone"
+                      type="tel"
+                      inputMode="tel"
+                      value={sellCustomerPhone}
+                      onChange={(e) => setSellCustomerPhone(e.target.value)}
+                      placeholder="e.g. 0241234567"
+                      autoComplete="tel"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="sell-network">Mobile money network</Label>
+                    <Select value={sellPaymentNetwork} onValueChange={setSellPaymentNetwork}>
+                      <SelectTrigger id="sell-network" className="w-full">
+                        <SelectValue placeholder="Select network" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto-detect from number</SelectItem>
+                        <SelectItem value="MTN">MTN</SelectItem>
+                        <SelectItem value="Telecel">Telecel</SelectItem>
+                        <SelectItem value="AT">AT (AirtelTigo)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-muted-foreground text-xs">
+                      Uses the same Moolre flow as USSD ({sellShortcode || "*203*419#"}). If payment fails,
+                      pick the customer&apos;s network manually (020/050 = Telecel, 024/054 = MTN, 026/027 = AT).
+                    </p>
+                  </div>
                 </div>
               ) : null}
               {sellStep === "pin" ? (

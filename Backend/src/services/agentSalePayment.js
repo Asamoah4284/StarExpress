@@ -5,7 +5,8 @@ import {
   generateAgentPaymentReference,
   getNetworkFromMsisdn,
   initiateMoMoPayment,
-  normalizeNetworkName,
+  resolvePaymentNetwork,
+  submitMoMoPaymentWithOtp,
 } from "../lib/ussdHelpers.js"
 import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
 import { checkMoolrePaymentStatus, scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
@@ -27,6 +28,7 @@ const AGENT_SESSION_TTL_MS = Number(process.env.AGENT_PAYMENT_SESSION_TTL_MS) ||
  *   auth: { userId: string, role: string }
  *   packageId: string
  *   customerPhone: string
+ *   paymentNetwork?: string
  *   locationId?: string
  *   findConflictingLocationForSalesAgent: (
  *     locationsCol: import("mongodb").Collection,
@@ -48,6 +50,7 @@ export async function initiateAgentMoMoSale(input) {
     auth,
     packageId,
     customerPhone,
+    paymentNetwork,
     locationId: locationIdBody,
     findConflictingLocationForSalesAgent,
   } = input
@@ -96,7 +99,7 @@ export async function initiateAgentMoMoSale(input) {
 
   const sessionId = `agent-${randomUUID().slice(0, 12)}`
   const paymentReference = generateAgentPaymentReference(sessionId)
-  const network = normalizeNetworkName(null, phone)
+  const network = resolvePaymentNetwork(phone, paymentNetwork)
   const now = new Date()
   const sessions = createUssdSessionStore(ussdSessions)
 
@@ -110,6 +113,7 @@ export async function initiateAgentMoMoSale(input) {
   await sessions.updateSession(sessionId, {
     source: "agent",
     soldByUserId: auth.userId,
+    paymentNetwork: network,
     paymentReference,
     selectedPackage: {
       packageId,
@@ -124,6 +128,7 @@ export async function initiateAgentMoMoSale(input) {
     packageName: resolved.name,
     reference: paymentReference,
     network,
+    networkOverride: paymentNetwork || undefined,
   })
 
   if (momoResult.moolreCode === "TP14" || momoResult.action === "OTP_REQUIRED") {
@@ -134,32 +139,35 @@ export async function initiateAgentMoMoSale(input) {
       paymentReference,
       sessionId,
       shortcode: USSD_SHORTCODE,
+      detectedNetwork: network,
       message:
         "A verification PIN was sent to the customer's phone via SMS (same as USSD payments). Ask the customer for the PIN.",
     }
   }
 
-  if (!momoResult.success) {
-    await sessions.updateSession(sessionId, { step: "failed" })
+  if (momoResult.moolreCode === "TR099" || momoResult.action === "PROMPT_TRIGGERED") {
+    await sessions.updateSession(sessionId, { step: "momo_pending" })
+    scheduleAgentPaymentPoll(paymentReference, { ussdSessions, packages, vouchers, sales, auditLogs })
     return {
-      ok: false,
-      status: 502,
-      error: momoResult.message || "Could not start mobile money payment.",
+      ok: true,
+      phase: "momo",
       paymentReference,
+      sessionId,
+      shortcode: USSD_SHORTCODE,
+      detectedNetwork: network,
+      message:
+        "MoMo payment prompt sent to the customer's phone. Ask them to enter their MoMo PIN to approve payment.",
+      moolreCode: momoResult.moolreCode,
     }
   }
 
-  await sessions.updateSession(sessionId, { step: "momo_pending" })
-  scheduleAgentPaymentPoll(paymentReference, { ussdSessions, packages, vouchers, sales, auditLogs })
-
+  await sessions.updateSession(sessionId, { step: "failed" })
   return {
-    ok: true,
-    phase: "momo",
+    ok: false,
+    status: 502,
+    error: momoResult.message || "Could not start mobile money payment.",
     paymentReference,
-    sessionId,
-    shortcode: USSD_SHORTCODE,
-    message: "Ask the customer to approve the MoMo payment on their phone. They will receive the voucher by SMS after payment.",
-    moolreCode: momoResult.moolreCode,
+    detectedNetwork: network,
   }
 }
 
@@ -201,19 +209,25 @@ export async function confirmAgentMoMoPin(input) {
     return { ok: false, status: 400, error: "Invalid payment amount on session." }
   }
 
-  const momoResult = await initiateMoMoPayment(String(session.phone), amount, String(session._id), {
+  const network =
+    typeof session.paymentNetwork === "string" && session.paymentNetwork.trim()
+      ? session.paymentNetwork.trim()
+      : resolvePaymentNetwork(String(session.phone), null)
+
+  const momoResult = await submitMoMoPaymentWithOtp(String(session.phone), amount, String(session._id), {
     packageName: selected?.name || "WiFi package",
     reference: paymentReference,
-    network: session.network || getNetworkFromMsisdn(session.phone),
+    network,
     otpcode: otp,
   })
 
-  if (!momoResult.success) {
+  if (!momoResult.success || (momoResult.moolreCode !== "TR099" && momoResult.action !== "PROMPT_TRIGGERED")) {
     return {
       ok: false,
       status: 502,
       error: momoResult.message || "Could not trigger MoMo payment. Check the PIN and try again.",
       moolreCode: momoResult.moolreCode,
+      detectedNetwork: network,
     }
   }
 

@@ -926,6 +926,8 @@ export function createCatalogRouter(deps) {
       const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
       const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
       const locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+      const paymentNetwork =
+        typeof req.body?.paymentNetwork === "string" ? req.body.paymentNetwork.trim() : ""
 
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
       if (customerPhone.length < 7 || customerPhone.length > 32) {
@@ -946,6 +948,7 @@ export function createCatalogRouter(deps) {
         auth: { userId: req.auth.userId, role: req.auth.role },
         packageId,
         customerPhone,
+        paymentNetwork: paymentNetwork || undefined,
         locationId,
         findConflictingLocationForSalesAgent,
       })
@@ -959,6 +962,7 @@ export function createCatalogRouter(deps) {
         paymentReference: result.paymentReference,
         sessionId: result.sessionId,
         shortcode: result.shortcode,
+        detectedNetwork: result.detectedNetwork,
         message: result.message,
         moolreCode: result.moolreCode,
       })
