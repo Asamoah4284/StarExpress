@@ -129,7 +129,13 @@ export async function initiateAgentMoMoSale(input) {
     reference: paymentReference,
     network,
     networkOverride: paymentNetwork || undefined,
+    includeCallback: true,
+    paymentPhase: "initial",
   })
+
+  if (momoResult.moolreTransactionId) {
+    await sessions.updateSession(sessionId, { moolreTransactionId: momoResult.moolreTransactionId })
+  }
 
   if (momoResult.moolreCode === "TP14" || momoResult.action === "OTP_REQUIRED") {
     await sessions.updateSession(sessionId, { step: "awaiting_pin" })
@@ -214,12 +220,22 @@ export async function confirmAgentMoMoPin(input) {
       ? session.paymentNetwork.trim()
       : resolvePaymentNetwork(String(session.phone), null)
 
+  const storedTxnId =
+    typeof session.moolreTransactionId === "string" && session.moolreTransactionId.trim()
+      ? session.moolreTransactionId.trim()
+      : null
+
   const momoResult = await submitMoMoPaymentWithOtp(String(session.phone), amount, String(session._id), {
     packageName: selected?.name || "WiFi package",
     reference: paymentReference,
     network,
     otpcode: otp,
+    moolreTransactionId: storedTxnId,
   })
+
+  if (momoResult.moolreTransactionId) {
+    await sessions.updateSession(String(session._id), { moolreTransactionId: momoResult.moolreTransactionId })
+  }
 
   if (!momoResult.success || (momoResult.moolreCode !== "TR099" && momoResult.action !== "PROMPT_TRIGGERED")) {
     return {

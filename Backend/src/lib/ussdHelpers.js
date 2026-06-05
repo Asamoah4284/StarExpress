@@ -246,7 +246,18 @@ export function verifyMoolreWebhook(payload, headers = {}) {
  * @param {string} msisdn
  * @param {number} amount
  * @param {string} sessionId
- * @param {{ packageName?: string, description?: string, reference?: string, network?: string, moolreNetwork?: number | null, otpcode?: string, networkOverride?: string }} options
+ * @param {{
+ *   packageName?: string
+ *   description?: string
+ *   reference?: string
+ *   network?: string
+ *   moolreNetwork?: number | null
+ *   otpcode?: string
+ *   networkOverride?: string
+ *   moolreTransactionId?: string | null
+ *   includeCallback?: boolean
+ *   paymentPhase?: string
+ * }} options
  */
 const MOOLRE_PAYMENT_URL = "https://api.moolre.com/open/transact/payment"
 
@@ -265,9 +276,86 @@ async function postMoolrePayment(payload, authHeaders) {
   try {
     data = responseText ? JSON.parse(responseText) : null
   } catch {
-    console.warn("[ussd-momo] Non-JSON response", response.status, responseText?.slice(0, 200))
+    console.warn("[ussd-momo] Non-JSON response", response.status, responseText?.slice(0, 400))
   }
   return { response, data, responseText }
+}
+
+/**
+ * Moolre returns a transaction UUID in `data` on TR099; may also appear after TP17.
+ * @param {unknown} apiData
+ */
+export function extractMoolreTransactionId(apiData) {
+  if (!apiData || typeof apiData !== "object") return null
+  const raw = /** @type {{ data?: unknown }} */ (apiData).data
+  if (typeof raw === "string") {
+    const trimmed = raw.trim()
+    if (trimmed && trimmed.toLowerCase() !== "all") return trimmed
+  }
+  if (raw && typeof raw === "object" && raw !== null) {
+    const id = /** @type {{ id?: unknown, transactionid?: unknown }} */ (raw).id
+    if (typeof id === "string" && id.trim()) return id.trim()
+    const txn = /** @type {{ transactionid?: unknown }} */ (raw).transactionid
+    if (typeof txn === "string" && txn.trim()) return txn.trim()
+  }
+  return null
+}
+
+/**
+ * Build Moolre /open/transact/payment body.
+ * Do NOT send empty `reference` or `otpcode` — Moolre's PHP layer throws SQLSTATE[HY093] on follow-up calls.
+ * @param {{
+ *   channel: string
+ *   payerPhone: string
+ *   amount: number
+ *   externalref: string
+ *   sessionId: string
+ *   otpcode?: string
+ *   moolreTransactionId?: string | null
+ *   includeCallback?: boolean
+ * }} params
+ */
+function buildMoolreDirectDebitPayload(params) {
+  const callbackUrl = getMoolrePaymentCallbackUrl()
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    type: 1,
+    channel: String(params.channel),
+    currency: "GHS",
+    payer: params.payerPhone || "",
+    amount: String(params.amount),
+    externalref: params.externalref,
+    sessionid: String(params.sessionId || ""),
+    accountnumber: MOOLRE_ACCOUNT_NUMBER,
+  }
+
+  const otp = typeof params.otpcode === "string" ? params.otpcode.trim() : ""
+  if (otp) payload.otpcode = otp
+
+  const moolreRef =
+    typeof params.moolreTransactionId === "string" ? params.moolreTransactionId.trim() : ""
+  if (moolreRef) payload.reference = moolreRef
+
+  if (params.includeCallback !== false) {
+    payload.callback = callbackUrl
+    payload.redirect = callbackUrl
+  }
+
+  return payload
+}
+
+/**
+ * @param {unknown} data
+ * @param {string} responseText
+ */
+function moolreFailureMessage(data, responseText) {
+  if (data && typeof data === "object" && "message" in data && data.message) {
+    return String(data.message)
+  }
+  if (responseText && /PDOException|SQLSTATE/i.test(responseText)) {
+    return "Moolre payment service error. Retry in a moment or contact Moolre support if this persists."
+  }
+  return "Payment initiation failed"
 }
 
 export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {}) {
@@ -276,8 +364,11 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
     reference: preGeneratedReference = null,
     network: networkHint = null,
     moolreNetwork: moolreNetworkCode = null,
-    otpcode = "",
+    otpcode = undefined,
     networkOverride = null,
+    moolreTransactionId = null,
+    includeCallback = true,
+    paymentPhase = "initial",
   } = options
 
   const formattedPhone = formatPhoneNumber(msisdn)
@@ -306,43 +397,40 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
 
   try {
     const payerPhone = formattedPhone?.startsWith("233") ? `0${formattedPhone.slice(3)}` : formattedPhone
-    const callbackUrl = getMoolrePaymentCallbackUrl()
+    const otpValue = typeof otpcode === "string" ? otpcode.trim() : ""
 
-    /** @type {Record<string, unknown>} */
-    const directDebitPayload = {
-      type: 1,
-      channel: String(channel),
-      currency: "GHS",
-      payer: payerPhone || "",
-      amount: String(amount),
+    const directDebitPayload = buildMoolreDirectDebitPayload({
+      channel,
+      payerPhone: payerPhone || "",
+      amount,
       externalref: reference,
-      otpcode: typeof otpcode === "string" ? otpcode.trim() : "",
-      reference: "",
-      sessionid: String(sessionId || ""),
-      accountnumber: MOOLRE_ACCOUNT_NUMBER,
-    }
-    directDebitPayload.callback = callbackUrl
-    directDebitPayload.redirect = callbackUrl
+      sessionId,
+      otpcode: otpValue || undefined,
+      moolreTransactionId,
+      includeCallback,
+    })
 
-    console.log("[ussd-momo] POST payment (init)", {
-      reference,
+    console.log("[ussd-momo] POST payment", {
+      phase: paymentPhase,
+      externalref: reference,
       amount,
       channel,
       network: resolvedNetwork,
       moolreUssdNetwork: moolreNetworkCode,
       payer: payerPhone,
       packageName,
-      otpcode: directDebitPayload.otpcode ? "(set)" : "(empty)",
-      callback: callbackUrl,
+      otpcode: otpValue ? "(set)" : "(omitted)",
+      moolreTransactionId: moolreTransactionId || "(omitted)",
+      includeCallback,
     })
 
     const { response, data, responseText } = await postMoolrePayment(directDebitPayload, authHeaders)
+    const parsedTxnId = extractMoolreTransactionId(data)
 
     if (!response.ok || !isMoolreApiSuccess(data)) {
       const code = data && typeof data === "object" ? String(data.code || "").toUpperCase() : ""
-      const apiMessage =
-        data && typeof data === "object" && "message" in data ? String(data.message) : "Payment initiation failed"
-      console.error("[ussd-momo] init failed", response.status, data || responseText?.slice(0, 300))
+      const apiMessage = moolreFailureMessage(data, responseText)
+      console.error("[ussd-momo] payment failed", paymentPhase, response.status, data || responseText?.slice(0, 400))
       let message = apiMessage
       if (code === "TP09") {
         message = `${apiMessage} Try selecting the correct network (MTN, Telecel, or AT) for this number. Used channel ${channel} (${resolvedNetwork}).`
@@ -355,11 +443,13 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
         moolreCode: code || undefined,
         channel,
         network: resolvedNetwork,
+        moolreTransactionId: parsedTxnId,
       }
     }
 
     const code = String(data?.code || "").toUpperCase()
-    console.log("[ussd-momo] init OK", { code, message: data?.message })
+    const txnId = parsedTxnId || extractMoolreTransactionId(data)
+    console.log("[ussd-momo] payment OK", { phase: paymentPhase, code, message: data?.message, moolreTransactionId: txnId })
 
     // TP14 = Moolre sent an SMS verification PIN to the payer; submit otpcode on the next request.
     if (code === "TP14") {
@@ -372,10 +462,12 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
         moolreCode: code,
         channel,
         network: resolvedNetwork,
+        moolreTransactionId: txnId,
+        data: data?.data,
       }
     }
 
-    // TP17 = SMS OTP accepted; same externalref must be posted again (no otpcode) to trigger MoMo debit.
+    // TP17 = SMS OTP accepted; post again with same externalref, no otpcode, optional Moolre transaction id.
     if (code === "TP17") {
       return {
         success: true,
@@ -386,6 +478,8 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
         moolreCode: code,
         channel,
         network: resolvedNetwork,
+        moolreTransactionId: txnId,
+        data: data?.data,
       }
     }
 
@@ -395,6 +489,7 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
         reference,
         channel,
         network: resolvedNetwork,
+        moolreTransactionId: txnId,
       })
       return {
         success: true,
@@ -406,6 +501,7 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
         moolreCode: code,
         channel,
         network: resolvedNetwork,
+        moolreTransactionId: txnId,
       }
     }
 
@@ -419,6 +515,7 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       moolreCode: code,
       channel,
       network: resolvedNetwork,
+      moolreTransactionId: txnId,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -436,10 +533,20 @@ function momoPromptDelayMs() {
  * @param {string} msisdn
  * @param {number} amount
  * @param {string} sessionId
- * @param {{ packageName?: string, reference: string, network?: string, networkOverride?: string, otpcode: string }} options
+ * @param {{ packageName?: string, reference: string, network?: string, networkOverride?: string, otpcode: string, moolreTransactionId?: string | null }} options
  */
 export async function submitMoMoPaymentWithOtp(msisdn, amount, sessionId, options) {
-  const otpResult = await initiateMoMoPayment(msisdn, amount, sessionId, options)
+  const otpResult = await initiateMoMoPayment(msisdn, amount, sessionId, {
+    packageName: options.packageName,
+    reference: options.reference,
+    network: options.network,
+    networkOverride: options.networkOverride,
+    otpcode: options.otpcode,
+    moolreTransactionId: options.moolreTransactionId || null,
+    includeCallback: true,
+    paymentPhase: "otp",
+  })
+
   if (otpResult.moolreCode === "TR099" || otpResult.action === "PROMPT_TRIGGERED") {
     return otpResult
   }
@@ -448,7 +555,11 @@ export async function submitMoMoPaymentWithOtp(msisdn, amount, sessionId, option
   }
 
   const delayMs = momoPromptDelayMs()
-  console.log("[ussd-momo] TP17 verified — triggering MoMo debit after", delayMs, "ms", options.reference)
+  const moolreTxnId = otpResult.moolreTransactionId || options.moolreTransactionId || null
+  console.log("[ussd-momo] TP17 verified — triggering MoMo debit after", delayMs, "ms", {
+    externalref: options.reference,
+    moolreTransactionId: moolreTxnId || "(none)",
+  })
   await new Promise((resolve) => setTimeout(resolve, delayMs))
 
   const debitResult = await initiateMoMoPayment(msisdn, amount, sessionId, {
@@ -456,11 +567,28 @@ export async function submitMoMoPaymentWithOtp(msisdn, amount, sessionId, option
     reference: options.reference,
     network: options.network,
     networkOverride: options.networkOverride,
-    otpcode: "",
+    moolreTransactionId: moolreTxnId,
+    includeCallback: false,
+    paymentPhase: "debit",
   })
 
   if (debitResult.moolreCode === "TR099" || debitResult.action === "PROMPT_TRIGGERED") {
     return debitResult
+  }
+
+  if (!debitResult.success && !moolreTxnId) {
+    console.log("[ussd-momo] debit without txn id failed — retrying with callback included")
+    const retryResult = await initiateMoMoPayment(msisdn, amount, sessionId, {
+      packageName: options.packageName,
+      reference: options.reference,
+      network: options.network,
+      networkOverride: options.networkOverride,
+      includeCallback: true,
+      paymentPhase: "debit-retry",
+    })
+    if (retryResult.moolreCode === "TR099" || retryResult.action === "PROMPT_TRIGGERED") {
+      return retryResult
+    }
   }
 
   return {
