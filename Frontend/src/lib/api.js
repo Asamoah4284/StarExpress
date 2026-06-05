@@ -55,21 +55,7 @@ async function parseJsonResponse(path, init = {}) {
     try {
       data = JSON.parse(text)
     } catch {
-      const cannotRoute = text.match(/Cannot (?:POST|GET|PUT|PATCH|DELETE)\s+(\S+)/i)
-      const apiBase = getApiBaseUrl()
-      if (cannotRoute) {
-        data = {
-          error: apiBase
-            ? `API route ${cannotRoute[1]} was not found on ${apiBase} (${res.status}). Redeploy the backend, then restart it (e.g. pm2 restart).`
-            : `API route ${cannotRoute[1]} was not found (${res.status}). Set VITE_API_BASE_URL to your backend URL, run npm run build, and redeploy the frontend.`,
-        }
-      } else if (text.includes("<!DOCTYPE") || text.includes("<html")) {
-        data = {
-          error: `Server returned HTML instead of JSON (${res.status}). The frontend may be calling the wrong host — set VITE_API_BASE_URL=https://starexpress.quickxlearn.com and rebuild.`,
-        }
-      } else {
-        data = { error: text.length > 400 ? `${text.slice(0, 400)}…` : text }
-      }
+      data = { error: text }
     }
   }
   return { res, data }
@@ -664,29 +650,16 @@ export async function deleteCatalogPackage(token, id) {
  *   locationId?: string
  * }} body
  */
-export async function createCatalogSale(token, body) {
-  const { res, data } = await parseJsonResponse("/api/catalog/sales", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
-    return { ok: false, error: msg }
-  }
-  if (typeof data !== "object" || data === null || typeof data.sale !== "object" || data.sale === null) {
-    return { ok: false, error: "Unexpected response from server." }
-  }
-  return { ok: true, sale: data.sale }
-}
-
 /**
- * Agent-initiated MoMo payment — customer approves PIN on their phone; voucher SMS after payment.
  * @param {string} token
- * @param {{ packageId: string, customerPhone: string, locationId?: string }} body
+ * @param {{
+ *   packageId: string
+ *   customerPhone: string
+ *   locationId?: string
+ * }} body
  */
-export async function initiateAgentSalePayment(token, body) {
-  const { res, data } = await parseJsonResponse("/api/catalog/sales/initiate-payment", {
+export async function initiateAgentMoMoSale(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/sales/initiate-momo", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
@@ -698,21 +671,23 @@ export async function initiateAgentSalePayment(token, body) {
   if (typeof data !== "object" || data === null || typeof data.paymentReference !== "string") {
     return { ok: false, error: "Unexpected response from server." }
   }
-  if (data.status !== "pending" && data.status !== "otp_required") {
-    return { ok: false, error: "Unexpected response from server." }
-  }
   return {
     ok: true,
-    status: data.status,
+    phase: typeof data.phase === "string" ? data.phase : "pin",
     paymentReference: data.paymentReference,
-    message: typeof data.message === "string" ? data.message : undefined,
-    amount: typeof data.amount === "number" ? data.amount : undefined,
+    sessionId: typeof data.sessionId === "string" ? data.sessionId : "",
+    shortcode: typeof data.shortcode === "string" ? data.shortcode : "",
+    message: typeof data.message === "string" ? data.message : "",
+    moolreCode: typeof data.moolreCode === "string" ? data.moolreCode : undefined,
   }
 }
 
-/** @param {string} token @param {{ paymentReference: string, otpCode: string }} body */
-export async function submitAgentSalePaymentOtp(token, body) {
-  const { res, data } = await parseJsonResponse("/api/catalog/sales/submit-payment-otp", {
+/**
+ * @param {string} token
+ * @param {{ paymentReference: string, pin: string }} body
+ */
+export async function confirmAgentMoMoPin(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/sales/confirm-momo", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
@@ -721,19 +696,21 @@ export async function submitAgentSalePaymentOtp(token, body) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
     return { ok: false, error: msg }
   }
-  if (typeof data !== "object" || data === null || data.status !== "pending") {
+  if (typeof data !== "object" || data === null) {
     return { ok: false, error: "Unexpected response from server." }
   }
   return {
     ok: true,
+    phase: typeof data.phase === "string" ? data.phase : "momo",
     paymentReference: typeof data.paymentReference === "string" ? data.paymentReference : body.paymentReference,
-    message: typeof data.message === "string" ? data.message : undefined,
+    message: typeof data.message === "string" ? data.message : "",
+    moolreCode: typeof data.moolreCode === "string" ? data.moolreCode : undefined,
   }
 }
 
 /** @param {string} token @param {string} paymentReference */
-export async function fetchAgentSalePaymentStatus(token, paymentReference) {
-  const path = `/api/catalog/sales/payment-status/${encodeURIComponent(paymentReference)}`
+export async function fetchAgentMoMoStatus(token, paymentReference) {
+  const path = `/api/catalog/sales/momo-status/${encodeURIComponent(paymentReference)}`
   const { res, data } = await parseJsonResponse(path, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
@@ -748,12 +725,27 @@ export async function fetchAgentSalePaymentStatus(token, paymentReference) {
   return {
     ok: true,
     status: data.status,
-    paymentReference: typeof data.paymentReference === "string" ? data.paymentReference : paymentReference,
-    sale: typeof data.sale === "object" && data.sale !== null ? data.sale : undefined,
-    smsSent: data.smsSent === true,
+    message: typeof data.message === "string" ? data.message : "",
     voucherCode: typeof data.voucherCode === "string" ? data.voucherCode : undefined,
-    message: typeof data.message === "string" ? data.message : undefined,
+    smsSent: data.smsSent === true,
+    sale: typeof data.sale === "object" && data.sale !== null ? data.sale : undefined,
   }
+}
+
+export async function createCatalogSale(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/sales", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.sale !== "object" || data.sale === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, sale: data.sale }
 }
 
 /** @param {string} token @param {string} id */

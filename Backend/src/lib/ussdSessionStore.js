@@ -46,45 +46,9 @@ export function createUssdSessionStore(col) {
       return col.findOne({ _id: sessionId })
     },
 
-    /** @param {string} paymentReference Agent ref or Moolre debit ref after OTP verify */
+    /** @param {string} paymentReference */
     async findByPaymentReference(paymentReference) {
-      const ref = String(paymentReference || "").trim()
-      if (!ref) return null
-      return col.findOne({
-        $or: [{ paymentReference: ref }, { moolreDebitReference: ref }],
-      })
-    },
-
-    /**
-     * Agent-initiated MoMo sale — customer approves PIN on their phone; webhook fulfills voucher + SMS.
-     * @param {{
-     *   sessionId: string
-     *   phone: string
-     *   locationId: string
-     *   soldByUserId: string
-     *   paymentReference: string
-     *   selectedPackage: { packageId: string, name: string, priceGHS: number, dataLimit?: string }
-     * }} doc
-     */
-    async createAgentPaymentSession(doc) {
-      const now = new Date()
-      await col.insertOne({
-        _id: doc.sessionId,
-        channel: "agent",
-        phone: doc.phone,
-        network: null,
-        moolreNetwork: null,
-        locationId: doc.locationId,
-        step: "payment",
-        locationList: [],
-        packageList: [],
-        selectedPackage: doc.selectedPackage,
-        paymentReference: doc.paymentReference,
-        soldByUserId: doc.soldByUserId,
-        createdAt: now,
-        updatedAt: now,
-        expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
-      })
+      return col.findOne({ paymentReference })
     },
   }
 }
@@ -94,6 +58,5 @@ export function createUssdSessionStore(col) {
  */
 export async function ensureUssdSessionIndexes(col) {
   await col.createIndex({ paymentReference: 1 }, { sparse: true })
-  await col.createIndex({ moolreDebitReference: 1 }, { sparse: true })
   await col.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
 }

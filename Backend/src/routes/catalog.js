@@ -6,18 +6,11 @@ import { backfillSaleSoldAt } from "../lib/backfillSaleSoldAt.js"
 import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
 import { sendSms } from "../services/sms.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
-import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
 import {
-  formatPhoneNumber,
-  generateAgentPaymentReference,
-  getMoolreUssdNetworkFromMsisdn,
-  getNetworkFromMsisdn,
-  initiateMoMoPayment,
-  persistMoolreInitOnSession,
-  shouldScheduleMoolrePaymentPoll,
-} from "../lib/ussdHelpers.js"
-import { scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
-import { createMoolrePaymentFulfillment } from "../services/moolrePaymentFulfillment.js"
+  confirmAgentMoMoPin,
+  getAgentMoMoPaymentStatus,
+  initiateAgentMoMoSale,
+} from "../services/agentSalePayment.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -516,14 +509,6 @@ export function createCatalogRouter(deps) {
   const { locations, packages, sales, disputes, auditLogs, vouchers, users, ussdSessions, jwtSecret } = deps
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
-  const agentPaymentSessions = createUssdSessionStore(ussdSessions)
-  const paymentFulfillment = createMoolrePaymentFulfillment({
-    ussdSessions,
-    packages,
-    vouchers,
-    sales,
-    auditLogs,
-  })
 
   router.get("/audit-logs", requireAdmin, async (_req, res) => {
     try {
@@ -935,251 +920,125 @@ export function createCatalogRouter(deps) {
     }
   })
 
-  router.post("/sales/initiate-payment", requireSalesAgentOrAdmin, async (req, res) => {
+  router.post("/sales/initiate-momo", requireSalesAgentOrAdmin, async (req, res) => {
     try {
+      const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
       const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
       const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
-      const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
+      const locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
-      const phoneDigits = customerPhone.replace(/\D/g, "")
       if (customerPhone.length < 7 || customerPhone.length > 32) {
         return res.status(400).json({ error: "Customer phone must be between 7 and 32 characters." })
       }
-      if (phoneDigits.length < 7) {
+      if (customerPhone.replace(/\D/g, "").length < 7) {
         return res.status(400).json({ error: "Customer phone must include at least 7 digits." })
       }
 
-      const formattedPhone = formatPhoneNumber(customerPhone)
-      if (!formattedPhone) {
-        return res.status(400).json({ error: "Customer phone number is not valid." })
-      }
-
-      const pkg = await packages.findOne({ _id: packageId })
-      if (!pkg) return res.status(400).json({ error: "Unknown package." })
-
-      let locationId = ""
-      if (req.auth.role === "Admin") {
-        locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
-        if (!locationId) {
-          return res.status(400).json({ error: "locationId is required when recording a sale as administrator." })
-        }
-        const loc = await locations.findOne({ _id: locationId })
-        if (!loc) return res.status(400).json({ error: "Unknown location." })
-      } else {
-        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
-        if (!loc) {
-          return res.status(403).json({
-            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
-          })
-        }
-        locationId = String(loc._id)
-      }
-
-      const resolved = resolvePackageForLocation(pkg, locationId)
-      if (resolved.status !== "Active") {
-        return res.status(400).json({ error: "Only active packages can be sold." })
-      }
-      const priceGHS = resolved.priceGHS
-      if (!Number.isFinite(priceGHS) || priceGHS <= 0) {
-        return res.status(400).json({ error: "Invalid package price." })
-      }
-
-      const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
-      const voucherAvailable = await vouchers.findOne(availFilter, { projection: { _id: 1 } })
-      if (!voucherAvailable) {
-        return res.status(400).json({
-          error: "No vouchers available for this package at this wifi location.",
-        })
-      }
-
-      const packageName = resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId
-      const sessionId = `agent-${randomUUID()}`
-      const paymentReference = generateAgentPaymentReference(sessionId)
-
-      await agentPaymentSessions.createAgentPaymentSession({
-        sessionId,
-        phone: formattedPhone,
-        locationId,
-        soldByUserId: req.auth.userId,
-        paymentReference,
-        selectedPackage: {
-          packageId,
-          name: packageName,
-          priceGHS,
-          dataLimit: resolved.dataLimit && resolved.dataLimit.trim() ? resolved.dataLimit.trim() : "",
-        },
-      })
-
-      const network = getNetworkFromMsisdn(formattedPhone)
-      const moolreNetwork = getMoolreUssdNetworkFromMsisdn(formattedPhone)
-      const momoResult = await initiateMoMoPayment(formattedPhone, priceGHS, sessionId, {
-        packageName,
-        reference: paymentReference,
-        network,
-        moolreNetwork,
-      })
-
-      if (!momoResult?.success) {
-        await ussdSessions.deleteOne({ _id: sessionId })
-        return res.status(502).json({
-          error: momoResult?.message || "Could not send payment prompt to the customer's phone.",
-        })
-      }
-
-      if (momoResult.action === "OTP_REQUIRED") {
-        await appendAuditLog(
-          auditLogs,
-          req.auth,
-          `Agent payment OTP step ${paymentReference}: ${formattedPhone} · ${packageName} · ${priceGHS} GHS`,
-        )
-        return res.status(202).json({
-          status: "otp_required",
-          paymentReference,
-          customerPhone: formattedPhone,
-          amount: priceGHS,
-          message:
-            "Moolre sent a one-time verification SMS to the customer. Enter that code below to trigger the MoMo PIN prompt on their phone.",
-        })
-      }
-
-      await persistMoolreInitOnSession(agentPaymentSessions, sessionId, momoResult)
-      if (shouldScheduleMoolrePaymentPoll(momoResult)) {
-        scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
-      }
-
-      await appendAuditLog(
+      const result = await initiateAgentMoMoSale({
+        packages,
+        vouchers,
+        locations,
+        users,
+        ussdSessions,
+        sales,
         auditLogs,
-        req.auth,
-        `Agent payment initiated ${paymentReference}: ${formattedPhone} · ${packageName} · ${priceGHS} GHS · ${locationId}`,
-      )
+        auth: { userId: req.auth.userId, role: req.auth.role },
+        packageId,
+        customerPhone,
+        locationId,
+        findConflictingLocationForSalesAgent,
+      })
 
-      res.status(202).json({
-        status: "pending",
-        paymentReference,
-        customerPhone: formattedPhone,
-        amount: priceGHS,
-        message:
-          "MoMo PIN prompt sent to the customer's phone. Ask them to approve the payment and enter their PIN.",
-        mock: momoResult.mock === true,
+      if (!result.ok) {
+        return res.status(result.status || 500).json({ error: result.error || "Could not start payment." })
+      }
+
+      return res.status(200).json({
+        phase: result.phase,
+        paymentReference: result.paymentReference,
+        sessionId: result.sessionId,
+        shortcode: result.shortcode,
+        message: result.message,
+        moolreCode: result.moolreCode,
       })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
-      res.status(status).json({ error })
+      return res.status(status).json({ error })
     }
   })
 
-  router.post("/sales/submit-payment-otp", requireSalesAgentOrAdmin, async (req, res) => {
+  router.post("/sales/confirm-momo", requireSalesAgentOrAdmin, async (req, res) => {
     try {
       const paymentReference =
         typeof req.body?.paymentReference === "string" ? req.body.paymentReference.trim() : ""
-      const otpCode = typeof req.body?.otpCode === "string" ? req.body.otpCode.trim() : ""
+      const pin = typeof req.body?.pin === "string" ? req.body.pin.trim() : ""
+
       if (!paymentReference) return res.status(400).json({ error: "paymentReference is required." })
-      if (!/^\d{4,8}$/.test(otpCode)) {
-        return res.status(400).json({ error: "Enter the verification code from the customer's SMS (4–8 digits)." })
-      }
+      if (!pin) return res.status(400).json({ error: "Customer PIN is required." })
 
-      const paymentSession = await agentPaymentSessions.findByPaymentReference(paymentReference)
-      if (!paymentSession || paymentSession.channel !== "agent") {
-        return res.status(404).json({ error: "Payment session not found." })
-      }
-      if (req.auth.role !== "Admin" && paymentSession.soldByUserId !== req.auth.userId) {
-        return res.status(403).json({ error: "You can only complete payments you initiated." })
-      }
-
-      const selected = paymentSession.selectedPackage
-      const amount = Number(selected?.priceGHS) || 0
-      const phone = String(paymentSession.phone || "")
-      if (!phone || !selected?.packageId || amount <= 0) {
-        return res.status(400).json({ error: "Payment session is incomplete or expired." })
-      }
-
-      const network = getNetworkFromMsisdn(phone)
-      const moolreNetwork = getMoolreUssdNetworkFromMsisdn(phone)
-      const momoResult = await initiateMoMoPayment(phone, amount, String(paymentSession._id), {
-        packageName: selected.name || "WiFi package",
-        reference: paymentReference,
-        network,
-        moolreNetwork,
-        otpCode,
+      const result = await confirmAgentMoMoPin({
+        ussdSessions,
+        packages,
+        vouchers,
+        sales,
+        auditLogs,
+        auth: { userId: req.auth.userId, role: req.auth.role },
+        paymentReference,
+        pin,
       })
 
-      if (!momoResult?.success) {
-        return res.status(502).json({
-          error: momoResult?.message || "Could not trigger MoMo PIN prompt. Check the code and try again.",
+      if (!result.ok) {
+        return res.status(result.status || 500).json({
+          error: result.error || "Could not confirm payment.",
+          moolreCode: result.moolreCode,
         })
       }
 
-      if (momoResult.action === "OTP_REQUIRED") {
-        return res.status(400).json({
-          error: "Verification code was not accepted. Ask the customer for the latest SMS code from Moolre.",
-        })
-      }
-
-      await persistMoolreInitOnSession(agentPaymentSessions, String(paymentSession._id), momoResult)
-      if (shouldScheduleMoolrePaymentPoll(momoResult)) {
-        scheduleUssdPaymentStatusPoll(paymentReference, paymentFulfillment.tryConfirmPaymentFromPoll)
-      }
-
-      res.status(202).json({
-        status: "pending",
-        paymentReference,
-        message: "MoMo PIN prompt sent to the customer's phone. Ask them to approve and enter their PIN.",
+      return res.status(200).json({
+        phase: result.phase,
+        paymentReference: result.paymentReference,
+        message: result.message,
+        moolreCode: result.moolreCode,
       })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
-      res.status(status).json({ error })
+      return res.status(status).json({ error })
     }
   })
 
-  router.get("/sales/payment-status/:paymentReference", requireSalesAgentOrAdmin, async (req, res) => {
+  router.get("/sales/momo-status/:paymentReference", requireSalesAgentOrAdmin, async (req, res) => {
     try {
       const paymentReference =
         typeof req.params?.paymentReference === "string" ? req.params.paymentReference.trim() : ""
       if (!paymentReference) return res.status(400).json({ error: "paymentReference is required." })
 
-      const paymentSession = await agentPaymentSessions.findByPaymentReference(paymentReference)
-      if (!paymentSession || paymentSession.channel !== "agent") {
-        return res.status(404).json({ error: "Payment session not found." })
-      }
-      if (req.auth.role !== "Admin" && paymentSession.soldByUserId !== req.auth.userId) {
-        return res.status(403).json({ error: "You can only check payments you initiated." })
-      }
+      const result = await getAgentMoMoPaymentStatus({
+        ussdSessions,
+        packages,
+        vouchers,
+        sales,
+        auditLogs,
+        paymentReference,
+      })
 
-      let sale = await sales.findOne({ paymentReference })
-      if (!sale) {
-        await paymentFulfillment.tryConfirmPaymentFromPoll(paymentReference)
-        sale = await sales.findOne({ paymentReference })
-      }
-
-      if (sale) {
-        return res.json({
-          status: "completed",
-          paymentReference,
-          sale: toSale(sale),
-          smsSent: sale.smsSent === true,
-          voucherCode: typeof sale.voucherCode === "string" ? sale.voucherCode : undefined,
-        })
-      }
-
-      if (paymentSession.step === "completed") {
-        return res.json({
-          status: "failed",
-          paymentReference,
-          message: "Payment was not completed or voucher fulfillment failed.",
-        })
+      if (!result.ok) {
+        return res.status(result.status || 404).json({ error: result.error || "Payment not found." })
       }
 
       return res.json({
-        status: "pending",
-        paymentReference,
-        message: "Waiting for the customer to approve the MoMo payment on their phone.",
+        status: result.status,
+        message: result.message,
+        voucherCode: result.voucherCode,
+        smsSent: result.smsSent,
+        sale: result.sale ? toSale(result.sale) : undefined,
       })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
-      res.status(status).json({ error })
+      return res.status(status).json({ error })
     }
   })
 

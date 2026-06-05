@@ -78,7 +78,8 @@ async function syncPackageStockForLocation(packagesCol, vouchersCol, packageId, 
  *   packageId: string
  *   locationId: string
  *   channel?: "ussd" | "agent"
- *   soldByUserId?: string
+ *   soldByUserId?: string | null
+ *   auditActor?: string
  * }} opts
  */
 export async function fulfillUssdVoucherSale(opts) {
@@ -92,7 +93,8 @@ export async function fulfillUssdVoucherSale(opts) {
     packageId,
     locationId,
     channel = "ussd",
-    soldByUserId,
+    soldByUserId = null,
+    auditActor = "USSD",
   } = opts
 
   const existing = await sales.findOne({ paymentReference })
@@ -127,7 +129,6 @@ export async function fulfillUssdVoucherSale(opts) {
   const saleId =
     channel === "agent" ? `sale-agent-${randomUUID().slice(0, 12)}` : `sale-ussd-${randomUUID().slice(0, 12)}`
 
-  /** @type {Record<string, unknown>} */
   const saleDoc = {
     _id: saleId,
     customerName: customerPhone,
@@ -145,9 +146,7 @@ export async function fulfillUssdVoucherSale(opts) {
     paymentReference,
     channel,
     smsSent: false,
-  }
-  if (soldByUserId) {
-    saleDoc.soldByUserId = soldByUserId
+    ...(soldByUserId ? { soldByUserId } : {}),
   }
 
   await sales.insertOne(saleDoc)
@@ -185,16 +184,15 @@ export async function fulfillUssdVoucherSale(opts) {
   }
 
   try {
-    const actor = channel === "agent" ? `Agent ${soldByUserId || "unknown"}` : "USSD"
-    const label = channel === "agent" ? "Agent sale" : "USSD sale"
+    const channelLabel = channel === "agent" ? "Agent MoMo sale" : "USSD sale"
     await auditLogs.insertOne({
       _id: `audit-${randomUUID().slice(0, 12)}`,
-      actor,
-      action: `${label} ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference}`,
+      actor: auditActor,
+      action: `${channelLabel} ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference}`,
       at: new Date().toISOString(),
     })
   } catch (e) {
-    console.error("[moolre-sale] audit log failed", e)
+    console.error("[ussd] audit log failed", e)
   }
 
   return {

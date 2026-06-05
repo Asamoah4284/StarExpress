@@ -25,21 +25,18 @@ import {
 import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import {
+  confirmAgentMoMoPin,
   createCatalogPackage,
   deleteCatalogPackage,
-  fetchAgentSalePaymentStatus,
+  fetchAgentMoMoStatus,
   fetchPackageStock,
   fetchPackageVoucherInventory,
-  initiateAgentSalePayment,
-  submitAgentSalePaymentOtp,
+  initiateAgentMoMoSale,
   updateCatalogPackage,
 } from "@/lib/api.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
 import { ROLE_ADMIN, ROLE_SALES_AGENT } from "@/lib/roles.js"
 import { formatCedis } from "@/lib/utils"
-
-const PAYMENT_POLL_INTERVAL_MS = 3000
-const PAYMENT_POLL_TIMEOUT_MS = 3 * 60 * 1000
 
 export default function Packages() {
   const { token, user } = useAuth()
@@ -91,14 +88,14 @@ export default function Packages() {
     /** @type {{ id: string, name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number } | null} */ (null),
   )
   const [sellCustomerPhone, setSellCustomerPhone] = React.useState("")
+  const [sellCustomerPin, setSellCustomerPin] = React.useState("")
   const [sellLocationId, setSellLocationId] = React.useState("")
+  const [sellStep, setSellStep] = React.useState(/** @type {"phone" | "pin" | "momo"} */ ("phone"))
+  const [sellPaymentRef, setSellPaymentRef] = React.useState("")
+  const [sellShortcode, setSellShortcode] = React.useState("")
+  const [sellStatusMessage, setSellStatusMessage] = React.useState("")
   const [sellError, setSellError] = React.useState(null)
   const [sellSuccess, setSellSuccess] = React.useState(/** @type {string | null} */ (null))
-  const [sellAwaitingPayment, setSellAwaitingPayment] = React.useState(false)
-  const [sellAwaitingOtp, setSellAwaitingOtp] = React.useState(false)
-  const [sellPaymentRef, setSellPaymentRef] = React.useState(/** @type {string | null} */ (null))
-  const [sellMomoOtp, setSellMomoOtp] = React.useState("")
-  const sellPaymentStartedAtRef = React.useRef(/** @type {number | null} */ (null))
 
   const sellRowRef = React.useRef(
     /** @type {{ id: string, name: string, priceGHS: number, dataLimit: string, status: string, stockUnits: number } | null} */ (null),
@@ -252,42 +249,39 @@ export default function Packages() {
         : String(sellStockRemaining ?? 0)
 
   const invalidateSaleQueries = React.useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["catalog"] })
-    queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
-    queryClient.invalidateQueries({ queryKey: ["package-stock"] })
-    queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
-    queryClient.invalidateQueries({ queryKey: ["vouchers"] })
-    queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
-    queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
+    void queryClient.invalidateQueries({ queryKey: ["catalog"] })
+    void queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+    void queryClient.invalidateQueries({ queryKey: ["package-stock"] })
+    void queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
+    void queryClient.invalidateQueries({ queryKey: ["vouchers"] })
+    void queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
+    void queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
   }, [queryClient])
 
   const completeAgentSale = React.useCallback(
-    (/** @type {{ voucherCode?: string, smsSent?: boolean }} */ result) => {
+    (/** @type {string | undefined} */ voucherCode) => {
       invalidateSaleQueries()
-      const code = result.voucherCode
       setSellSuccess(
-        code
-          ? result.smsSent
-            ? `Payment received. Voucher ${code} was sent by SMS to the customer.`
-            : `Payment received. Voucher ${code} was issued but SMS delivery may have failed — check with the customer.`
-          : "Payment received and sale completed.",
+        voucherCode
+          ? `Payment received. Voucher ${voucherCode} was sent by SMS to the customer.`
+          : "Payment received. Voucher SMS was sent to the customer.",
       )
-      setSellAwaitingPayment(false)
-      setSellAwaitingOtp(false)
-      setSellPaymentRef(null)
-      setSellMomoOtp("")
-      sellPaymentStartedAtRef.current = null
       setSellOpen(false)
       sellRowRef.current = null
       setSellPkg(null)
       setSellCustomerPhone("")
+      setSellCustomerPin("")
+      setSellPaymentRef("")
+      setSellShortcode("")
+      setSellStatusMessage("")
+      setSellStep("phone")
       setSellLocationId(locations[0]?.id ?? "")
       setSellError(null)
     },
     [invalidateSaleQueries, locations],
   )
 
-  const sellMutation = useMutation({
+  const initiateMoMoMutation = useMutation({
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
       const row = sellRowRef.current
@@ -299,10 +293,11 @@ export default function Packages() {
       if (customerPhone.replace(/\D/g, "").length < 7) {
         throw new Error("Customer phone must include at least 7 digits.")
       }
+      /** @type {Awaited<ReturnType<typeof initiateAgentMoMoSale>>} */
       let result
       if (isAdmin) {
         if (!sellLocationId) throw new Error("Choose a wifi location for this sale.")
-        result = await initiateAgentSalePayment(token, {
+        result = await initiateAgentMoMoSale(token, {
           packageId: row.id,
           customerPhone,
           locationId: sellLocationId,
@@ -313,109 +308,73 @@ export default function Packages() {
             "No wifi location is linked to your account. Ask an administrator to assign you to a location.",
           )
         }
-        result = await initiateAgentSalePayment(token, {
+        result = await initiateAgentMoMoSale(token, {
           packageId: row.id,
           customerPhone,
         })
       }
-      if (!result.ok) throw new Error(result.error || "Could not send payment prompt")
+      if (!result.ok) throw new Error(result.error || "Could not start payment")
       return result
     },
     onSuccess: (result) => {
-      setSellPaymentRef(result.paymentReference)
-      if (result.status === "otp_required") {
-        setSellAwaitingOtp(true)
-        setSellAwaitingPayment(false)
-        sellPaymentStartedAtRef.current = null
-      } else {
-        setSellAwaitingOtp(false)
-        setSellAwaitingPayment(true)
-        sellPaymentStartedAtRef.current = Date.now()
-      }
       setSellError(null)
+      setSellPaymentRef(result.paymentReference)
+      setSellShortcode(result.shortcode || "")
+      setSellStatusMessage(result.message || "")
+      if (result.phase === "pin") {
+        setSellStep("pin")
+        return
+      }
+      setSellStep("momo")
     },
     onError: (err) => {
       setSellError(err instanceof Error ? err.message : "Request failed")
     },
   })
 
-  React.useEffect(() => {
-    if (!sellAwaitingPayment || !sellPaymentRef || !token) return
-
-    let cancelled = false
-
-    const poll = async () => {
-      if (cancelled) return
-      const startedAt = sellPaymentStartedAtRef.current ?? Date.now()
-      if (Date.now() - startedAt > PAYMENT_POLL_TIMEOUT_MS) {
-        setSellAwaitingPayment(false)
-        setSellPaymentRef(null)
-        sellPaymentStartedAtRef.current = null
-        setSellError("Payment timed out. Ask the customer to try again or check their MoMo wallet.")
-        return
-      }
-
-      const status = await fetchAgentSalePaymentStatus(token, sellPaymentRef)
-      if (cancelled) return
-
-      if (!status.ok) {
-        setSellError(status.error || "Could not check payment status")
-        return
-      }
-
-      if (status.status === "completed") {
-        completeAgentSale({
-          voucherCode: status.voucherCode ?? status.sale?.voucherCode,
-          smsSent: status.smsSent,
-        })
-        return
-      }
-
-      if (status.status === "failed") {
-        setSellAwaitingPayment(false)
-        setSellPaymentRef(null)
-        sellPaymentStartedAtRef.current = null
-        setSellError(status.message || "Payment was not completed.")
-      }
-    }
-
-    void poll()
-    const timer = window.setInterval(() => {
-      void poll()
-    }, PAYMENT_POLL_INTERVAL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [sellAwaitingPayment, sellPaymentRef, token, completeAgentSale])
-
-  const otpMutation = useMutation({
+  const confirmPinMutation = useMutation({
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
-      if (!sellPaymentRef) throw new Error("No payment in progress")
-      const otpCode = sellMomoOtp.trim()
-      if (!/^\d{4,8}$/.test(otpCode)) {
-        throw new Error("Enter the verification code from the customer's SMS (4–8 digits).")
+      if (!sellPaymentRef) throw new Error("Payment session expired. Start again.")
+      const pin = sellCustomerPin.trim()
+      if (!/^\d{4,8}$/.test(pin)) {
+        throw new Error("Enter the 4–8 digit PIN the customer received by SMS.")
       }
-      const result = await submitAgentSalePaymentOtp(token, {
-        paymentReference: sellPaymentRef,
-        otpCode,
-      })
-      if (!result.ok) throw new Error(result.error || "Could not verify code")
+      const result = await confirmAgentMoMoPin(token, { paymentReference: sellPaymentRef, pin })
+      if (!result.ok) throw new Error(result.error || "Could not confirm PIN")
       return result
     },
-    onSuccess: () => {
-      setSellAwaitingOtp(false)
-      setSellAwaitingPayment(true)
-      setSellMomoOtp("")
-      sellPaymentStartedAtRef.current = Date.now()
+    onSuccess: (result) => {
       setSellError(null)
+      setSellStatusMessage(result.message || "Ask the customer to approve MoMo on their phone.")
+      setSellStep("momo")
     },
     onError: (err) => {
-      setSellError(err instanceof Error ? err.message : "Verification failed")
+      setSellError(err instanceof Error ? err.message : "Request failed")
     },
   })
+
+  const momoStatusQuery = useQuery({
+    queryKey: ["agent-momo-status", token, sellPaymentRef],
+    queryFn: async () => {
+      if (!token || !sellPaymentRef) throw new Error("Missing payment reference")
+      const r = await fetchAgentMoMoStatus(token, sellPaymentRef)
+      if (!r.ok) throw new Error(r.error || "Could not check payment status")
+      return r
+    },
+    enabled: sellOpen && sellStep === "momo" && Boolean(token) && Boolean(sellPaymentRef),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      if (status === "completed" || status === "failed") return false
+      return 3000
+    },
+  })
+
+  React.useEffect(() => {
+    if (momoStatusQuery.data?.status === "completed") {
+      completeAgentSale(momoStatusQuery.data.voucherCode)
+    }
+  }, [momoStatusQuery.data, completeAgentSale])
 
   const resetForm = () => {
     setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
@@ -445,6 +404,11 @@ export default function Packages() {
       sellRowRef.current = row
       setSellPkg(row)
       setSellCustomerPhone("")
+      setSellCustomerPin("")
+      setSellStep("phone")
+      setSellPaymentRef("")
+      setSellShortcode("")
+      setSellStatusMessage("")
       const defaultLoc =
         isAdmin && locationFilterId !== "all"
           ? locationFilterId
@@ -452,11 +416,6 @@ export default function Packages() {
       setSellLocationId(defaultLoc)
       setSellError(null)
       setSellSuccess(null)
-      setSellAwaitingPayment(false)
-      setSellAwaitingOtp(false)
-      setSellPaymentRef(null)
-      setSellMomoOtp("")
-      sellPaymentStartedAtRef.current = null
       setSellOpen(true)
     },
     [locations, isAdmin, locationFilterId],
@@ -484,10 +443,31 @@ export default function Packages() {
     saveMutation.mutate()
   }
 
-  const confirmSell = () => {
+  const resetSellDialog = () => {
+    sellRowRef.current = null
+    setSellPkg(null)
+    setSellCustomerPhone("")
+    setSellCustomerPin("")
+    setSellStep("phone")
+    setSellPaymentRef("")
+    setSellShortcode("")
+    setSellStatusMessage("")
     setSellError(null)
-    sellMutation.mutate()
+    setSellSuccess(null)
   }
+
+  const handleSellPrimary = () => {
+    setSellError(null)
+    if (sellStep === "phone") {
+      initiateMoMoMutation.mutate()
+      return
+    }
+    if (sellStep === "pin") {
+      confirmPinMutation.mutate()
+    }
+  }
+
+  const sellBusy = initiateMoMoMutation.isPending || confirmPinMutation.isPending
 
   const columns = React.useMemo(
     () => [
@@ -605,8 +585,8 @@ export default function Packages() {
   const pageDescription = isAdmin
     ? locationFilterId === "all"
       ? "Package catalog with live voucher inventory (total uploaded and remaining unused across all wifi locations)."
-      : `Voucher totals and remaining stock at ${locationFilterLabel}. Tap Sell to send a MoMo payment prompt to the customer.`
-    : "Packages at your wifi location with voucher totals and remaining stock. Tap Sell to send a MoMo payment prompt to the customer."
+      : `Voucher totals and remaining stock at ${locationFilterLabel}. Tap Sell to record a sale at this location.`
+    : "Packages at your wifi location with voucher totals and remaining stock. Tap Sell to record a sale."
 
   return (
     <div className="space-y-6">
@@ -810,18 +790,7 @@ export default function Packages() {
         open={sellOpen}
         onOpenChange={(o) => {
           setSellOpen(o)
-          if (!o) {
-            sellRowRef.current = null
-            setSellPkg(null)
-            setSellCustomerPhone("")
-            setSellError(null)
-            setSellSuccess(null)
-            setSellAwaitingPayment(false)
-            setSellAwaitingOtp(false)
-            setSellPaymentRef(null)
-            setSellMomoOtp("")
-            sellPaymentStartedAtRef.current = null
-          }
+          if (!o) resetSellDialog()
         }}
       >
         <DialogContent>
@@ -830,32 +799,6 @@ export default function Packages() {
           </DialogHeader>
           {sellPkg ? (
             <div className="grid gap-3 py-2">
-              {sellAwaitingOtp ? (
-                <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm" role="status">
-                  Moolre sent a one-time verification SMS to{" "}
-                  <span className="font-medium">{sellCustomerPhone}</span>. Ask the customer for that code,
-                  enter it below, then they will receive the MoMo PIN prompt on their phone.
-                </p>
-              ) : sellAwaitingPayment ? (
-                <p className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm" role="status">
-                  MoMo PIN prompt sent to <span className="font-medium">{sellCustomerPhone}</span>. Ask the
-                  customer to approve the charge and enter their PIN. The WiFi voucher will be sent by SMS after
-                  payment.
-                </p>
-              ) : null}
-              {sellAwaitingOtp ? (
-                <div className="space-y-1.5">
-                  <Label htmlFor="sell-momo-otp">Moolre verification code (from customer SMS)</Label>
-                  <Input
-                    id="sell-momo-otp"
-                    inputMode="numeric"
-                    value={sellMomoOtp}
-                    onChange={(e) => setSellMomoOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
-                    placeholder="e.g. 123456"
-                    autoComplete="one-time-code"
-                  />
-                </div>
-              ) : null}
               {sellError ? (
                 <p className="text-destructive bg-destructive/10 rounded-md px-2 py-1.5 text-sm" role="alert">
                   {sellError}
@@ -865,24 +808,83 @@ export default function Packages() {
                 <p className="font-medium">{sellPkg.name}</p>
                 <p className="text-muted-foreground">
                   {formatCedis(sellPkg.priceGHS)} · {sellPkg.dataLimit} · Stock: {sellStockLabel}
+                  {sellStep !== "phone" && sellCustomerPhone ? ` · ${sellCustomerPhone}` : ""}
                   {sellStockQuery.isError ? (
                     <span className="text-destructive"> (could not load stock)</span>
                   ) : null}
                 </p>
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="sell-phone">Customer phone</Label>
-                <Input
-                  id="sell-phone"
-                  type="tel"
-                  inputMode="tel"
-                  value={sellCustomerPhone}
-                  onChange={(e) => setSellCustomerPhone(e.target.value)}
-                  placeholder="e.g. 0241234567"
-                  autoComplete="tel"
-                  disabled={sellAwaitingPayment || sellMutation.isPending}
-                />
-              </div>
+              {sellStep === "phone" ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="sell-phone">Customer phone</Label>
+                  <Input
+                    id="sell-phone"
+                    type="tel"
+                    inputMode="tel"
+                    value={sellCustomerPhone}
+                    onChange={(e) => setSellCustomerPhone(e.target.value)}
+                    placeholder="e.g. 0241234567"
+                    autoComplete="tel"
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    Uses the same Moolre mobile-money flow as USSD ({sellShortcode || "*203*419#"}). A
+                    verification PIN is sent to this number before payment.
+                  </p>
+                </div>
+              ) : null}
+              {sellStep === "pin" ? (
+                <div className="space-y-3">
+                  <div className="bg-muted/40 space-y-1 rounded-md border px-3 py-2 text-sm">
+                    <p className="font-medium">Customer verification PIN</p>
+                    <p className="text-muted-foreground text-xs">
+                      {sellStatusMessage ||
+                        "A PIN was sent to the customer's phone by SMS (same provider as USSD payments). Ask them for the code."}
+                      {sellShortcode ? (
+                        <>
+                          {" "}
+                          They can also pay themselves by dialing <span className="font-medium">{sellShortcode}</span>.
+                        </>
+                      ) : null}
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="sell-pin">PIN from customer</Label>
+                    <Input
+                      id="sell-pin"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={8}
+                      value={sellCustomerPin}
+                      onChange={(e) => setSellCustomerPin(e.target.value.replace(/\D/g, ""))}
+                      placeholder="e.g. 123456"
+                      autoComplete="one-time-code"
+                    />
+                  </div>
+                </div>
+              ) : null}
+              {sellStep === "momo" ? (
+                <div className="bg-muted/40 space-y-2 rounded-md border px-3 py-3 text-sm">
+                  <p className="font-medium">Waiting for MoMo payment</p>
+                  <p className="text-muted-foreground text-xs">
+                    {sellStatusMessage ||
+                      "The customer should see a mobile money prompt on their phone. Ask them to enter their MoMo PIN to approve payment."}
+                  </p>
+                  {momoStatusQuery.isFetching ? (
+                    <p className="text-muted-foreground text-xs">Checking payment status…</p>
+                  ) : null}
+                  {momoStatusQuery.data?.status === "awaiting_momo" ? (
+                    <p className="text-muted-foreground text-xs">Payment not confirmed yet. Keep this dialog open.</p>
+                  ) : null}
+                  {momoStatusQuery.data?.status === "failed" || momoStatusQuery.isError ? (
+                    <p className="text-destructive text-xs" role="alert">
+                      {momoStatusQuery.error instanceof Error
+                        ? momoStatusQuery.error.message
+                        : momoStatusQuery.data?.message || "Payment failed or timed out."}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               {isAdmin ? (
                 <div className="space-y-1.5">
                   <Label htmlFor="sell-location">Wifi location</Label>
@@ -917,37 +919,30 @@ export default function Packages() {
             <Button type="button" variant="outline" onClick={() => setSellOpen(false)}>
               Cancel
             </Button>
-            {sellAwaitingOtp ? (
+            {sellStep !== "momo" ? (
               <Button
                 type="button"
-                onClick={() => otpMutation.mutate()}
-                disabled={otpMutation.isPending || !/^\d{4,8}$/.test(sellMomoOtp.trim())}
-              >
-                {otpMutation.isPending ? "Sending PIN prompt…" : "Send PIN prompt"}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                onClick={confirmSell}
+                onClick={handleSellPrimary}
                 disabled={
-                  sellAwaitingPayment ||
-                  sellMutation.isPending ||
-                  !sellPhoneValid ||
-                  (isAdmin && (!sellLocationId || locations.length === 0)) ||
-                  (isSalesAgent && !agentStore) ||
-                  !sellStockLocationId ||
-                  sellStockQuery.isLoading ||
-                  sellStockQuery.isError ||
-                  sellStockRemaining === 0
+                  sellBusy ||
+                  (sellStep === "phone" &&
+                    (!sellPhoneValid ||
+                      (isAdmin && (!sellLocationId || locations.length === 0)) ||
+                      (isSalesAgent && !agentStore) ||
+                      !sellStockLocationId ||
+                      sellStockQuery.isLoading ||
+                      sellStockQuery.isError ||
+                      sellStockRemaining === 0)) ||
+                  (sellStep === "pin" && sellCustomerPin.trim().length < 4)
                 }
               >
-                {sellAwaitingPayment
-                  ? "Waiting for PIN approval…"
-                  : sellMutation.isPending
-                    ? "Contacting MoMo…"
-                    : "Confirm sale"}
+                {sellBusy
+                  ? "Please wait…"
+                  : sellStep === "pin"
+                    ? "Request MoMo payment"
+                    : "Send verification PIN"}
               </Button>
-            )}
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>

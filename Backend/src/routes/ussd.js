@@ -5,21 +5,19 @@ import {
   generatePaymentReference,
   getUssdPayload,
   initiateMoMoPayment,
-  persistMoolreInitOnSession,
-  shouldScheduleMoolrePaymentPoll,
   normalizeNetworkName,
   normalizeUssdPayload,
   verifyMoolreWebhook,
 } from "../lib/ussdHelpers.js"
 import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
-import { scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
+import { checkMoolrePaymentStatus, scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
 import { getMoolreWebhookPayload, parseMoolrePaymentEvent } from "../lib/moolreWebhook.js"
 import {
   buildLocationAvailabilityFilter,
   buildPackageAvailabilityFilter,
 } from "../services/voucherSaleFulfillment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
-import { createMoolrePaymentFulfillment } from "../services/moolrePaymentFulfillment.js"
+import { processPaymentSuccess } from "../services/paymentCompletion.js"
 
 // Upper cap on how many active packages we fetch per location. USSD sessions are short-lived
 // so this only bounds the DB result size — the actual menu is paginated below.
@@ -49,16 +47,27 @@ export function createUssdRouter(deps) {
     return String(process.env.USSD_DEFAULT_LOCATION_ID || "").trim()
   }
 
-  const paymentFulfillment = createMoolrePaymentFulfillment({
-    ussdSessions,
-    packages,
-    vouchers,
-    sales,
-    auditLogs,
-    fallbackLocationId: getUssdFallbackLocationId(),
-  })
+  /** @param {string} paymentReference @param {string} [source] */
+  async function processUssdPaymentSuccess(paymentReference, source = "webhook") {
+    return processPaymentSuccess(
+      paymentReference,
+      { ussdSessions, packages, vouchers, sales, auditLogs },
+      source,
+    )
+  }
 
-  const { processPaymentSuccess, tryConfirmPaymentFromPoll } = paymentFulfillment
+  /** @param {string} paymentReference */
+  async function tryConfirmPaymentFromPoll(paymentReference) {
+    const existing = await sales.findOne({ paymentReference })
+    if (existing) return true
+
+    const status = await checkMoolrePaymentStatus(paymentReference)
+    console.log("[ussd-poll] status", paymentReference, status)
+    if (!status.ok || !status.isPaid) return false
+
+    const outcome = await processUssdPaymentSuccess(paymentReference, "poll")
+    return outcome.ok === true
+  }
 
   function menuWelcome() {
     return `WELCOME TO TABITACUM-WIFI\n1) Buy voucher\n2) Retrieve voucher\n3) Exit\n`
@@ -569,7 +578,7 @@ export function createUssdRouter(deps) {
                 network: session?.network || normalizedNetwork,
                 moolreNetwork: moolreNet,
               })
-                .then(async (result) => {
+                .then((result) => {
                   console.log(
                     "[ussd] momo result",
                     paymentReference,
@@ -582,14 +591,7 @@ export function createUssdRouter(deps) {
                     console.error("[ussd] momo failed — user will not see PIN prompt:", result?.message)
                     return
                   }
-                  if (result.action === "OTP_REQUIRED") {
-                    console.log("[ussd] TP14 — Moolre SMS verification required; skipping status poll", paymentReference)
-                    return
-                  }
-                  await persistMoolreInitOnSession(sessions, sessionId, result)
-                  if (shouldScheduleMoolrePaymentPoll(result)) {
-                    scheduleUssdPaymentStatusPoll(paymentReference, tryConfirmPaymentFromPoll)
-                  }
+                  scheduleUssdPaymentStatusPoll(paymentReference, tryConfirmPaymentFromPoll)
                 })
                 .catch((err) => {
                   console.error("[ussd] momo error", paymentReference, err)
@@ -679,7 +681,7 @@ export function createUssdRouter(deps) {
         return res.status(200).json({ received: true, status: "ignored", code: event.code })
       }
 
-      const outcome = await processPaymentSuccess(event.reference, "webhook")
+      const outcome = await processUssdPaymentSuccess(event.reference, "webhook")
       return res.status(200).json({ received: true, ...outcome })
     } catch (err) {
       console.error("[ussd-webhook] error", err)
