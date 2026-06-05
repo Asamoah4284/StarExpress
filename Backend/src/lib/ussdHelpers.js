@@ -42,6 +42,19 @@ export function generateAgentPaymentReference(sessionId) {
 }
 
 /**
+ * USSD gateway network codes for Moolre payment channel mapping (3=MTN, 5=AT, 6=Telecel).
+ * @param {string | null | undefined} msisdn
+ * @returns {3 | 5 | 6 | null}
+ */
+export function getMoolreUssdNetworkFromMsisdn(msisdn) {
+  const network = getNetworkFromMsisdn(msisdn)
+  if (network === "MTN") return 3
+  if (network === "AT" || network === "AirtelTigo") return 5
+  if (network === "Telecel" || network === "Vodafone") return 6
+  return null
+}
+
+/**
  * @param {string | null | undefined} msisdn
  */
 export function getNetworkFromMsisdn(msisdn) {
@@ -244,6 +257,57 @@ async function postMoolrePayment(payload, authHeaders) {
   return { response, data, responseText }
 }
 
+/** @param {number} ms */
+async function sleepMs(ms) {
+  if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * @param {Record<string, unknown>} payload
+ * @param {Record<string, string>} authHeaders
+ */
+async function parseMoolrePaymentPost(payload, authHeaders) {
+  const { response, data, responseText } = await postMoolrePayment(payload, authHeaders)
+  if (!response.ok || !isMoolreApiSuccess(data)) {
+    return {
+      ok: false,
+      code: String(data && typeof data === "object" && "code" in data ? data.code : "").toUpperCase(),
+      message:
+        (data && typeof data === "object" && "message" in data && String(data.message)) ||
+        "Payment initiation failed",
+      data: data?.data || data,
+      httpStatus: response.status,
+      raw: responseText?.slice(0, 300),
+    }
+  }
+  return {
+    ok: true,
+    code: String(data?.code || "").toUpperCase(),
+    message: typeof data?.message === "string" ? data.message : "",
+    data: data?.data || data,
+  }
+}
+
+/**
+ * @param {string} reference
+ * @param {{ ok: boolean, code: string, message?: string, data?: unknown }} parsed
+ * @param {"OTP_REQUIRED" | "PIN_PROMPT_SENT"} action
+ */
+function moolrePaymentSuccess(reference, parsed, action) {
+  return {
+    success: true,
+    reference,
+    provider: "moolre",
+    action,
+    message:
+      action === "OTP_REQUIRED"
+        ? "Moolre sent a one-time verification SMS to the customer. Submit that code to trigger the MoMo PIN prompt."
+        : "MoMo PIN prompt sent to the customer's phone.",
+    data: parsed.data,
+    moolreCode: parsed.code,
+  }
+}
+
 /**
  * @param {unknown} data
  * @returns {string | null}
@@ -351,82 +415,115 @@ export async function initiateMoMoPayment(msisdn, amount, sessionId, options = {
       callback: shouldIncludePaymentCallbackInRequest() ? callbackUrl : "(omitted)",
     })
 
-    const { response, data, responseText } = await postMoolrePayment(directDebitPayload, authHeaders)
-
-    if (!response.ok || !isMoolreApiSuccess(data)) {
-      console.error("[ussd-momo] init failed", response.status, data || responseText?.slice(0, 300))
+    const parsed = await parseMoolrePaymentPost(directDebitPayload, authHeaders)
+    if (!parsed.ok) {
+      console.error("[ussd-momo] init failed", parsed.httpStatus, parsed.message, parsed.raw)
       return {
         success: false,
         reference,
-        message:
-          (data && typeof data === "object" && "message" in data && String(data.message)) ||
-          "Payment initiation failed",
+        message: parsed.message,
         provider: "moolre",
-        moolreCode: data && typeof data === "object" ? data.code : undefined,
+        moolreCode: parsed.code || undefined,
       }
     }
 
-    const code = String(data?.code || "").toUpperCase()
-    console.log("[ussd-momo] init OK", { code, message: data?.message })
+    console.log("[ussd-momo] init OK", { code: parsed.code, message: parsed.message })
 
-    // TP14 = Moolre sent a one-time SMS code to the payer. Re-post the SAME externalref with otpcode
-    // to trigger the MoMo PIN prompt (TR099). Do not treat as a hard failure.
-    if (code === "TP14" && !otp) {
+    // TP14 = Moolre sent a one-time SMS code to the payer. Re-post the SAME externalref with otpcode.
+    if (parsed.code === "TP14" && !otp) {
       console.log("[ussd-momo] TP14 — payer must submit Moolre SMS code, then PIN prompt follows", {
         reference,
         channel,
       })
-      return {
-        success: true,
-        reference,
-        provider: "moolre",
-        action: "OTP_REQUIRED",
-        message:
-          "Moolre sent a one-time verification SMS to the customer. Submit that code to trigger the MoMo PIN prompt.",
-        data: data?.data || data,
-        moolreCode: code,
-      }
+      return moolrePaymentSuccess(reference, parsed, "OTP_REQUIRED")
     }
 
-    // TR099 = MoMo PIN approval prompt sent to payer's phone.
-    if (code === "TR099") {
+    // TR099 = MoMo PIN approval prompt sent to payer's phone (USSD Pay path for verified numbers).
+    if (parsed.code === "TR099") {
       console.log("[ussd-momo] TR099 — MoMo PIN prompt sent", { reference, channel })
-      return {
-        success: true,
-        reference,
-        provider: "moolre",
-        action: "PIN_PROMPT_SENT",
-        message: "MoMo PIN prompt sent to the customer's phone.",
-        data: data?.data || data,
-        moolreCode: code,
-      }
+      return moolrePaymentSuccess(reference, parsed, "PIN_PROMPT_SENT")
     }
 
-    if (otp && code === "TP14") {
+    if (otp && parsed.code === "TP14") {
       return {
         success: false,
         reference,
         message: "Invalid or expired verification code. Check the SMS and try again.",
         provider: "moolre",
-        moolreCode: code,
+        moolreCode: parsed.code,
+      }
+    }
+
+    // TP17 = SMS verification accepted. Same as USSD "Pay" — POST again WITHOUT otpcode to trigger TR099.
+    if (parsed.code === "TP17") {
+      const pinDelayMs = Number(process.env.USSD_MOMO_START_DELAY_MS) || 1500
+      console.log("[ussd-momo] TP17 — verification OK; triggering PIN prompt (USSD Pay step)", {
+        reference,
+        channel,
+        pinDelayMs,
+      })
+      await sleepMs(pinDelayMs)
+
+      /** @type {Record<string, unknown>} */
+      const pinPayload = { ...directDebitPayload }
+      delete pinPayload.otpcode
+
+      console.log("[ussd-momo] POST payment (pin prompt)", {
+        reference,
+        amount,
+        channel,
+        payer: payerPhone,
+        hasOtp: false,
+      })
+
+      const pinParsed = await parseMoolrePaymentPost(pinPayload, authHeaders)
+      if (!pinParsed.ok) {
+        console.error("[ussd-momo] PIN prompt failed after TP17", pinParsed.message, pinParsed.raw)
+        return {
+          success: false,
+          reference,
+          message: pinParsed.message || "Could not send MoMo PIN prompt after verification.",
+          provider: "moolre",
+          moolreCode: pinParsed.code || parsed.code,
+        }
+      }
+
+      console.log("[ussd-momo] pin prompt response", { code: pinParsed.code, message: pinParsed.message })
+
+      if (pinParsed.code === "TR099") {
+        console.log("[ussd-momo] TR099 — MoMo PIN prompt sent after TP17", { reference, channel })
+        return moolrePaymentSuccess(reference, pinParsed, "PIN_PROMPT_SENT")
+      }
+
+      if (pinParsed.code === "TP14") {
+        return moolrePaymentSuccess(reference, pinParsed, "OTP_REQUIRED")
+      }
+
+      return {
+        success: false,
+        reference,
+        provider: "moolre",
+        message: `Verification succeeded but Moolre did not send the PIN prompt (${pinParsed.code || "unknown"}).`,
+        moolreCode: pinParsed.code,
+        data: pinParsed.data,
       }
     }
 
     console.warn("[ussd-momo] unexpected Moolre success code — no PIN prompt registered", {
       reference,
-      code: code || "(empty)",
-      message: data?.message,
+      code: parsed.code || "(empty)",
+      message: parsed.message,
     })
     return {
       success: false,
       reference,
       provider: "moolre",
       message:
-        code === "TP14"
+        parsed.code === "TP14"
           ? "Complete Moolre SMS verification first, then try again."
-          : `Moolre did not start the payment (${code || "unknown"}). The customer will not receive a PIN prompt.`,
-      moolreCode: code,
-      data: data?.data || data,
+          : `Moolre did not start the payment (${parsed.code || "unknown"}). The customer will not receive a PIN prompt.`,
+      moolreCode: parsed.code,
+      data: parsed.data,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -10,6 +10,7 @@ import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
 import {
   formatPhoneNumber,
   generateAgentPaymentReference,
+  getMoolreUssdNetworkFromMsisdn,
   getNetworkFromMsisdn,
   initiateMoMoPayment,
   persistMoolreInitOnSession,
@@ -1010,10 +1011,12 @@ export function createCatalogRouter(deps) {
       })
 
       const network = getNetworkFromMsisdn(formattedPhone)
+      const moolreNetwork = getMoolreUssdNetworkFromMsisdn(formattedPhone)
       const momoResult = await initiateMoMoPayment(formattedPhone, priceGHS, sessionId, {
         packageName,
         reference: paymentReference,
         network,
+        moolreNetwork,
       })
 
       if (!momoResult?.success) {
@@ -1092,10 +1095,12 @@ export function createCatalogRouter(deps) {
       }
 
       const network = getNetworkFromMsisdn(phone)
+      const moolreNetwork = getMoolreUssdNetworkFromMsisdn(phone)
       const momoResult = await initiateMoMoPayment(phone, amount, String(paymentSession._id), {
         packageName: selected.name || "WiFi package",
         reference: paymentReference,
         network,
+        moolreNetwork,
         otpCode,
       })
 
