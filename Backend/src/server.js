@@ -216,6 +216,15 @@ async function main() {
 
   app.listen(PORT, () => {
     console.log(`API listening on http://127.0.0.1:${PORT}`)
+    console.info(
+      "Health:",
+      `GET /health`,
+      `| GET /health/ping`,
+      `| GET /api/health`,
+      `| GET /api/health/ping`,
+      `| GET /api/health/live`,
+      `| GET /api/health/ready`,
+    )
   })
 }
 

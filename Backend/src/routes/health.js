@@ -38,9 +38,17 @@ async function readinessHandler(_req, res) {
   }
 }
 
+/**
+ * Minimal probe — no DB check (for load balancers / uptime monitors).
+ */
+function pingHandler(_req, res) {
+  res.json({ ok: true, status: "ok" })
+}
+
 /** @param {import("express").Express} app */
 export function mountHealthRoutes(app) {
   const router = express.Router()
+  router.get("/ping", pingHandler)
   router.get("/live", livenessHandler)
   router.get("/ready", readinessHandler)
   /** Full check (same as ready for this app) */
@@ -48,4 +56,5 @@ export function mountHealthRoutes(app) {
 
   app.use("/api/health", router)
   app.get("/health", readinessHandler)
+  app.get("/health/ping", pingHandler)
 }
