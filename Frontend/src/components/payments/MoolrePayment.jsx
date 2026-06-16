@@ -19,9 +19,6 @@ const MOOLRE_FRAME_OFFSET_Y = 72
  *   paymentReference: string | null
  *   onCancel: () => void
  *   onSuccess: (payload: { reference: string, externalref: string }) => void
- *   onManualConfirm?: () => void
- *   manualConfirming?: boolean
- *   manualMessage?: string
  * }} props
  */
 export function MoolrePayment({
@@ -31,9 +28,6 @@ export function MoolrePayment({
   paymentReference,
   onCancel,
   onSuccess,
-  onManualConfirm,
-  manualConfirming = false,
-  manualMessage = "After approving the MoMo prompt on your phone, continue here.",
 }) {
   const iframeRef = React.useRef(/** @type {HTMLIFrameElement | null} */ (null))
   const successFiredRef = React.useRef(false)
@@ -168,26 +162,6 @@ export function MoolrePayment({
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#eef0f3]/95 px-6 text-center">
               <Loader2 className="size-10 animate-spin text-[#1a2b4a]" aria-hidden />
               <p className="text-sm font-medium text-[#1a1a1a]">Confirming payment…</p>
-            </div>
-          ) : null}
-          {onManualConfirm ? (
-            <div className="absolute inset-x-3 bottom-3 rounded-xl border border-black/10 bg-white/95 p-3 text-center shadow-lg">
-              <p className="mb-2 text-xs font-medium text-[#1a1a1a]">{manualMessage}</p>
-              <button
-                type="button"
-                className="inline-flex w-full items-center justify-center rounded-md bg-[#13294b] px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
-                disabled={manualConfirming}
-                onClick={onManualConfirm}
-              >
-                {manualConfirming ? (
-                  <>
-                    <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
-                    Checking payment…
-                  </>
-                ) : (
-                  "I have approved payment - Show my voucher"
-                )}
-              </button>
             </div>
           ) : null}
         </div>
