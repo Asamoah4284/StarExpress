@@ -1,5 +1,12 @@
 /** Base URL for API calls (empty = same origin, use Vite `/api` proxy in dev). */
 export function getApiBaseUrl() {
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname.toLowerCase()
+    if (host === "tabitacum.cloud" || host === "www.tabitacum.cloud" || host.endsWith(".vercel.app")) {
+      return ""
+    }
+  }
+
   const v = import.meta.env.VITE_API_BASE_URL
   return typeof v === "string" ? v : ""
 }
