@@ -180,25 +180,21 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     return { ok: false, status: "reserve_failed" }
   }
 
-  const sms = await ensureSaleVoucherSmsSent({
+  // Do not block the customer seeing their voucher on the SMS API. Moolre SMS can lag,
+  // so reserve the voucher and return success immediately while SMS sends in background.
+  sendVoucherSmsInBackground({
     sale: saleDoc,
     packages,
     sales,
     source: `captive-momo-${source}`,
+    paymentReference,
+    saleId,
   })
-  const smsSent = sms.smsSent === true
-  if (!smsSent) {
-    console.warn(`[captive-momo] ${source} sale kept but SMS not confirmed`, {
-      paymentReference,
-      saleId,
-      error: sms.error,
-    })
-  }
 
   const remaining = await vouchers.countDocuments(availFilter)
   await packages.updateOne({ _id: packageId }, { $set: { stockUnits: remaining } })
 
-  await markAgentPaymentPendingCompleted(pending, paymentReference, { saleId, smsSent })
+  await markAgentPaymentPendingCompleted(pending, paymentReference, { saleId, smsSent: false })
 
   try {
     await auditLogs.insertOne({
@@ -215,10 +211,41 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     paymentReference,
     saleId,
     voucherCode,
-    smsSent,
+    smsSent: false,
   })
 
-  return { ok: true, status: "success", saleId, voucherCode, smsSent }
+  return { ok: true, status: "success", saleId, voucherCode, smsSent: false }
+}
+
+/**
+ * @param {{
+ *   sale: import("mongodb").Document
+ *   packages: import("mongodb").Collection
+ *   sales: import("mongodb").Collection
+ *   source: string
+ *   paymentReference: string
+ *   saleId: string
+ * }} opts
+ */
+function sendVoucherSmsInBackground(opts) {
+  const { sale, packages, sales, source, paymentReference, saleId } = opts
+  void ensureSaleVoucherSmsSent({ sale, packages, sales, source })
+    .then((sms) => {
+      if (!sms.smsSent) {
+        console.warn(`[captive-momo] ${source} sale kept but SMS not confirmed`, {
+          paymentReference,
+          saleId,
+          error: sms.error,
+        })
+      }
+    })
+    .catch((err) => {
+      console.error(`[captive-momo] ${source} background SMS failed`, {
+        paymentReference,
+        saleId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
 }
 
 /**

@@ -32,6 +32,17 @@ export function createPortalRouter(deps) {
   const { locations, packages, vouchers, sales, auditLogs, agentPaymentPending } = deps
   const router = express.Router()
 
+  /**
+   * @param {import("mongodb").Document} sale
+   * @param {string} source
+   */
+  function queueVoucherSms(sale, source) {
+    if (sale?.smsSent === true) return
+    void ensureSaleVoucherSmsSent({ sale, packages, sales, source }).catch((err) => {
+      console.error(`[portal] ${source} background SMS failed`, err)
+    })
+  }
+
   router.get("/locations", async (_req, res) => {
     try {
       const items = await getLocationsWithStock(locations, vouchers)
@@ -167,12 +178,7 @@ export function createPortalRouter(deps) {
 
       let existingSale = await sales.findOne({ paymentReference })
       if (existingSale) {
-        const sms = await ensureSaleVoucherSmsSent({
-          sale: existingSale,
-          packages,
-          sales,
-          source: "portal-complete-idempotent",
-        })
+        queueVoucherSms(existingSale, "portal-complete-idempotent")
         return res.json({
           success: true,
           voucherCode: String(existingSale.voucherCode || ""),
@@ -180,7 +186,7 @@ export function createPortalRouter(deps) {
             typeof existingSale.packageType === "string" && existingSale.packageType.trim()
               ? existingSale.packageType.trim()
               : "WiFi",
-          smsSent: sms.smsSent === true,
+          smsSent: existingSale.smsSent === true,
           paymentReference,
           idempotent: true,
         })
@@ -262,6 +268,7 @@ export function createPortalRouter(deps) {
       if (!sale) {
         return res.json({ ready: false })
       }
+      queueVoucherSms(sale, "portal-status-idempotent")
 
       return res.json({
         ready: true,

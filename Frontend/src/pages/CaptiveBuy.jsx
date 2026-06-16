@@ -94,18 +94,24 @@ export default function CaptiveBuy() {
   React.useEffect(() => {
     if (!showMoolre || !moolreReference) return
     let cancelled = false
-    const id = setInterval(async () => {
+    /** @type {ReturnType<typeof setInterval> | null} */
+    let intervalId = null
+
+    const checkStatus = async () => {
       const status = await fetchPortalPaymentStatus(moolreReference)
       if (cancelled) return
       if (status.ok && status.ready) {
-        clearInterval(id)
+        if (intervalId) clearInterval(intervalId)
         setShowMoolre(false)
         navigate(`/portal-payment-success?externalref=${encodeURIComponent(moolreReference)}`)
       }
-    }, 4000)
+    }
+
+    void checkStatus()
+    intervalId = setInterval(() => void checkStatus(), 1500)
     return () => {
       cancelled = true
-      clearInterval(id)
+      if (intervalId) clearInterval(intervalId)
     }
   }, [showMoolre, moolreReference, navigate])
 
