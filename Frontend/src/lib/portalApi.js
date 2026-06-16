@@ -15,7 +15,20 @@ async function parseJsonResponse(path, init = {}) {
   if (init.body != null && headers["Content-Type"] == null) {
     headers["Content-Type"] = "application/json"
   }
-  const res = await fetch(url(path), { ...init, headers })
+  let res
+  try {
+    res = await fetch(url(path), { ...init, headers })
+  } catch {
+    return {
+      res: new Response(null, {
+        status: 503,
+        statusText: "Network error",
+      }),
+      data: {
+        error: "Could not reach the server. Check your internet connection or try again shortly.",
+      },
+    }
+  }
   let data = null
   try {
     data = await res.json()

@@ -40,13 +40,23 @@ function envTruthy(key) {
  * @returns {string[]}
  */
 function parseCorsOriginsList(raw) {
-  const fallback = ["http://localhost:5173", "http://127.0.0.1:5173"]
-  if (raw == null || String(raw).trim() === "") return fallback
+  const defaults = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://tabitacum.cloud",
+    "https://www.tabitacum.cloud",
+  ]
+  const fromFrontendUrl =
+    process.env.FRONTEND_URL && String(process.env.FRONTEND_URL).trim()
+      ? [String(process.env.FRONTEND_URL).trim().replace(/\/+$/, "")]
+      : []
+  const fallback = [...defaults, ...fromFrontendUrl]
+  if (raw == null || String(raw).trim() === "") return Array.from(new Set(fallback))
   const list = String(raw)
     .split(/[,;\n]+/)
     .map((x) => x.trim())
     .filter(Boolean)
-  return list.length ? list : fallback
+  return Array.from(new Set([...(list.length ? list : fallback), ...fromFrontendUrl, ...defaults]))
 }
 
 /**
