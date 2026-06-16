@@ -187,6 +187,10 @@ export default function CaptiveBuy() {
       setError(result.error)
       return
     }
+    if (!result.authorizationUrl) {
+      navigate(`/portal-payment-success?externalref=${encodeURIComponent(result.paymentReference)}`)
+      return
+    }
     setMoolreAuthUrl(result.authorizationUrl)
     setMoolreReference(result.paymentReference)
     setMoolreCallbackUrl(result.redirectUrl || null)

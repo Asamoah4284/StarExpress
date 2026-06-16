@@ -103,15 +103,14 @@ export async function initializePortalPayment(body) {
     }
   }
   const payload = data.data
-  if (!payload?.authorization_url) {
-    return { ok: false, error: "Payment gateway did not return a payment URL." }
-  }
   return {
     ok: true,
-    authorizationUrl: String(payload.authorization_url),
+    authorizationUrl: payload?.authorization_url ? String(payload.authorization_url) : "",
     paymentReference: String(payload.reference || ""),
     redirectUrl: String(payload.redirect_url || ""),
     amount: Number(payload.amount),
+    mode: String(payload.mode || ""),
+    message: String(payload.message || ""),
   }
 }
 
@@ -163,7 +162,7 @@ export async function completePortalPayment(paymentReference) {
  * @param {string} paymentReference
  */
 export async function completePortalPaymentWithRetry(paymentReference) {
-  const delays = [0, 1500, 2000, 2500, 3000, 3500, 4000, 5000]
+  const delays = [0, 2000, 3000, 4000, 5000, 7000, 10000, 15000, 20000, 30000]
   let lastError = "Payment verification failed"
 
   for (let attempt = 0; attempt < delays.length; attempt++) {

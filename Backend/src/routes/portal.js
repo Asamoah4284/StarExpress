@@ -1,8 +1,6 @@
 import express from "express"
-import { formatPhoneNumber } from "../lib/ussdHelpers.js"
+import { formatPhoneNumber, initiateMoMoPayment } from "../lib/ussdHelpers.js"
 import {
-  billingEmailFromPhone,
-  initializeMoolreEmbedLink,
   verifyMoolrePaymentWithRetry,
 } from "../lib/moolreEmbedPayment.js"
 import { checkMoolrePaymentStatus, scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
@@ -119,11 +117,6 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "Customer phone must be valid (at least 7 digits)." })
       }
 
-      const billingEmail = billingEmailFromPhone(customerPhone)
-      if (!billingEmail) {
-        return res.status(400).json({ error: "A valid customer phone is required to start MoMo payment." })
-      }
-
       const loc = await locations.findOne({ _id: locationId })
       if (!loc) return res.status(400).json({ error: "Unknown location." })
 
@@ -154,23 +147,16 @@ export function createPortalRouter(deps) {
         amount: priceGHS,
       })
 
-      // Use the shared backend redirect page (same as agent sales). That page posts a
-      // `moolre-payment-success` message to the parent window so the embedded iframe can
-      // detect success reliably, and it also reconciles captive payments server-side.
-      const init = await initializeMoolreEmbedLink({
-        amount: priceGHS,
-        email: billingEmail,
-        externalref: paymentReference,
-        metadata: {
-          packageId,
-          locationId,
-          orderType: "captive_sale",
-        },
+      const init = await initiateMoMoPayment(customerPhone, priceGHS, paymentReference, {
+        packageName: resolved.name || "WiFi package",
+        reference: paymentReference,
+        network: undefined,
+        moolreNetwork: null,
       })
 
-      if (!init.ok) {
+      if (!init.success) {
         await agentPaymentPending.deleteOne({ _id: paymentReference }).catch(() => {})
-        return res.status(400).json({ error: init.error || "Failed to initialize payment." })
+        return res.status(400).json({ error: init.message || "Failed to send MoMo prompt." })
       }
 
       console.log("[captive-momo] init ok", {
@@ -178,7 +164,8 @@ export function createPortalRouter(deps) {
         packageId,
         locationId,
         amount: priceGHS,
-        redirectUrl: init.redirect_url,
+        mode: "direct-debit",
+        moolreCode: init.moolreCode,
       })
 
       scheduleCaptivePaymentStatusPoll(paymentReference)
@@ -186,10 +173,12 @@ export function createPortalRouter(deps) {
       res.json({
         success: true,
         data: {
-          authorization_url: init.authorization_url,
+          authorization_url: null,
           reference: paymentReference,
-          redirect_url: init.redirect_url,
+          redirect_url: null,
           amount: priceGHS,
+          message: init.message || "Payment prompt sent. Enter your MoMo PIN to approve.",
+          mode: "direct_debit",
         },
       })
     } catch (err) {

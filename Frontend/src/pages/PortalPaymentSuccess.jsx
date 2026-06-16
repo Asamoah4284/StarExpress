@@ -82,7 +82,9 @@ export default function PortalPaymentSuccess() {
             <CardContent className="flex flex-col items-center gap-3 py-12">
               <Loader2 className="text-primary size-10 animate-spin" aria-hidden />
               <p className="text-sm font-medium">Confirming your payment…</p>
-              <p className="text-muted-foreground text-xs">This may take a few seconds.</p>
+              <p className="text-muted-foreground text-center text-xs">
+                Approve the MoMo prompt on your phone. Your voucher will appear here automatically.
+              </p>
             </CardContent>
           </Card>
         ) : null}
