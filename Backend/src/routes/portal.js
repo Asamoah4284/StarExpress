@@ -5,7 +5,7 @@ import {
   initializeMoolreEmbedLink,
   verifyMoolrePaymentWithRetry,
 } from "../lib/moolreEmbedPayment.js"
-import { checkMoolrePaymentStatus } from "../lib/moolrePaymentStatus.js"
+import { checkMoolrePaymentStatus, scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
 import {
   generateCaptivePaymentReference,
   isCaptivePaymentReference,
@@ -31,6 +31,48 @@ import { ensureSaleVoucherSmsSent } from "../lib/saleVoucherSms.js"
 export function createPortalRouter(deps) {
   const { locations, packages, vouchers, sales, auditLogs, agentPaymentPending } = deps
   const router = express.Router()
+
+  /**
+   * Same backup pattern as USSD: after Moolre creates the POS payment link, the backend
+   * checks payment status on a delay and fulfills the voucher sale even if the POS page
+   * never redirects or the browser is closed.
+   * @param {string} paymentReference
+   */
+  function scheduleCaptivePaymentStatusPoll(paymentReference) {
+    scheduleUssdPaymentStatusPoll(paymentReference, async (ref) => {
+      const existingSale = await sales.findOne({ paymentReference: ref })
+      if (existingSale) {
+        console.log("[captive-momo] poll idempotent sale exists", {
+          paymentReference: ref,
+          saleId: existingSale._id,
+        })
+        return true
+      }
+
+      const status = await checkMoolrePaymentStatus(ref)
+      console.log("[captive-momo] backup poll result", {
+        paymentReference: ref,
+        ok: status.ok,
+        isPaid: status.isPaid,
+        txStatusNum: status.txStatusNum,
+        code: status.code,
+        message: status.message || status.error,
+      })
+
+      if (!status.ok || !status.isPaid) return false
+
+      const outcome = await processCaptiveMomoPaymentSuccess({
+        pending: agentPaymentPending,
+        packages,
+        vouchers,
+        sales,
+        auditLogs,
+        paymentReference: ref,
+        source: "backup-poll",
+      })
+      return outcome.ok === true
+    })
+  }
 
   router.get("/locations", async (_req, res) => {
     try {
@@ -139,6 +181,8 @@ export function createPortalRouter(deps) {
         redirectUrl: init.redirect_url,
       })
 
+      scheduleCaptivePaymentStatusPoll(paymentReference)
+
       res.json({
         success: true,
         data: {
@@ -242,9 +286,21 @@ export function createPortalRouter(deps) {
       }
 
       let sale = await sales.findOne({ paymentReference })
+      console.log("[captive-momo] status check", {
+        paymentReference,
+        saleExists: Boolean(sale),
+      })
 
       if (!sale) {
         const status = await checkMoolrePaymentStatus(paymentReference)
+        console.log("[captive-momo] status poll result", {
+          paymentReference,
+          ok: status.ok,
+          isPaid: status.isPaid,
+          txStatusNum: status.txStatusNum,
+          code: status.code,
+          message: status.message || status.error,
+        })
         if (status.ok && status.isPaid) {
           await processCaptiveMomoPaymentSuccess({
             pending: agentPaymentPending,

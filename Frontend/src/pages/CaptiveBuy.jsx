@@ -15,6 +15,7 @@ import {
 import { MoolrePayment } from "@/components/payments/MoolrePayment.jsx"
 import { getDefaultAppName } from "@/lib/env.js"
 import {
+  completePortalPaymentWithRetry,
   fetchPortalLocations,
   fetchPortalPackages,
   fetchPortalPaymentStatus,
@@ -61,6 +62,8 @@ export default function CaptiveBuy() {
   const [moolreAuthUrl, setMoolreAuthUrl] = React.useState(/** @type {string | null} */ (null))
   const [moolreReference, setMoolreReference] = React.useState(/** @type {string | null} */ (null))
   const [moolreCallbackUrl, setMoolreCallbackUrl] = React.useState(/** @type {string | null} */ (null))
+  const [checkingPayment, setCheckingPayment] = React.useState(false)
+  const [paymentNotice, setPaymentNotice] = React.useState("")
 
   const packagePageCount = Math.max(1, Math.ceil(packages.length / PACKAGES_PER_PAGE))
   const visiblePackages = packages.slice(
@@ -88,26 +91,50 @@ export default function CaptiveBuy() {
     }
   }, [])
 
+  const goToPaymentSuccess = React.useCallback(
+    (ref) => {
+      setShowMoolre(false)
+      navigate(`/portal-payment-success?externalref=${encodeURIComponent(ref)}`)
+    },
+    [navigate],
+  )
+
+  const confirmPortalPayment = React.useCallback(
+    async (ref = moolreReference) => {
+      if (!ref || checkingPayment) return
+      setCheckingPayment(true)
+      setPaymentNotice("")
+      const result = await completePortalPaymentWithRetry(ref)
+      if (result.ok) {
+        goToPaymentSuccess(ref)
+        return
+      }
+      setPaymentNotice(result.error || "Payment is not confirmed yet. If you approved it, try again in a moment.")
+      setCheckingPayment(false)
+    },
+    [checkingPayment, goToPaymentSuccess, moolreReference],
+  )
+
   // While the Moolre POS iframe is open, poll our backend so the customer gets their code the
   // moment the payment is confirmed (via webhook or our own status check) — even if Moolre's POS
   // page is stuck on "processing" or shows a transaction-timeout dialog.
   React.useEffect(() => {
     if (!showMoolre || !moolreReference) return
     let cancelled = false
-    const id = setInterval(async () => {
+    const check = async () => {
       const status = await fetchPortalPaymentStatus(moolreReference)
       if (cancelled) return
       if (status.ok && status.ready) {
-        clearInterval(id)
-        setShowMoolre(false)
-        navigate(`/portal-payment-success?externalref=${encodeURIComponent(moolreReference)}`)
+        goToPaymentSuccess(moolreReference)
       }
-    }, 4000)
+    }
+    void check()
+    const id = setInterval(() => void check(), 3000)
     return () => {
       cancelled = true
       clearInterval(id)
     }
-  }, [showMoolre, moolreReference, navigate])
+  }, [goToPaymentSuccess, showMoolre, moolreReference])
 
   const handleLocationContinue = async () => {
     if (!locationId) {
@@ -163,6 +190,7 @@ export default function CaptiveBuy() {
     setMoolreAuthUrl(result.authorizationUrl)
     setMoolreReference(result.paymentReference)
     setMoolreCallbackUrl(result.redirectUrl || null)
+    setPaymentNotice("")
     setShowMoolre(true)
     setPaying(false)
   }
@@ -171,12 +199,11 @@ export default function CaptiveBuy() {
     response /** @type {{ reference?: string, externalref?: string }} */,
   ) => {
     const ref = response?.reference || response?.externalref || moolreReference
-    setShowMoolre(false)
     if (!ref) {
       setError("Payment could not be confirmed. Use Retrieve voucher with your phone number.")
       return
     }
-    navigate(`/portal-payment-success?externalref=${encodeURIComponent(ref)}`)
+    goToPaymentSuccess(ref)
   }
 
   const handleMoolreCancel = () => {
@@ -184,6 +211,8 @@ export default function CaptiveBuy() {
     setMoolreAuthUrl(null)
     setMoolreReference(null)
     setMoolreCallbackUrl(null)
+    setCheckingPayment(false)
+    setPaymentNotice("")
     setPaying(false)
   }
 
@@ -416,6 +445,12 @@ export default function CaptiveBuy() {
         paymentReference={moolreReference}
         onCancel={handleMoolreCancel}
         onSuccess={handleMoolreSuccess}
+        onManualConfirm={() => void confirmPortalPayment()}
+        manualConfirming={checkingPayment}
+        manualMessage={
+          paymentNotice ||
+          "Approve the MoMo prompt on your phone, then tap below. You do not need Moolre's status button."
+        }
       />
     </div>
   )
