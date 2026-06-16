@@ -1,9 +1,13 @@
-import { checkMoolrePaymentStatus } from "./moolrePaymentStatus.js"
 import {
   isAgentPaymentReference,
   markAgentPaymentPendingCompleted,
   processAgentMomoPaymentSuccess,
 } from "./agentMomoPayment.js"
+import {
+  isCaptivePaymentReference,
+  processCaptiveMomoPaymentSuccess,
+} from "./captiveMomoPayment.js"
+import { checkMoolrePaymentStatus } from "./moolrePaymentStatus.js"
 
 /**
  * @param {{
@@ -33,6 +37,12 @@ export function createMoolrePaymentSuccessHandler(deps) {
     if (reference && isAgentPaymentReference(reference)) {
       void reconcileAgentPaymentOnRedirect(reference, deps).catch((err) => {
         console.error("[moolre-redirect] agent reconcile failed", reference, err)
+      })
+    }
+
+    if (reference && isCaptivePaymentReference(reference)) {
+      void reconcileCaptivePaymentOnRedirect(reference, deps).catch((err) => {
+        console.error("[moolre-redirect] captive reconcile failed", reference, err)
       })
     }
 
@@ -117,6 +127,52 @@ async function reconcileAgentPaymentOnRedirect(paymentReference, deps) {
     source: "redirect",
   })
   console.log("[moolre-redirect] agent reconcile outcome", { paymentReference, outcome })
+}
+
+/**
+ * Complete captive sale server-side when Moolre redirects to backend (backup path).
+ * Captive portal normally redirects to frontend; this handles misconfigured redirects.
+ * @param {string} paymentReference
+ * @param {{
+ *   agentPaymentPending: import("mongodb").Collection
+ *   packages: import("mongodb").Collection
+ *   vouchers: import("mongodb").Collection
+ *   sales: import("mongodb").Collection
+ *   auditLogs: import("mongodb").Collection
+ * }} deps
+ */
+async function reconcileCaptivePaymentOnRedirect(paymentReference, deps) {
+  const existing = await deps.sales.findOne({ paymentReference })
+  if (existing) {
+    console.log("[moolre-redirect] captive sale already exists", { paymentReference, saleId: existing._id })
+    await markAgentPaymentPendingCompleted(deps.agentPaymentPending, paymentReference, {
+      saleId: String(existing._id),
+      smsSent: existing.smsSent === true,
+    })
+    return
+  }
+
+  const status = await checkMoolrePaymentStatus(paymentReference)
+  console.log("[moolre-redirect] captive payment status", {
+    paymentReference,
+    ok: status.ok,
+    isPaid: status.isPaid,
+    txStatusNum: status.txStatusNum,
+    code: status.code,
+  })
+
+  if (!status.ok || !status.isPaid) return
+
+  const outcome = await processCaptiveMomoPaymentSuccess({
+    pending: deps.agentPaymentPending,
+    packages: deps.packages,
+    vouchers: deps.vouchers,
+    sales: deps.sales,
+    auditLogs: deps.auditLogs,
+    paymentReference,
+    source: "redirect",
+  })
+  console.log("[moolre-redirect] captive reconcile outcome", { paymentReference, outcome })
 }
 
 /**

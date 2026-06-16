@@ -29,18 +29,23 @@ export function generateAgentPaymentReference(suffix = "") {
  *   email: string
  *   externalref: string
  *   metadata?: Record<string, string>
+ *   redirectUrl?: string
  * }} opts
  */
 export async function initializeMoolreEmbedLink(opts) {
-  const { amount, email, externalref, metadata = {} } = opts
+  const { amount, email, externalref, metadata = {}, redirectUrl: redirectOverride } = opts
 
   if (!MOOLRE_ACCOUNT_NUMBER || !process.env.MOOLRE_USERNAME || !process.env.MOOLRE_PUBLIC_KEY) {
     return { ok: false, error: "Payment gateway not configured. Contact support." }
   }
 
   const webhookUrl = resolveMoolreWebhookUrl()
-  const redirectBase = resolveMoolreRedirectUrl()
-  const redirectUrl = `${redirectBase}${redirectBase.includes("?") ? "&" : "?"}externalref=${encodeURIComponent(externalref)}`
+  const redirectBase = redirectOverride
+    ? String(redirectOverride).trim()
+    : resolveMoolreRedirectUrl()
+  const redirectUrl = redirectOverride
+    ? redirectBase
+    : `${redirectBase}${redirectBase.includes("?") ? "&" : "?"}externalref=${encodeURIComponent(externalref)}`
 
   console.log("[moolre-init] embed/link request", {
     externalref,

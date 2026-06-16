@@ -13,13 +13,13 @@ import { createUssdSessionStore } from "../lib/ussdSessionStore.js"
 import { checkMoolrePaymentStatus, scheduleUssdPaymentStatusPoll } from "../lib/moolrePaymentStatus.js"
 import { getMoolreWebhookPayload, parseMoolrePaymentEvent } from "../lib/moolreWebhook.js"
 import {
-  buildLocationAvailabilityFilter,
-  buildPackageAvailabilityFilter,
   fulfillUssdVoucherSale,
 } from "../services/voucherSaleFulfillment.js"
-import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { sendUssdVoucherSms } from "../services/ussdVoucherSms.js"
 import { isAgentPaymentReference, processAgentMomoPaymentSuccess } from "../lib/agentMomoPayment.js"
+import { isCaptivePaymentReference, processCaptiveMomoPaymentSuccess } from "../lib/captiveMomoPayment.js"
+import { getLocationsWithStock, getPackagesForLocation } from "../services/portalCatalog.js"
+import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
 
 // Upper cap on how many active packages we fetch per location. USSD sessions are short-lived
 // so this only bounds the DB result size — the actual menu is paginated below.
@@ -75,6 +75,19 @@ export function createUssdRouter(deps) {
     if (isAgentPaymentReference(paymentReference)) {
       console.log(`[ussd-pay] ${source} routing agent MoMo ref`, paymentReference)
       return processAgentMomoPaymentSuccess({
+        pending: agentPaymentPending,
+        packages,
+        vouchers,
+        sales,
+        auditLogs,
+        paymentReference,
+        source,
+      })
+    }
+
+    if (isCaptivePaymentReference(paymentReference)) {
+      console.log(`[ussd-pay] ${source} routing captive MoMo ref`, paymentReference)
+      return processCaptiveMomoPaymentSuccess({
         pending: agentPaymentPending,
         packages,
         vouchers,
@@ -152,74 +165,12 @@ export function createUssdRouter(deps) {
     return `WELCOME TO TABITACUM-WIFI\n1) Buy voucher\n2) Retrieve voucher\n3) Exit\n`
   }
 
-  // How many of the caller's recent vouchers to surface when they pick "Retrieve voucher".
-  // Keep small so the response fits one USSD turn (~160 chars).
-  const RETRIEVE_VOUCHER_LIMIT = 3
-
-  /**
-   * Match a sale's stored `customerPhone` whether it was saved by USSD (E.164-without-plus,
-   * e.g. "233241234567") or typed by an admin in any of "0241234567", "+233241234567", or
-   * with spaces in between. We match on the trailing 9 national digits with optional
-   * non-digit separators so all of those formats hit.
-   *
-   * @param {string} formattedPhone The output of `formatPhoneNumber` (e.g. "233241234567").
-   */
-  function customerPhoneTrailingDigitsRegex(formattedPhone) {
-    const national = String(formattedPhone || "").slice(-9)
-    if (national.length < 7) return null
-    const pattern = national.split("").join("\\D*")
-    return new RegExp(`${pattern}$`)
-  }
-
-  /**
-   * Compact date label for USSD output: "26 May".
-   * Accepts ISO strings ("2026-05-26..."), "YYYY-MM-DD", or anything Date can parse.
-   * @param {unknown} value
-   */
-  function formatVoucherDateLabel(value) {
-    if (!value) return ""
-    const d = new Date(String(value))
-    if (Number.isNaN(d.getTime())) {
-      const m = String(value).match(/(\d{4})-(\d{2})-(\d{2})/)
-      if (!m) return ""
-      const day = Number(m[3])
-      const monthIdx = Number(m[2]) - 1
-      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-      return `${day} ${months[monthIdx] || ""}`.trim()
-    }
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    return `${d.getDate()} ${months[d.getMonth()]}`
-  }
-
-  /**
-   * Look up the caller's most recent voucher sales by phone. Sales without a `voucherCode`
-   * (e.g. cancelled or failed fulfilment) are filtered out.
-   * @param {string} formattedPhone
-   */
-  async function findRecentVouchersForPhone(formattedPhone) {
-    const regex = customerPhoneTrailingDigitsRegex(formattedPhone)
-    if (!regex) return []
-    const docs = await sales
-      .find({
-        customerPhone: { $regex: regex },
-        voucherCode: { $exists: true, $nin: [null, ""] },
-      })
-      .sort({ date: -1, _id: -1 })
-      .limit(RETRIEVE_VOUCHER_LIMIT)
-      .toArray()
-    return docs.map((d) => ({
-      voucherCode: String(d.voucherCode || "").trim(),
-      packageName: typeof d.packageType === "string" && d.packageType.trim() ? d.packageType.trim() : "WiFi",
-      date: formatVoucherDateLabel(d.date),
-    }))
-  }
-
   /**
    * Build the "Retrieve voucher" USSD response from the caller's recent sales.
    * @param {string} formattedPhone
    */
   async function buildRetrieveVoucherResponse(formattedPhone) {
-    const items = await findRecentVouchersForPhone(formattedPhone)
+    const items = await findRecentVouchersForPhone(sales, formattedPhone)
     if (items.length === 0) {
       return {
         message:
@@ -242,69 +193,14 @@ export function createUssdRouter(deps) {
     return { message: lines.join("\n"), reply: false }
   }
 
-  /**
-   * Wifi locations with at least one unused voucher (all sites — user picks in menu).
-   * @returns {Promise<{ locationId: string, name: string }[]>}
-   */
+  /** @returns {Promise<{ locationId: string, name: string }[]>} */
   async function getLocationsForUssdMenu() {
-    const locDocs = await locations.find({}).sort({ name: 1 }).limit(MAX_LOCATIONS_IN_MENU).toArray()
-    /** @type {{ locationId: string, name: string }[]} */
-    const list = []
-    for (const loc of locDocs) {
-      const locationId = String(loc._id)
-      const remaining = await vouchers.countDocuments(buildLocationAvailabilityFilter(locationId))
-      if (remaining > 0) {
-        list.push({
-          locationId,
-          name: typeof loc.name === "string" && loc.name.trim() ? loc.name.trim() : locationId,
-        })
-      }
-    }
-    return list
+    return getLocationsWithStock(locations, vouchers, { maxLocations: MAX_LOCATIONS_IN_MENU })
   }
 
-  /**
-   * @param {string} locationId
-   */
+  /** @param {string} locationId */
   async function getPackagesForUssdMenu(locationId) {
-    if (!locationId) return []
-
-    // Fetch by price ascending so cheaper plans are surfaced first in the USSD menu.
-    const activePkgs = await packages
-      .find({ status: "Active" })
-      .sort({ priceGHS: 1, name: 1 })
-      .limit(MAX_PACKAGES_IN_MENU)
-      .toArray()
-
-    /** @type {{ packageId: string, name: string, priceGHS: number, dataLimit: string, remaining: number }[]} */
-    const list = []
-    for (const pkg of activePkgs) {
-      const packageId = String(pkg._id)
-      const resolved = resolvePackageForLocation(pkg, locationId)
-      if (resolved.status && resolved.status !== "Active") continue
-      const remaining = await vouchers.countDocuments(buildPackageAvailabilityFilter(packageId, locationId))
-      if (remaining > 0) {
-        list.push({
-          packageId,
-          name: resolved.name && resolved.name.trim() ? resolved.name.trim() : packageId,
-          priceGHS: resolved.priceGHS,
-          dataLimit: resolved.dataLimit,
-          remaining,
-        })
-      }
-    }
-    // Resolve-aware sort: handles any leftover legacy per-location override prices that may differ
-    // from the base price returned by the Mongo sort above.
-    list.sort((a, b) => {
-      const pa = Number(a.priceGHS)
-      const pb = Number(b.priceGHS)
-      if (!Number.isFinite(pa) && !Number.isFinite(pb)) return 0
-      if (!Number.isFinite(pa)) return 1
-      if (!Number.isFinite(pb)) return -1
-      if (pa !== pb) return pa - pb
-      return String(a.name).localeCompare(String(b.name))
-    })
-    return list
+    return getPackagesForLocation(packages, vouchers, locationId, { maxPackages: MAX_PACKAGES_IN_MENU })
   }
 
   // Hard cap on how many characters of a package name we render in the USSD menu.
@@ -430,6 +326,16 @@ export function createUssdRouter(deps) {
         shortcode: USSD_SHORTCODE,
         timestamp: new Date().toISOString(),
       })
+    }
+  })
+
+  router.get("/locations", async (_req, res) => {
+    try {
+      const locationList = await getLocationsForUssdMenu()
+      res.json({ locations: locationList })
+    } catch (err) {
+      console.error("[ussd] GET /locations", err)
+      res.status(500).json({ error: "Failed to load locations." })
     }
   })
 

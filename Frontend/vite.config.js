@@ -24,6 +24,10 @@ export default defineConfig(({ mode }) => {
           target: backendTarget,
           changeOrigin: true,
         },
+        "/ussd": {
+          target: backendTarget,
+          changeOrigin: true,
+        },
       },
     },
   }

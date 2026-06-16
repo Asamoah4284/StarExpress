@@ -18,12 +18,18 @@ import Vouchers from "@/pages/Vouchers.jsx"
 import RevenueSplit from "@/pages/RevenueSplit.jsx"
 import AgentCommissions from "@/pages/AgentCommissions.jsx"
 import AgentPaymentSuccess from "@/pages/AgentPaymentSuccess.jsx"
+import CaptiveBuy from "@/pages/CaptiveBuy.jsx"
+import CaptiveRetrieveVoucher from "@/pages/CaptiveRetrieveVoucher.jsx"
+import PortalPaymentSuccess from "@/pages/PortalPaymentSuccess.jsx"
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
+      <Route path="/buy" element={<CaptiveBuy />} />
+      <Route path="/portal-payment-success" element={<PortalPaymentSuccess />} />
+      <Route path="/retrieve-voucher" element={<CaptiveRetrieveVoucher />} />
       <Route path="/agent-payment-success" element={<AgentPaymentSuccess />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<MainLayout />}>

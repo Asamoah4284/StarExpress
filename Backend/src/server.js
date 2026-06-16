@@ -24,6 +24,7 @@ import { createCatalogRouter } from "./routes/catalog.js"
 import { createSettingsRouter } from "./routes/settings.js"
 import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
 import { createUssdRouter } from "./routes/ussd.js"
+import { createPortalRouter } from "./routes/portal.js"
 import { createMoolrePaymentSuccessHandler } from "./lib/moolrePaymentSuccessPage.js"
 
 /** @param {string} key */
@@ -158,6 +159,19 @@ async function main() {
     locations: getLocationsCollection(),
   })
   app.use("/ussd", ussdRouter)
+
+  app.use(
+    "/api/portal",
+    createPortalRouter({
+      locations: getLocationsCollection(),
+      packages: getPackagesCollection(),
+      vouchers: getVouchersCollection(),
+      sales: getSalesCollection(),
+      auditLogs: getAuditLogsCollection(),
+      agentPaymentPending: getAgentPaymentPendingCollection(),
+    }),
+  )
+
   // Moolre redirects the embed iframe here after customer approves MoMo (must be public HTTPS).
   app.get(
     "/api/moolre/payment-success",
