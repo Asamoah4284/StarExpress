@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -26,7 +27,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { importVouchersBatch } from "@/lib/api.js"
+import { importVouchersBatch, setLocationPromo } from "@/lib/api.js"
 import { parseCsv } from "@/lib/parseCsv.js"
 import { isHiddenVoucherThroughputColumnKey } from "@/lib/voucherColumnDisplay.js"
 import { ROLE_ADMIN } from "@/lib/roles.js"
@@ -172,6 +173,12 @@ export default function Vouchers() {
   const [singleVoucherId, setSingleVoucherId] = React.useState("")
   const [singleSaving, setSingleSaving] = React.useState(false)
   const [singleFeedback, setSingleFeedback] = React.useState(/** @type {{ kind: "success" | "error"; text: string } | null} */ (null))
+  const [promoCode, setPromoCode] = React.useState("")
+  const [promoMessage, setPromoMessage] = React.useState("")
+  const [promoPercent, setPromoPercent] = React.useState("0")
+  const [promoActive, setPromoActive] = React.useState(false)
+  const [promoSaving, setPromoSaving] = React.useState(false)
+  const [promoFeedback, setPromoFeedback] = React.useState(/** @type {{ kind: "success" | "error"; text: string } | null} */ (null))
   const isAdmin = user?.role === ROLE_ADMIN
 
   const locations = React.useMemo(() => {
@@ -190,12 +197,81 @@ export default function Vouchers() {
   const packageReady = Boolean(selectedPackageId.trim())
   const assignReady = locationReady && packageReady
 
+  const selectedLocation = React.useMemo(
+    () => locations.find((l) => l.id === selectedLocationId) ?? null,
+    [locations, selectedLocationId],
+  )
+
   React.useEffect(() => {
     cancelledRef.current = false
     return () => {
       cancelledRef.current = true
     }
   }, [])
+
+  // Load the selected location's saved promo into the editor only when the
+  // location actually changes — not on every catalog refetch (which would wipe
+  // the success message and any in-progress edits after a save).
+  const syncedPromoLocationRef = React.useRef(/** @type {string | null} */ (null))
+  React.useEffect(() => {
+    if (syncedPromoLocationRef.current === selectedLocationId) return
+    syncedPromoLocationRef.current = selectedLocationId
+    const promo = selectedLocation?.promo ?? null
+    setPromoCode(promo?.code ?? "")
+    setPromoMessage(promo?.message ?? "")
+    setPromoPercent(promo?.percentOff != null ? String(promo.percentOff) : "0")
+    setPromoActive(promo?.active === true)
+    setPromoFeedback(null)
+  }, [selectedLocationId, selectedLocation])
+
+  const savePromo = React.useCallback(async () => {
+    if (!token || !isAdmin) return
+    const locId = selectedLocationId.trim()
+    if (!locId) {
+      setPromoFeedback({ kind: "error", text: "Select a location first." })
+      return
+    }
+    const code = promoCode.trim()
+    const pctNum = Math.round(Number(promoPercent))
+    if (!Number.isFinite(pctNum) || pctNum < 0 || pctNum > 100) {
+      setPromoFeedback({ kind: "error", text: "Percent off must be a whole number between 0 and 100." })
+      return
+    }
+    if (promoActive && !code) {
+      setPromoFeedback({ kind: "error", text: "Enter a promo code before turning the promo on." })
+      return
+    }
+    setPromoSaving(true)
+    setPromoFeedback(null)
+    try {
+      const out = await setLocationPromo(token, locId, {
+        code,
+        message: promoMessage.trim(),
+        active: promoActive,
+        percentOff: pctNum,
+      })
+      if (!out.ok) {
+        setPromoFeedback({ kind: "error", text: out.error })
+        return
+      }
+      await queryClient.invalidateQueries({ queryKey: ["catalog", token] })
+      await queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
+      const cleared = !code && !promoMessage.trim()
+      const discountText = pctNum > 0 ? ` Buyers who enter ${code} get ${pctNum}% off.` : ""
+      setPromoFeedback({
+        kind: "success",
+        text: cleared
+          ? "Promo cleared for this location."
+          : promoActive
+            ? `Promo saved and is now visible to buyers (if promos are enabled in Settings).${discountText}`
+            : `Promo saved. It stays hidden until you turn it on.${discountText}`,
+      })
+    } catch (e) {
+      setPromoFeedback({ kind: "error", text: e instanceof Error ? e.message : "Request failed." })
+    } finally {
+      setPromoSaving(false)
+    }
+  }, [token, isAdmin, selectedLocationId, promoCode, promoMessage, promoPercent, promoActive, queryClient])
 
   const addFiles = React.useCallback(async (fileList) => {
     const list = fileList ? Array.from(fileList) : []
@@ -626,6 +702,124 @@ export default function Vouchers() {
           </Tabs>
         </CardContent>
       </Card>
+
+      {isAdmin ? (
+        <Card className="border-border bg-card shadow-none ring-1 ring-border">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base font-semibold tracking-tight">Promo code (per location)</CardTitle>
+            <CardDescription>
+              Show a promo code and short message to buyers on the public buy page for the selected{" "}
+              <strong>location</strong>. Turn it on here, and make sure <strong>Show promos</strong> is enabled in{" "}
+              <strong>Settings</strong>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 pt-2">
+            {!locationReady ? (
+              <p className="text-muted-foreground text-sm">Select a location above to set its promo.</p>
+            ) : (
+              <>
+                <p className="text-muted-foreground text-xs">
+                  Editing promo for <span className="text-foreground font-medium">{selectedLocation?.name}</span>.
+                </p>
+                <div className="max-w-md space-y-2">
+                  <Label htmlFor="promo-code">Promo code</Label>
+                  <Input
+                    id="promo-code"
+                    value={promoCode}
+                    onChange={(e) => setPromoCode(e.target.value)}
+                    placeholder="e.g. FREEHOUR"
+                    maxLength={64}
+                    autoComplete="off"
+                    disabled={promoSaving}
+                  />
+                </div>
+                <div className="max-w-md space-y-2">
+                  <Label htmlFor="promo-message">Message (optional)</Label>
+                  <textarea
+                    id="promo-message"
+                    value={promoMessage}
+                    onChange={(e) => setPromoMessage(e.target.value)}
+                    maxLength={280}
+                    rows={3}
+                    placeholder="e.g. Show this code at the front desk for a free hour of WiFi."
+                    disabled={promoSaving}
+                    className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 flex min-h-20 w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none transition-[color,box-shadow] focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <p className="text-muted-foreground text-xs tabular-nums">{promoMessage.length}/280</p>
+                </div>
+                <div className="max-w-md space-y-2">
+                  <Label htmlFor="promo-percent">Percent off (%)</Label>
+                  <Input
+                    id="promo-percent"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={promoPercent}
+                    onChange={(e) => setPromoPercent(e.target.value)}
+                    disabled={promoSaving}
+                    className="max-w-[8rem]"
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    Buyers who enter this code at checkout pay this much less. Leave at{" "}
+                    <strong>0</strong> for a display-only promo (code + message, no discount). Online
+                    payment needs a non-zero total, so 100% off can't be purchased through MoMo.
+                  </p>
+                </div>
+                <div className="border-border flex max-w-md items-center justify-between gap-4 rounded-lg border px-4 py-3">
+                  <div className="space-y-0.5">
+                    <p className="text-sm font-medium">Show this promo to buyers</p>
+                    <p className="text-muted-foreground text-xs">Off keeps it saved but hidden.</p>
+                  </div>
+                  <Switch
+                    checked={promoActive}
+                    onCheckedChange={setPromoActive}
+                    disabled={promoSaving}
+                    aria-label="Toggle promo visibility for this location"
+                  />
+                </div>
+                {promoFeedback ? (
+                  <p
+                    className={cn(
+                      "max-w-md rounded-md border px-3 py-2 text-sm",
+                      promoFeedback.kind === "error"
+                        ? "text-destructive border-destructive/30 bg-destructive/5"
+                        : "text-muted-foreground border-border bg-muted/30",
+                    )}
+                    role={promoFeedback.kind === "error" ? "alert" : "status"}
+                  >
+                    {promoFeedback.text}
+                  </p>
+                ) : null}
+                <div className="flex items-center gap-2">
+                  <Button type="button" onClick={() => void savePromo()} disabled={promoSaving || !locationReady}>
+                    {promoSaving ? "Saving…" : "Save promo"}
+                  </Button>
+                  {promoCode || promoMessage ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="text-muted-foreground"
+                      disabled={promoSaving}
+                      onClick={() => {
+                        setPromoCode("")
+                        setPromoMessage("")
+                        setPromoActive(false)
+                      }}
+                    >
+                      Clear fields
+                    </Button>
+                  ) : null}
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  Tip: clear both fields and Save to remove the promo entirely.
+                </p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   )
 }

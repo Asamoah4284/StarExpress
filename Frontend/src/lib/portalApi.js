@@ -93,21 +93,37 @@ export async function fetchPortalPackages(locationId) {
   if (!res.ok) {
     return { ok: false, error: data?.error || res.statusText || "Failed to load packages." }
   }
+  const promoRaw = data?.promo
+  const promo =
+    promoRaw && typeof promoRaw === "object" && typeof promoRaw.code === "string" && promoRaw.code.trim()
+      ? {
+          code: String(promoRaw.code).trim(),
+          message: String(promoRaw.message || "").trim(),
+          percentOff: Number.isFinite(Number(promoRaw.percentOff)) ? Number(promoRaw.percentOff) : 0,
+        }
+      : null
   return {
     ok: true,
     locationId: String(data?.locationId || locationId),
     locationName: String(data?.locationName || ""),
     packages: Array.isArray(data?.packages) ? data.packages : [],
+    promo,
   }
 }
 
 /**
- * @param {{ locationId: string, packageId: string, customerPhone: string }} body
+ * @param {{ locationId: string, packageId: string, customerPhone: string, promoCode?: string }} body
  */
 export async function initializePortalPayment(body) {
+  const payloadBody = {
+    locationId: body.locationId,
+    packageId: body.packageId,
+    customerPhone: body.customerPhone,
+    ...(body.promoCode ? { promoCode: body.promoCode } : {}),
+  }
   const { res, data } = await parseJsonResponse("/api/portal/payments/initialize", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify(payloadBody),
   })
   if (!res.ok || !data || data.success !== true) {
     return {
@@ -125,6 +141,8 @@ export async function initializePortalPayment(body) {
     paymentReference: String(payload.reference || ""),
     redirectUrl: String(payload.redirect_url || ""),
     amount: Number(payload.amount),
+    originalAmount: Number(payload.originalAmount ?? payload.amount),
+    promoPercentOff: Number(payload.promoPercentOff ?? 0),
   }
 }
 

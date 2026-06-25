@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 const ROUTE_TITLES = {
   "/": "Dashboard",
   "/sales-history": "Sales History",
+  "/location-customers": "Customers",
   "/reports": "Reports",
   "/revenue-split": "Revenue split",
   "/packages": "Packages",

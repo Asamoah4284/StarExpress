@@ -18,6 +18,9 @@ export function useAppSettings() {
         appName: r.appName,
         companyName: r.companyName,
         companyLogoUrl: r.companyLogoUrl ?? null,
+        alertPhone: typeof r.alertPhone === "string" ? r.alertPhone : "",
+        purchaseAlertsEnabled: typeof r.purchaseAlertsEnabled === "boolean" ? r.purchaseAlertsEnabled : true,
+        promosVisible: typeof r.promosVisible === "boolean" ? r.promosVisible : true,
       }
     },
     enabled: authReady && Boolean(token),

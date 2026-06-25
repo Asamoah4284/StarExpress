@@ -1,8 +1,10 @@
 const GLOBAL_SETTINGS_ID = "global"
 const MAX_LABEL_LENGTH = 120
 const MAX_LOGO_DATA_URL_LENGTH = 600_000
+const MAX_ALERT_PHONE_LENGTH = 200
 
 const LOGO_DATA_URL_RE = /^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i
+const ALERT_PHONE_RE = /^[0-9+\-(),\s]+$/
 
 /** @returns {string} */
 export function defaultAppName() {
@@ -40,6 +42,31 @@ export function normalizeCompanyLogoUrl(value) {
   }
   if (trimmed.length > MAX_LOGO_DATA_URL_LENGTH) {
     throw new Error("Logo file is too large. Use an image under 400 KB.")
+  }
+  return trimmed
+}
+
+/**
+ * Default alert phone(s) from env (comma/space separated). Empty when unset.
+ * @returns {string}
+ */
+export function defaultAlertPhone() {
+  const raw = process.env.ADMIN_ALERT_PHONE
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_ALERT_PHONE_LENGTH) : ""
+}
+
+/**
+ * Normalize the alert phone field.
+ * @param {unknown} value
+ * @returns {string | undefined} `""` clears it, a string sets it, `undefined` = omit from patch.
+ */
+export function normalizeAlertPhone(value) {
+  if (value === null || value === "") return ""
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim().slice(0, MAX_ALERT_PHONE_LENGTH)
+  if (!trimmed) return ""
+  if (!ALERT_PHONE_RE.test(trimmed)) {
+    throw new Error("Alert phone can only contain digits, +, spaces, commas, and hyphens.")
   }
   return trimmed
 }
@@ -108,12 +135,27 @@ export async function getAppSettings(appSettings) {
     typeof doc?.companyLogoUrl === "string" && LOGO_DATA_URL_RE.test(doc.companyLogoUrl.trim())
       ? doc.companyLogoUrl.trim()
       : null
-  return { salesAgentCommissionRate, appName, companyName, companyLogoUrl }
+  const alertPhone =
+    typeof doc?.alertPhone === "string" && doc.alertPhone.trim()
+      ? doc.alertPhone.trim()
+      : defaultAlertPhone()
+  const purchaseAlertsEnabled =
+    typeof doc?.purchaseAlertsEnabled === "boolean" ? doc.purchaseAlertsEnabled : true
+  const promosVisible = typeof doc?.promosVisible === "boolean" ? doc.promosVisible : true
+  return {
+    salesAgentCommissionRate,
+    appName,
+    companyName,
+    companyLogoUrl,
+    alertPhone,
+    purchaseAlertsEnabled,
+    promosVisible,
+  }
 }
 
 /**
  * @param {import("mongodb").Collection} appSettings
- * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null }} patch
+ * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean }} patch
  * @param {{ userId?: string } | undefined} auth
  */
 export async function patchAppSettings(appSettings, patch, auth) {
@@ -143,6 +185,20 @@ export async function patchAppSettings(appSettings, patch, auth) {
     const logo = normalizeCompanyLogoUrl(patch.companyLogoUrl)
     if (logo === undefined) throw new Error("Invalid company logo.")
     $set.companyLogoUrl = logo
+  }
+
+  if (patch.alertPhone !== undefined) {
+    const normalized = normalizeAlertPhone(patch.alertPhone)
+    if (normalized === undefined) throw new Error("Invalid alert phone.")
+    $set.alertPhone = normalized
+  }
+
+  if (typeof patch.purchaseAlertsEnabled === "boolean") {
+    $set.purchaseAlertsEnabled = patch.purchaseAlertsEnabled
+  }
+
+  if (typeof patch.promosVisible === "boolean") {
+    $set.promosVisible = patch.promosVisible
   }
 
   await appSettings.updateOne({ _id: GLOBAL_SETTINGS_ID }, { $set }, { upsert: true })

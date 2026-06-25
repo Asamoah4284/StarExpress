@@ -3,11 +3,11 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://starexpress.quickxlearn.com/api/:path*"
+      "destination": "https://api.tabitacum.cloud/api/:path*"
     },
     {
       "source": "/ussd/:path*",
-      "destination": "https://starexpress.quickxlearn.com/ussd/:path*"
+      "destination": "https://api.tabitacum.cloud/ussd/:path*"
     },
     {
       "source": "/(.*)",

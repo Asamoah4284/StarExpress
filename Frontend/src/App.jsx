@@ -7,6 +7,7 @@ import Login from "@/pages/Login.jsx"
 import Signup from "@/pages/Signup.jsx"
 import Dashboard from "@/pages/Dashboard.jsx"
 import SalesHistory from "@/pages/SalesHistory.jsx"
+import LocationCustomers from "@/pages/LocationCustomers.jsx"
 import Reports from "@/pages/Reports.jsx"
 import Packages from "@/pages/Packages.jsx"
 import Locations from "@/pages/Locations.jsx"
@@ -35,6 +36,7 @@ export default function App() {
         <Route element={<MainLayout />}>
           <Route index element={<Dashboard />} />
           <Route path="sales-history" element={<SalesHistory />} />
+          <Route path="location-customers" element={<LocationCustomers />} />
           <Route path="packages" element={<Packages />} />
           <Route element={<BlockSalesAgentRoute />}>
             <Route path="reports" element={<Reports />} />

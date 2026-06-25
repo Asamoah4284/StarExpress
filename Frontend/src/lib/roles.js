@@ -5,6 +5,7 @@ export const ROLE_SALES_AGENT = "Sales Agent"
 export const SALES_AGENT_NAV_PATHS = [
   "/",
   "/sales-history",
+  "/location-customers",
   "/packages",
 ]
 

@@ -26,6 +26,7 @@ import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
 import { createUssdRouter } from "./routes/ussd.js"
 import { createPortalRouter } from "./routes/portal.js"
 import { createMoolrePaymentSuccessHandler } from "./lib/moolrePaymentSuccessPage.js"
+import { startCaptivePendingSweep } from "./lib/captivePendingSweep.js"
 
 /** @param {string} key */
 function envTruthy(key) {
@@ -179,6 +180,7 @@ async function main() {
       sales: getSalesCollection(),
       auditLogs: getAuditLogsCollection(),
       agentPaymentPending: getAgentPaymentPendingCollection(),
+      appSettings: getAppSettingsCollection(),
     }),
   )
 
@@ -237,6 +239,16 @@ async function main() {
     jwtExpiresIn: JWT_EXPIRES_IN,
   })
   app.use("/api/auth", authRouter)
+
+  // Detect captive-portal payments that were started but never completed
+  // (e.g. the MoMo prompt/OTP never arrived), log them, and text the alert number.
+  startCaptivePendingSweep({
+    pending: getAgentPaymentPendingCollection(),
+    packages: getPackagesCollection(),
+    vouchers: getVouchersCollection(),
+    sales: getSalesCollection(),
+    auditLogs: getAuditLogsCollection(),
+  })
 
   app.listen(PORT, () => {
     console.log(`API listening on http://127.0.0.1:${PORT}`)

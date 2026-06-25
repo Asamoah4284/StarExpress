@@ -13,6 +13,8 @@ import {
   saveCaptivePaymentPending,
 } from "../lib/captiveMomoPayment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
+import { getAppSettings } from "../lib/appSettings.js"
+import { applyPercentOff, normalizePercentOff } from "../lib/promoDiscount.js"
 import { getLocationsWithStock, getPackagesForLocation } from "../services/portalCatalog.js"
 import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
 import { buildPackageAvailabilityFilter } from "../services/voucherSaleFulfillment.js"
@@ -26,11 +28,58 @@ import { ensureSaleVoucherSmsSent } from "../lib/saleVoucherSms.js"
  *   sales: import("mongodb").Collection
  *   auditLogs: import("mongodb").Collection
  *   agentPaymentPending: import("mongodb").Collection
+ *   appSettings: import("mongodb").Collection
  * }} deps
  */
 export function createPortalRouter(deps) {
-  const { locations, packages, vouchers, sales, auditLogs, agentPaymentPending } = deps
+  const { locations, packages, vouchers, sales, auditLogs, agentPaymentPending, appSettings } = deps
   const router = express.Router()
+
+  /**
+   * The promo a buyer should see for a location, or null. Gated by the global
+   * "show promos" setting AND the location's own active flag + a non-empty code.
+   * @param {import("mongodb").Document} loc
+   */
+  async function getVisiblePromoForLocation(loc) {
+    const promo = loc?.promo
+    if (!promo || typeof promo !== "object" || promo.active !== true) return null
+    const code = typeof promo.code === "string" ? promo.code.trim() : ""
+    if (!code) return null
+    try {
+      const settings = await getAppSettings(appSettings)
+      if (!settings.promosVisible) return null
+    } catch {
+      return null
+    }
+    return {
+      code,
+      message: typeof promo.message === "string" ? promo.message.trim() : "",
+      percentOff: normalizePercentOff(promo.percentOff),
+    }
+  }
+
+  /**
+   * Validate a buyer-submitted promo code against a location's active promo (same
+   * global + per-location gating as the banner). Returns the canonical code + percent
+   * to apply, or null if it doesn't match / isn't active. Case-insensitive.
+   * @param {import("mongodb").Document} loc
+   * @param {string} submittedCode
+   */
+  async function resolveAppliedPromo(loc, submittedCode) {
+    const submitted = String(submittedCode || "").trim()
+    if (!submitted) return null
+    const promo = loc?.promo
+    if (!promo || typeof promo !== "object" || promo.active !== true) return null
+    const code = typeof promo.code === "string" ? promo.code.trim() : ""
+    if (!code || code.toLowerCase() !== submitted.toLowerCase()) return null
+    try {
+      const settings = await getAppSettings(appSettings)
+      if (!settings.promosVisible) return null
+    } catch {
+      return null
+    }
+    return { code, percentOff: normalizePercentOff(promo.percentOff) }
+  }
 
   /**
    * @param {import("mongodb").Document} sale
@@ -62,10 +111,12 @@ export function createPortalRouter(deps) {
       const loc = await locations.findOne({ _id: locationId })
       if (!loc) return res.status(404).json({ error: "Unknown location." })
       const items = await getPackagesForLocation(packages, vouchers, locationId)
+      const promo = await getVisiblePromoForLocation(loc)
       res.json({
         locationId,
         locationName: typeof loc.name === "string" ? loc.name : locationId,
         packages: items,
+        promo,
       })
     } catch (err) {
       console.error("[portal] GET /packages", err)
@@ -79,6 +130,7 @@ export function createPortalRouter(deps) {
       const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
       const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
       const locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+      const promoCodeRaw = typeof req.body?.promoCode === "string" ? req.body.promoCode.trim().slice(0, 64) : ""
 
       if (!locationId) return res.status(400).json({ error: "locationId is required." })
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
@@ -108,6 +160,24 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "Invalid package price." })
       }
 
+      // Apply a promo discount on the backend (authoritative). The client only previews the
+      // discounted price; the real charge is computed here.
+      let amount = priceGHS
+      let appliedPromo = /** @type {{ code: string, percentOff: number } | null} */ (null)
+      if (promoCodeRaw) {
+        const applied = await resolveAppliedPromo(loc, promoCodeRaw)
+        if (!applied) {
+          return res.status(400).json({ error: "That promo code isn't valid for this location." })
+        }
+        amount = applyPercentOff(priceGHS, applied.percentOff)
+        if (applied.percentOff > 0) appliedPromo = applied
+      }
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res
+          .status(400)
+          .json({ error: "Discounted total is too low to charge online. Please contact the store." })
+      }
+
       const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
       const available = await vouchers.findOne(availFilter, { projection: { _id: 1 } })
       if (!available) {
@@ -120,20 +190,24 @@ export function createPortalRouter(deps) {
         customerPhone,
         packageId,
         locationId,
-        amount: priceGHS,
+        amount,
+        basePrice: priceGHS,
+        promoCode: appliedPromo?.code ?? null,
+        promoPercentOff: appliedPromo?.percentOff ?? 0,
       })
 
       // Use the shared backend redirect page (same as agent sales). That page posts a
       // `moolre-payment-success` message to the parent window so the embedded iframe can
       // detect success reliably, and it also reconciles captive payments server-side.
       const init = await initializeMoolreEmbedLink({
-        amount: priceGHS,
+        amount,
         email: billingEmail,
         externalref: paymentReference,
         metadata: {
           packageId,
           locationId,
           orderType: "captive_sale",
+          ...(appliedPromo ? { promoCode: appliedPromo.code, promoPercentOff: appliedPromo.percentOff } : {}),
         },
       })
 
@@ -146,7 +220,10 @@ export function createPortalRouter(deps) {
         paymentReference,
         packageId,
         locationId,
-        amount: priceGHS,
+        amount,
+        basePrice: priceGHS,
+        promoCode: appliedPromo?.code,
+        promoPercentOff: appliedPromo?.percentOff,
         redirectUrl: init.redirect_url,
       })
 
@@ -156,7 +233,11 @@ export function createPortalRouter(deps) {
           authorization_url: init.authorization_url,
           reference: paymentReference,
           redirect_url: init.redirect_url,
-          amount: priceGHS,
+          amount,
+          originalAmount: priceGHS,
+          ...(appliedPromo
+            ? { promoCode: appliedPromo.code, promoPercentOff: appliedPromo.percentOff }
+            : {}),
         },
       })
     } catch (err) {

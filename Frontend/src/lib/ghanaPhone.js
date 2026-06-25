@@ -1,7 +1,8 @@
 /**
- * Local display format starting with 0 (e.g. 0241234567).
- * @param {unknown} input
+ * Ghana phone formatting for display (mirrors Backend/src/lib/ghanaPhone.js).
  */
+
+/** @param {unknown} input */
 export function formatGhanaPhoneLocal(input) {
   const digits = String(input || "").replace(/\D/g, "")
   if (!digits) return ""
@@ -18,10 +19,7 @@ export function formatGhanaPhoneLocal(input) {
   return `0${digits}`
 }
 
-/**
- * Pretty local format: 024 123 4567
- * @param {unknown} input
- */
+/** @param {unknown} input */
 export function formatGhanaPhoneDisplayLocal(input) {
   const local = formatGhanaPhoneLocal(input)
   const digits = local.replace(/\D/g, "")
@@ -31,10 +29,7 @@ export function formatGhanaPhoneDisplayLocal(input) {
   return local
 }
 
-/**
- * Dedupe key using trailing 9 national digits (handles 0… vs 233…).
- * @param {unknown} input
- */
+/** @param {unknown} input */
 export function ghanaPhoneDedupeKey(input) {
   const local = formatGhanaPhoneLocal(input)
   const digits = local.replace(/\D/g, "")
@@ -43,25 +38,18 @@ export function ghanaPhoneDedupeKey(input) {
 }
 
 /**
- * Normalize Ghana mobile numbers to E.164 (+233…).
- * @param {unknown} input
- * @returns {string}
+ * Dedupe a list of phone strings to unique local 0-prefixed numbers.
+ * @param {string[]} phones
  */
-export function normalizeGhanaPhone(input) {
-  const s = String(input || "")
-    .trim()
-    .replace(/\s/g, "")
-  if (!s) return ""
-  if (s.startsWith("+")) return s
-  if (s.startsWith("0")) return `+233${s.slice(1)}`
-  if (s.startsWith("233")) return `+${s}`
-  return `+233${s}`
-}
-
-/**
- * Digits-only key for indexes (233XXXXXXXXX).
- * @param {string} e164
- */
-export function phoneNormalizedKey(e164) {
-  return normalizeGhanaPhone(e164).replace(/\D/g, "")
+export function dedupeGhanaPhonesLocal(phones) {
+  /** @type {Map<string, string>} */
+  const map = new Map()
+  for (const raw of phones) {
+    const key = ghanaPhoneDedupeKey(raw)
+    if (!key || key.length < 7) continue
+    const local = formatGhanaPhoneLocal(raw)
+    if (!local) continue
+    if (!map.has(key)) map.set(key, local)
+  }
+  return Array.from(map.values()).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
 }

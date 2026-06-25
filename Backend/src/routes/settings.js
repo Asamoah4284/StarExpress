@@ -30,7 +30,7 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
 
   router.patch("/", requireAdmin, async (req, res) => {
     try {
-      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null }} */
+      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean }} */
       const patch = {}
 
       if (typeof req.body?.salesAgentCommissionRate === "number") {
@@ -60,15 +60,30 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
         patch.companyLogoUrl = req.body.companyLogoUrl
       }
 
+      if (req.body?.alertPhone === null || typeof req.body?.alertPhone === "string") {
+        patch.alertPhone = req.body.alertPhone
+      }
+
+      if (typeof req.body?.purchaseAlertsEnabled === "boolean") {
+        patch.purchaseAlertsEnabled = req.body.purchaseAlertsEnabled
+      }
+
+      if (typeof req.body?.promosVisible === "boolean") {
+        patch.promosVisible = req.body.promosVisible
+      }
+
       if (
         patch.salesAgentCommissionRate == null &&
         patch.appName == null &&
         patch.companyName == null &&
-        patch.companyLogoUrl === undefined
+        patch.companyLogoUrl === undefined &&
+        patch.alertPhone === undefined &&
+        patch.purchaseAlertsEnabled === undefined &&
+        patch.promosVisible === undefined
       ) {
         return res.status(400).json({
           error:
-            "Provide salesAgentCommissionRate/Percent, appName, companyName, and/or companyLogoUrl to update.",
+            "Provide salesAgentCommissionRate/Percent, appName, companyName, companyLogoUrl, alertPhone, purchaseAlertsEnabled, and/or promosVisible to update.",
         })
       }
 
@@ -90,6 +105,15 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
       if (patch.companyLogoUrl !== undefined) {
         auditParts.push(saved.companyLogoUrl ? "company logo" : "cleared company logo")
       }
+      if (patch.alertPhone !== undefined) {
+        auditParts.push(saved.alertPhone ? "purchase alert phone" : "cleared purchase alert phone")
+      }
+      if (patch.purchaseAlertsEnabled !== undefined) {
+        auditParts.push(`purchase alerts ${saved.purchaseAlertsEnabled ? "enabled" : "disabled"}`)
+      }
+      if (patch.promosVisible !== undefined) {
+        auditParts.push(`promos ${saved.promosVisible ? "shown to customers" : "hidden from customers"}`)
+      }
       if (auditParts.length) {
         await appendAuditLog(auditLogs, req.auth, `Updated ${auditParts.join(", ")}`)
       }
@@ -98,7 +122,10 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : "Server error."
-      const status = message.includes("Logo") || message.includes("commission") ? 400 : 500
+      const status =
+        message.includes("Logo") || message.includes("commission") || message.includes("Alert phone")
+          ? 400
+          : 500
       res.status(status).json({ error: message })
     }
   })

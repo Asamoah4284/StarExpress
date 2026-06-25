@@ -20,6 +20,9 @@ function parseAppSettingsPayload(data) {
         ? data.companyName.trim()
         : getDefaultCompanyName(),
     companyLogoUrl,
+    alertPhone: typeof data.alertPhone === "string" ? data.alertPhone.trim() : "",
+    purchaseAlertsEnabled: typeof data.purchaseAlertsEnabled === "boolean" ? data.purchaseAlertsEnabled : true,
+    promosVisible: typeof data.promosVisible === "boolean" ? data.promosVisible : true,
   }
 }
 
@@ -254,6 +257,36 @@ export async function fetchCatalog(token) {
       packageVoucherInventory,
     },
   }
+}
+
+/**
+ * Set (or clear) the promo shown to buyers for a location. Empty code+message clears it.
+ * @param {string} token
+ * @param {string} locationId
+ * @param {{ code: string, message: string, active: boolean, percentOff?: number }} body
+ */
+export async function setLocationPromo(token, locationId, body) {
+  const { res, data } = await parseJsonResponse(
+    `/api/catalog/locations/${encodeURIComponent(locationId)}/promo`,
+    {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        code: String(body.code ?? "").trim(),
+        message: String(body.message ?? "").trim(),
+        active: body.active === true,
+        percentOff: Number.isFinite(Number(body.percentOff)) ? Number(body.percentOff) : 0,
+      }),
+    },
+  )
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.location !== "object") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, location: data.location }
 }
 
 /**
@@ -570,6 +603,108 @@ export async function deleteCatalogLocation(token, id) {
 }
 
 /**
+ * Unique customer phone numbers that have ever purchased at a wifi location.
+ * @param {string} token
+ * @param {string} locationId
+ */
+export async function fetchLocationCustomerNumbers(token, locationId) {
+  const path = `/api/catalog/locations/${encodeURIComponent(locationId)}/customer-numbers`
+  const { res, data } = await parseJsonResponse(path, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.customers)) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return {
+    ok: true,
+    locationId: String(data.locationId || locationId),
+    locationName: String(data.locationName || ""),
+    totalUniqueNumbers: Number(data.totalUniqueNumbers) || data.customers.length,
+    customers: data.customers.map((c) => ({
+      phone: String(c?.phone || ""),
+      purchases: Number(c?.purchases) || 0,
+      totalSpent: Number(c?.totalSpent) || 0,
+      lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
+    })),
+  }
+}
+
+/**
+ * Customers across all locations (locationId omitted/"all") or one location, ranked by
+ * how consistently they buy. Sales agents are always scoped to their store server-side.
+ * @param {string} token
+ * @param {string} [locationId] "" or "all" for every location, or a specific location id
+ */
+export async function fetchCustomers(token, locationId = "all") {
+  const q = encodeURIComponent(locationId || "all")
+  const { res, data } = await parseJsonResponse(`/api/catalog/customers?locationId=${q}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.customers)) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  const customers = data.customers.map((c) => ({
+    phone: String(c?.phone || ""),
+    purchases: Number(c?.purchases) || 0,
+    totalSpent: Number(c?.totalSpent) || 0,
+    lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
+    activeDays: Number(c?.activeDays) || 0,
+  }))
+  return {
+    ok: true,
+    scope: String(data.scope || "all"),
+    scopeLabel: String(data.scopeLabel || "All locations"),
+    totalUniqueNumbers: Number(data.totalUniqueNumbers) || customers.length,
+    top: Array.isArray(data.top)
+      ? data.top.map((c) => ({
+          phone: String(c?.phone || ""),
+          purchases: Number(c?.purchases) || 0,
+          totalSpent: Number(c?.totalSpent) || 0,
+          lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
+          activeDays: Number(c?.activeDays) || 0,
+        }))
+      : customers.slice(0, 5),
+    customers,
+  }
+}
+
+/**
+ * Send an SMS update to one customer (`phone`) or broadcast to everyone in the current
+ * scope (`locationId` "all" or a specific id). Sales agents are scoped to their store.
+ * @param {string} token
+ * @param {{ locationId?: string, phone?: string, message: string }} body
+ */
+export async function sendCustomersSms(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/customers/sms", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      locationId: body.locationId || "all",
+      ...(body.phone ? { phone: body.phone } : {}),
+      message: String(body.message ?? ""),
+    }),
+  })
+  if (!res.ok || !data || data.ok !== true) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg || "Failed to send SMS." }
+  }
+  return {
+    ok: true,
+    total: Number(data.total) || 0,
+    sent: Number(data.sent) || 0,
+    failed: Number(data.failed) || 0,
+  }
+}
+
+/**
  * @param {string} token
  * @param {{ name: string, priceGHS: number, dataLimit: string, status: string }} body
  */
@@ -775,6 +910,8 @@ export async function fetchAppSettings(token) {
  *   appName?: string
  *   companyName?: string
  *   companyLogoUrl?: string | null
+ *   alertPhone?: string | null
+ *   purchaseAlertsEnabled?: boolean
  * }} body
  */
 export async function updateAppSettings(token, body) {

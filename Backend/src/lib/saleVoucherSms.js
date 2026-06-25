@@ -1,6 +1,7 @@
 import { sendSms } from "../services/sms.js"
 import { buildSaleVoucherSmsMessage } from "./voucherSmsMessage.js"
 import { resolvePackageForLocation } from "./packageOverrides.js"
+import { notifyAdminCustomerSmsFailed } from "./adminAlerts.js"
 
 /**
  * Send voucher SMS for a completed sale if not already sent (idempotent).
@@ -59,7 +60,44 @@ export async function ensureSaleVoucherSmsSent(opts) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "SMS failed"
     console.error(`[sale-sms] ${source} failed`, { saleId, paymentReference, error: msg })
+    await alertCaptiveSmsFailedOnce(sales, sale, {
+      customerPhone,
+      packageName: packageType || "WiFi",
+      locationId,
+      voucherCode,
+      paymentReference,
+      error: msg,
+    })
     return { smsSent: false, sent: false, sale, error: msg }
+  }
+}
+
+/**
+ * Alert the admin once when a captive-portal customer's voucher SMS fails.
+ * Other channels (agent/USSD) are ignored. Atomic claim prevents duplicate texts.
+ * @param {import("mongodb").Collection} sales
+ * @param {import("mongodb").Document} sale
+ * @param {{
+ *   customerPhone?: string
+ *   packageName?: string
+ *   locationId?: string
+ *   voucherCode?: string
+ *   paymentReference?: string
+ *   error?: string
+ * }} info
+ */
+async function alertCaptiveSmsFailedOnce(sales, sale, info) {
+  if (sale?.channel !== "captive_portal") return
+  try {
+    const claim = await sales.updateOne(
+      { _id: sale._id, adminAlertedSmsFailed: { $ne: true } },
+      { $set: { adminAlertedSmsFailed: true } },
+    )
+    if (claim.modifiedCount === 1) {
+      notifyAdminCustomerSmsFailed(info)
+    }
+  } catch (err) {
+    console.error("[sale-sms] alertCaptiveSmsFailedOnce failed", err instanceof Error ? err.message : err)
   }
 }
 

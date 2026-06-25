@@ -14,6 +14,11 @@ import {
 } from "../lib/moolreEmbedPayment.js"
 import { markAgentPaymentPendingCompleted, saveAgentPaymentPending } from "../lib/agentMomoPayment.js"
 import { ensureSaleVoucherSmsSent } from "../lib/saleVoucherSms.js"
+import {
+  formatGhanaPhoneLocal,
+  ghanaPhoneDedupeKey,
+} from "../lib/ghanaPhone.js"
+import { normalizePercentOff, roundMoney } from "../lib/promoDiscount.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -111,6 +116,20 @@ async function getActivePackageForVoucherAssign(packages, packageId) {
 /**
  * @param {import("mongodb").Document} d
  */
+/**
+ * Normalize a stored location promo into the API shape, or null when there isn't one.
+ * @param {unknown} promo
+ */
+function promoToApi(promo) {
+  if (!promo || typeof promo !== "object") return null
+  const p = /** @type {Record<string, unknown>} */ (promo)
+  const code = typeof p.code === "string" ? p.code.trim() : ""
+  const message = typeof p.message === "string" ? p.message.trim() : ""
+  const percentOff = normalizePercentOff(p.percentOff)
+  if (!code && !message) return null
+  return { code, message, active: p.active === true, percentOff }
+}
+
 function toLocation(d) {
   return {
     id: d._id,
@@ -119,7 +138,65 @@ function toLocation(d) {
     manager: d.manager,
     ...(d.managerUserId ? { managerUserId: d.managerUserId } : {}),
     totalSales: d.totalSales,
+    promo: promoToApi(d.promo),
   }
+}
+
+/**
+ * Collapse sale docs into one row per real buyer (024…/233… for the same line merge),
+ * with the stats used to spot consistent buyers. Sorted by purchases, then the number of
+ * distinct days they bought on, then total spend.
+ * @param {import("mongodb").Document[]} saleDocs
+ * @returns {{ phone: string, purchases: number, totalSpent: number, lastPurchase: string, activeDays: number }[]}
+ */
+function aggregateCustomers(saleDocs) {
+  /** @type {Map<string, { phone: string, purchases: number, totalSpent: number, lastPurchase: string, days: Set<string> }>} */
+  const byKey = new Map()
+  for (const sale of saleDocs) {
+    const raw = typeof sale.customerPhone === "string" ? sale.customerPhone.trim() : ""
+    if (!raw) continue
+    const key = ghanaPhoneDedupeKey(raw)
+    if (!key || key.length < 7) continue
+    const localPhone = formatGhanaPhoneLocal(raw)
+    if (!localPhone) continue
+    const amount = Number(sale.amount)
+    const soldAt =
+      typeof sale.soldAt === "string" && sale.soldAt
+        ? sale.soldAt
+        : typeof sale.date === "string"
+          ? sale.date
+          : ""
+    const day = soldAt ? soldAt.slice(0, 10) : ""
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.purchases += 1
+      if (Number.isFinite(amount)) existing.totalSpent += amount
+      if (soldAt && soldAt > existing.lastPurchase) existing.lastPurchase = soldAt
+      if (day) existing.days.add(day)
+    } else {
+      byKey.set(key, {
+        phone: localPhone,
+        purchases: 1,
+        totalSpent: Number.isFinite(amount) ? amount : 0,
+        lastPurchase: soldAt,
+        days: new Set(day ? [day] : []),
+      })
+    }
+  }
+  return Array.from(byKey.values())
+    .map((c) => ({
+      phone: c.phone,
+      purchases: c.purchases,
+      totalSpent: roundMoney(c.totalSpent),
+      lastPurchase: c.lastPurchase,
+      activeDays: c.days.size,
+    }))
+    .sort((a, b) => {
+      if (b.purchases !== a.purchases) return b.purchases - a.purchases
+      if (b.activeDays !== a.activeDays) return b.activeDays - a.activeDays
+      if (b.totalSpent !== a.totalSpent) return b.totalSpent - a.totalSpent
+      return a.phone.localeCompare(b.phone, undefined, { numeric: true })
+    })
 }
 
 /**
@@ -1435,6 +1512,236 @@ export function createCatalogRouter(deps) {
       if (!doc) return res.status(404).json({ error: "Location not found." })
       await appendAuditLog(auditLogs, req.auth, `Updated location "${doc.name}" (${id})`)
       res.json({ location: toLocation(doc) })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.put("/locations/:id/promo", requireAdmin, async (req, res) => {
+    try {
+      const id = String(req.params.id || "").trim()
+      const code = typeof req.body?.code === "string" ? req.body.code.trim().slice(0, 64) : ""
+      const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 280) : ""
+      const active = req.body?.active === true || req.body?.active === "true"
+
+      const percentRaw = req.body?.percentOff
+      if (percentRaw !== undefined && percentRaw !== null && percentRaw !== "") {
+        const asNumber = Number(percentRaw)
+        if (!Number.isFinite(asNumber) || asNumber < 0 || asNumber > 100) {
+          return res.status(400).json({ error: "Percent off must be a whole number between 0 and 100." })
+        }
+      }
+      const percentOff = normalizePercentOff(percentRaw)
+
+      if (active && !code) {
+        return res.status(400).json({ error: "Enter a promo code before turning the promo on." })
+      }
+
+      const loc = await locations.findOne({ _id: id })
+      if (!loc) return res.status(404).json({ error: "Location not found." })
+
+      if (!code && !message) {
+        await locations.updateOne({ _id: id }, { $unset: { promo: "" } })
+        await appendAuditLog(auditLogs, req.auth, `Cleared promo for location "${loc.name}" (${id})`)
+        const cleared = await locations.findOne({ _id: id })
+        return res.json({ location: toLocation(cleared) })
+      }
+
+      const promo = {
+        code,
+        message,
+        active,
+        percentOff,
+        updatedAt: new Date().toISOString(),
+        updatedBy: req.auth?.userId ?? null,
+      }
+      await locations.updateOne({ _id: id }, { $set: { promo } })
+      await appendAuditLog(
+        auditLogs,
+        req.auth,
+        `${active ? "Enabled" : "Saved"} promo for location "${loc.name}" (${id})${code ? ` — code ${code}` : ""}${percentOff > 0 ? ` (${percentOff}% off)` : ""}`,
+      )
+      const doc = await locations.findOne({ _id: id })
+      res.json({ location: toLocation(doc) })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.get("/locations/:locationId/customer-numbers", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const locationId = String(req.params.locationId || "").trim()
+      if (!locationId) return res.status(400).json({ error: "locationId is required." })
+
+      if (req.auth.role !== "Admin") {
+        const agentLoc = await findConflictingLocationForSalesAgent(
+          locations,
+          users,
+          req.auth.userId,
+          undefined,
+        )
+        if (!agentLoc) {
+          return res.status(403).json({
+            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
+          })
+        }
+        if (String(agentLoc._id) !== locationId) {
+          return res.status(403).json({ error: "You can only view customers for your assigned location." })
+        }
+      }
+
+      const loc = await locations.findOne({ _id: locationId })
+      if (!loc) return res.status(404).json({ error: "Location not found." })
+
+      const saleDocs = await sales
+        .find(
+          { locationId, customerPhone: { $exists: true, $nin: [null, ""] } },
+          { projection: { customerPhone: 1, soldAt: 1, date: 1, amount: 1 } },
+        )
+        .toArray()
+
+      const customers = aggregateCustomers(saleDocs)
+
+      res.json({
+        locationId,
+        locationName: typeof loc.name === "string" ? loc.name : locationId,
+        totalUniqueNumbers: customers.length,
+        customers,
+      })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  // Customers across all locations (admin) or one location, with consistent-buyer ranking.
+  // Sales agents are always scoped to their assigned store.
+  router.get("/customers", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const requested = String(req.query?.locationId || "").trim()
+      /** @type {Record<string, unknown>} */
+      const filter = { customerPhone: { $exists: true, $nin: [null, ""] } }
+      let scope = "all"
+      let scopeLabel = "All locations"
+
+      if (req.auth.role !== "Admin") {
+        const agentLoc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        if (!agentLoc) {
+          return res.status(403).json({
+            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
+          })
+        }
+        filter.locationId = String(agentLoc._id)
+        scope = String(agentLoc._id)
+        scopeLabel = typeof agentLoc.name === "string" ? agentLoc.name : scope
+      } else if (requested && requested !== "all") {
+        const loc = await locations.findOne({ _id: requested })
+        if (!loc) return res.status(404).json({ error: "Location not found." })
+        filter.locationId = requested
+        scope = requested
+        scopeLabel = typeof loc.name === "string" ? loc.name : requested
+      }
+
+      const saleDocs = await sales
+        .find(filter, { projection: { customerPhone: 1, soldAt: 1, date: 1, amount: 1 } })
+        .toArray()
+      const customers = aggregateCustomers(saleDocs)
+
+      res.json({
+        scope,
+        scopeLabel,
+        totalUniqueNumbers: customers.length,
+        top: customers.slice(0, 5),
+        customers,
+      })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  // Send an SMS update to one customer, or broadcast to every customer in the current scope.
+  router.post("/customers/sms", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const message = typeof req.body?.message === "string" ? req.body.message.trim() : ""
+      const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : ""
+      const requested = String(req.body?.locationId || "").trim()
+
+      if (!message) return res.status(400).json({ error: "Message is required." })
+      if (message.length > 480) {
+        return res.status(400).json({ error: "Message must be 480 characters or less." })
+      }
+
+      /** @type {Record<string, unknown>} */
+      const filter = { customerPhone: { $exists: true, $nin: [null, ""] } }
+      let scopeLabel = "All locations"
+
+      if (req.auth.role !== "Admin") {
+        const agentLoc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        if (!agentLoc) {
+          return res.status(403).json({
+            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
+          })
+        }
+        filter.locationId = String(agentLoc._id)
+        scopeLabel = typeof agentLoc.name === "string" ? agentLoc.name : String(agentLoc._id)
+      } else if (requested && requested !== "all") {
+        const loc = await locations.findOne({ _id: requested })
+        if (!loc) return res.status(404).json({ error: "Location not found." })
+        filter.locationId = requested
+        scopeLabel = typeof loc.name === "string" ? loc.name : requested
+      }
+
+      /** @type {string[]} */
+      let recipients = []
+      if (phone) {
+        const local = formatGhanaPhoneLocal(phone)
+        if (!local || ghanaPhoneDedupeKey(local).length < 7) {
+          return res.status(400).json({ error: "Invalid phone number." })
+        }
+        recipients = [local]
+        scopeLabel = "single customer"
+      } else {
+        const saleDocs = await sales.find(filter, { projection: { customerPhone: 1 } }).toArray()
+        recipients = aggregateCustomers(saleDocs).map((c) => c.phone)
+      }
+
+      if (recipients.length === 0) {
+        return res.status(400).json({ error: "No customers to message in this view." })
+      }
+      const MAX_RECIPIENTS = 1000
+      if (recipients.length > MAX_RECIPIENTS) {
+        return res.status(400).json({
+          error: `Too many recipients (${recipients.length}). Pick a single location to keep it under ${MAX_RECIPIENTS}.`,
+        })
+      }
+
+      let sent = 0
+      let failed = 0
+      const CONCURRENCY = 8
+      for (let i = 0; i < recipients.length; i += CONCURRENCY) {
+        const batch = recipients.slice(i, i + CONCURRENCY)
+        const results = await Promise.allSettled(batch.map((to) => sendSms({ to, message })))
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value?.ok) sent += 1
+          else failed += 1
+        }
+      }
+
+      const preview = message.length > 80 ? `${message.slice(0, 80)}…` : message
+      await appendAuditLog(
+        auditLogs,
+        req.auth,
+        `Sent customer SMS to ${sent}/${recipients.length} (${failed} failed) [${scopeLabel}]: "${preview}"`,
+      )
+
+      res.json({ ok: true, total: recipients.length, sent, failed })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)

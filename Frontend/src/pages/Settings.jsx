@@ -19,6 +19,22 @@ function rateToPercentInput(rate) {
   return Number.isInteger(rounded) ? String(rounded) : String(rounded)
 }
 
+/**
+ * Normalize a save response into the full settings cache shape so no mutation
+ * accidentally drops a field that another card owns.
+ */
+function settingsFromResponse(r) {
+  return {
+    salesAgentCommissionRate: r.salesAgentCommissionRate,
+    appName: r.appName,
+    companyName: r.companyName,
+    companyLogoUrl: r.companyLogoUrl ?? null,
+    alertPhone: r.alertPhone ?? "",
+    purchaseAlertsEnabled: r.purchaseAlertsEnabled ?? true,
+    promosVisible: r.promosVisible ?? true,
+  }
+}
+
 export default function Settings() {
   const { theme, setTheme } = useTheme()
   const { token } = useAuth()
@@ -34,11 +50,19 @@ export default function Settings() {
   )
   const [commissionMessage, setCommissionMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [profileMessage, setProfileMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
+  const [alertPhone, setAlertPhone] = React.useState("")
+  const [purchaseAlertsEnabled, setPurchaseAlertsEnabled] = React.useState(true)
+  const [alertsMessage, setAlertsMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
+  const [promosVisible, setPromosVisible] = React.useState(true)
+  const [promosMessage, setPromosMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
 
   const loadedRate = settingsQuery.data?.salesAgentCommissionRate
   const loadedAppName = settingsQuery.data?.appName
   const loadedCompanyName = settingsQuery.data?.companyName
   const loadedCompanyLogoUrl = settingsQuery.data?.companyLogoUrl
+  const loadedAlertPhone = settingsQuery.data?.alertPhone
+  const loadedPurchaseAlertsEnabled = settingsQuery.data?.purchaseAlertsEnabled
+  const loadedPromosVisible = settingsQuery.data?.promosVisible
 
   React.useEffect(() => {
     if (typeof loadedRate === "number" && Number.isFinite(loadedRate)) {
@@ -66,6 +90,24 @@ export default function Settings() {
     }
   }, [loadedCompanyLogoUrl])
 
+  React.useEffect(() => {
+    if (typeof loadedAlertPhone === "string") {
+      setAlertPhone(loadedAlertPhone)
+    }
+  }, [loadedAlertPhone])
+
+  React.useEffect(() => {
+    if (typeof loadedPurchaseAlertsEnabled === "boolean") {
+      setPurchaseAlertsEnabled(loadedPurchaseAlertsEnabled)
+    }
+  }, [loadedPurchaseAlertsEnabled])
+
+  React.useEffect(() => {
+    if (typeof loadedPromosVisible === "boolean") {
+      setPromosVisible(loadedPromosVisible)
+    }
+  }, [loadedPromosVisible])
+
   const saveCommissionMutation = useMutation({
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
@@ -75,12 +117,7 @@ export default function Settings() {
       }
       const r = await updateAppSettingsCommission(token, { salesAgentCommissionPercent: pct })
       if (!r.ok) throw new Error(r.error || "Failed to save commission")
-      return {
-        salesAgentCommissionRate: r.salesAgentCommissionRate,
-        appName: r.appName,
-        companyName: r.companyName,
-        companyLogoUrl: r.companyLogoUrl ?? null,
-      }
+      return settingsFromResponse(r)
     },
     onSuccess: (settings) => {
       queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
@@ -122,12 +159,7 @@ export default function Settings() {
         companyLogoUrl,
       })
       if (!r.ok) throw new Error(r.error || "Failed to save company profile")
-      return {
-        salesAgentCommissionRate: r.salesAgentCommissionRate,
-        appName: r.appName,
-        companyName: r.companyName,
-        companyLogoUrl: r.companyLogoUrl ?? null,
-      }
+      return settingsFromResponse(r)
     },
     onSuccess: (settings) => {
       queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
@@ -145,10 +177,77 @@ export default function Settings() {
     },
   })
 
+  const saveAlertsMutation = useMutation({
+    mutationFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const trimmed = alertPhone.trim()
+      if (purchaseAlertsEnabled && !trimmed) {
+        throw new Error("Enter a phone number to receive alerts, or turn alerts off.")
+      }
+      const r = await updateAppSettings(token, {
+        alertPhone: trimmed,
+        purchaseAlertsEnabled,
+      })
+      if (!r.ok) throw new Error(r.error || "Failed to save purchase alerts")
+      return settingsFromResponse(r)
+    },
+    onSuccess: (settings) => {
+      queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      setAlertPhone(settings.alertPhone ?? "")
+      setPurchaseAlertsEnabled(settings.purchaseAlertsEnabled ?? true)
+      setAlertsMessage({
+        type: "ok",
+        text: settings.purchaseAlertsEnabled
+          ? "Purchase alerts saved. You'll be texted when a buyer pays but gets no voucher, or a voucher SMS fails."
+          : "Purchase alerts saved (currently turned off).",
+      })
+    },
+    onError: (err) => {
+      setAlertsMessage({
+        type: "err",
+        text: err instanceof Error ? err.message : "Could not save purchase alerts.",
+      })
+    },
+  })
+
+  const savePromoVisibilityMutation = useMutation({
+    mutationFn: async (/** @type {boolean} */ next) => {
+      if (!token) throw new Error("Not signed in")
+      const r = await updateAppSettings(token, { promosVisible: next })
+      if (!r.ok) throw new Error(r.error || "Failed to save promo visibility")
+      return settingsFromResponse(r)
+    },
+    onSuccess: (settings) => {
+      queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      setPromosVisible(settings.promosVisible ?? true)
+      setPromosMessage({
+        type: "ok",
+        text: settings.promosVisible
+          ? "Promos are now visible to customers on the buy page (per-location promos must also be on)."
+          : "Promos are hidden from customers everywhere.",
+      })
+    },
+    onError: (err, next) => {
+      setPromosVisible(!next)
+      setPromosMessage({
+        type: "err",
+        text: err instanceof Error ? err.message : "Could not save promo visibility.",
+      })
+    },
+  })
+
   const onSaveCommission = (e) => {
     e.preventDefault()
     setCommissionMessage(null)
     saveCommissionMutation.mutate()
+  }
+
+  const onSaveAlerts = (e) => {
+    e.preventDefault()
+    setAlertsMessage(null)
+    saveAlertsMutation.mutate()
   }
 
   const onSaveProfile = (e) => {
@@ -310,6 +409,104 @@ export default function Settings() {
               </p>
             ) : null}
           </form>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Purchase alerts</CardTitle>
+          <CardDescription>
+            Get a text when a customer on the public buy page pays but no voucher can be issued, or
+            when a voucher is created but the confirmation SMS to the customer fails. Helps you catch
+            and refund stuck purchases quickly.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={onSaveAlerts} className="space-y-4">
+            <div className="border-border/70 flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">Send me failure alerts</p>
+                <p className="text-muted-foreground text-xs">Turn off to stop all purchase alert texts.</p>
+              </div>
+              <Switch
+                checked={purchaseAlertsEnabled}
+                onCheckedChange={setPurchaseAlertsEnabled}
+                aria-label="Toggle purchase alerts"
+                disabled={settingsQuery.isLoading || saveAlertsMutation.isPending}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="alert-phone">Alert phone number</Label>
+              <Input
+                id="alert-phone"
+                type="tel"
+                inputMode="tel"
+                value={alertPhone}
+                onChange={(e) => setAlertPhone(e.target.value)}
+                disabled={settingsQuery.isLoading || saveAlertsMutation.isPending || !purchaseAlertsEnabled}
+                placeholder="e.g. 0541234567"
+                aria-describedby="alert-phone-hint"
+              />
+              <p id="alert-phone-hint" className="text-muted-foreground text-xs">
+                Your own number (owner/admin). Separate multiple numbers with commas. Standard SMS rates apply.
+              </p>
+            </div>
+            <Button type="submit" disabled={saveAlertsMutation.isPending || settingsQuery.isLoading}>
+              {saveAlertsMutation.isPending ? "Saving…" : "Save alerts"}
+            </Button>
+            {alertsMessage ? (
+              <p
+                className={
+                  alertsMessage.type === "ok"
+                    ? "text-sm text-emerald-600 dark:text-emerald-400"
+                    : "text-sm text-destructive"
+                }
+                role="status"
+              >
+                {alertsMessage.text}
+              </p>
+            ) : null}
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Promotions</CardTitle>
+          <CardDescription>
+            Master switch for promo codes on the public buy page. When on, each location shows its
+            promo only if you also turn that location's promo on under <strong>Upload vouchers</strong>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="border-border/70 flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">Show promos to customers</p>
+              <p className="text-muted-foreground text-xs">Turn off to hide every promo from buyers at once.</p>
+            </div>
+            <Switch
+              checked={promosVisible}
+              onCheckedChange={(v) => {
+                setPromosMessage(null)
+                setPromosVisible(v)
+                savePromoVisibilityMutation.mutate(v)
+              }}
+              aria-label="Toggle promo visibility for customers"
+              disabled={settingsQuery.isLoading || savePromoVisibilityMutation.isPending}
+            />
+          </div>
+          {promosMessage ? (
+            <p
+              className={
+                promosMessage.type === "ok"
+                  ? "text-sm text-emerald-600 dark:text-emerald-400"
+                  : "text-sm text-destructive"
+              }
+              role="status"
+            >
+              {promosMessage.text}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 

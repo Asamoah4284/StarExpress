@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { ChevronLeft, ChevronRight, Loader2, Satellite, Wifi } from "lucide-react"
+import { Check, ChevronLeft, ChevronRight, Copy, Gift, Loader2, Satellite, Wifi } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -36,6 +36,62 @@ function isValidPhone(phone) {
   return trimmed.length >= 7 && trimmed.length <= 32 && digits.length >= 7
 }
 
+/** Round to pesewas (2 decimals), mirroring the backend. */
+function roundMoney(amount) {
+  const n = Number(amount)
+  if (!Number.isFinite(n)) return 0
+  return Math.round((n + Number.EPSILON) * 100) / 100
+}
+
+/** @param {{ promo: { code: string, message: string, percentOff?: number } | null }} props */
+function PromoBanner({ promo }) {
+  const [copied, setCopied] = React.useState(false)
+  if (!promo?.code) return null
+  const percentOff = Number(promo.percentOff) || 0
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(promo.code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard unavailable — code is still shown */
+    }
+  }
+  return (
+    <div className="border-primary/30 bg-primary/5 flex items-start gap-3 rounded-lg border px-3 py-2.5">
+      <div className="bg-primary/10 text-primary mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg">
+        <Gift className="size-4" aria-hidden />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="text-primary text-[10px] font-semibold uppercase tracking-widest">Promo</p>
+          {percentOff > 0 ? (
+            <span className="bg-primary text-primary-foreground rounded-full px-2 py-0.5 text-[10px] font-bold leading-none">
+              {percentOff}% OFF
+            </span>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={() => void copy()}
+          className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-bold tracking-tight hover:underline"
+          title="Tap to copy"
+        >
+          {promo.code}
+          {copied ? (
+            <Check className="size-3.5 text-emerald-500" aria-hidden />
+          ) : (
+            <Copy className="size-3.5 opacity-60" aria-hidden />
+          )}
+        </button>
+        {promo.message ? (
+          <p className="text-muted-foreground mt-0.5 text-xs leading-snug">{promo.message}</p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 const PACKAGES_PER_PAGE = 4
 
 export default function CaptiveBuy() {
@@ -52,6 +108,14 @@ export default function CaptiveBuy() {
     /** @type {{ packageId: string, name: string, priceGHS: number, dataLimit: string } | null} */ (null),
   )
   const [phone, setPhone] = React.useState("")
+  const [promo, setPromo] = React.useState(
+    /** @type {{ code: string, message: string, percentOff: number } | null} */ (null),
+  )
+  const [promoInput, setPromoInput] = React.useState("")
+  const [appliedPromo, setAppliedPromo] = React.useState(
+    /** @type {{ code: string, percentOff: number } | null} */ (null),
+  )
+  const [promoError, setPromoError] = React.useState(/** @type {string | null} */ (null))
   const [loading, setLoading] = React.useState(true)
   const [loadingPackages, setLoadingPackages] = React.useState(false)
   const [paying, setPaying] = React.useState(false)
@@ -130,6 +194,10 @@ export default function CaptiveBuy() {
     }
     setLocationName(result.locationName)
     setPackages(result.packages)
+    setPromo(result.promo ?? null)
+    setAppliedPromo(null)
+    setPromoInput("")
+    setPromoError(null)
     setSelectedPackage(null)
     setPackagePage(0)
     if (result.packages.length === 0) {
@@ -147,6 +215,40 @@ export default function CaptiveBuy() {
     setStep(3)
   }
 
+  const appliedPercent = appliedPromo ? Number(appliedPromo.percentOff) || 0 : 0
+  const originalPrice = selectedPackage ? Number(selectedPackage.priceGHS) : 0
+  const payableAmount =
+    appliedPercent > 0 ? roundMoney(originalPrice * (1 - appliedPercent / 100)) : originalPrice
+
+  const applyPromoCode = () => {
+    setPromoError(null)
+    const entered = promoInput.trim()
+    if (!entered) {
+      setPromoError("Enter a promo code.")
+      return
+    }
+    const matches = promo && entered.toLowerCase() === promo.code.toLowerCase()
+    if (!matches) {
+      setAppliedPromo(null)
+      setPromoError("That promo code isn't valid for this location.")
+      return
+    }
+    const pct = Number(promo.percentOff) || 0
+    if (pct <= 0) {
+      setAppliedPromo(null)
+      setPromoError("This code doesn't include a discount.")
+      return
+    }
+    setAppliedPromo({ code: promo.code, percentOff: pct })
+    setPromoError(null)
+  }
+
+  const removePromoCode = () => {
+    setAppliedPromo(null)
+    setPromoInput("")
+    setPromoError(null)
+  }
+
   const handlePay = async (e /** @type {React.FormEvent} */) => {
     e.preventDefault()
     if (!selectedPackage || !locationId) return
@@ -160,6 +262,7 @@ export default function CaptiveBuy() {
       locationId,
       packageId: selectedPackage.packageId,
       customerPhone: phone.trim(),
+      promoCode: appliedPromo?.code || "",
     })
     if (!result.ok) {
       setPaying(false)
@@ -299,6 +402,11 @@ export default function CaptiveBuy() {
               </div>
             </CardHeader>
             <CardContent className="p-0">
+              {promo ? (
+                <div className="border-border/60 border-b p-4">
+                  <PromoBanner promo={promo} />
+                </div>
+              ) : null}
               <ul className="divide-border divide-y">
                 {visiblePackages.map((pkg) => (
                   <li key={pkg.packageId}>
@@ -364,11 +472,77 @@ export default function CaptiveBuy() {
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Step 3 — Pay with MoMo</CardTitle>
-              <CardDescription>
-                {selectedPackage.name} at {locationName} — {formatCedis(selectedPackage.priceGHS)}
+              <CardDescription className="truncate">
+                {selectedPackage.name} at {locationName}
               </CardDescription>
             </CardHeader>
             <CardContent>
+              {promo ? (
+                <div className="mb-4">
+                  <PromoBanner promo={promo} />
+                </div>
+              ) : null}
+
+              <div className="mb-4">
+                {appliedPromo ? (
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                        Code {appliedPromo.code} applied — {appliedPercent}% off
+                      </p>
+                      <p className="text-muted-foreground text-xs">Your discount is in the total below.</p>
+                    </div>
+                    <Button type="button" variant="ghost" size="sm" className="shrink-0" onClick={removePromoCode}>
+                      Remove
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="promo-input">Have a promo code?</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="promo-input"
+                        value={promoInput}
+                        onChange={(e) => {
+                          setPromoInput(e.target.value)
+                          setPromoError(null)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault()
+                            applyPromoCode()
+                          }
+                        }}
+                        placeholder={promo?.code ? `e.g. ${promo.code}` : "Enter promo code"}
+                        autoComplete="off"
+                        autoCapitalize="characters"
+                        className="flex-1"
+                      />
+                      <Button type="button" variant="outline" onClick={applyPromoCode}>
+                        Apply
+                      </Button>
+                    </div>
+                    {promoError ? (
+                      <p className="text-destructive text-xs" role="alert">
+                        {promoError}
+                      </p>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-border/60 mb-4 flex items-center justify-between rounded-lg border px-3 py-2.5">
+                <span className="text-muted-foreground text-sm">You pay</span>
+                <span className="text-right">
+                  {appliedPercent > 0 ? (
+                    <span className="text-muted-foreground mr-2 text-sm line-through">
+                      {formatCedis(originalPrice)}
+                    </span>
+                  ) : null}
+                  <span className="text-lg font-bold tabular-nums">{formatCedis(payableAmount)}</span>
+                </span>
+              </div>
+
               <form className="space-y-4" onSubmit={(e) => void handlePay(e)}>
                 <div className="space-y-2">
                   <Label htmlFor="phone">Phone number</Label>
@@ -397,7 +571,7 @@ export default function CaptiveBuy() {
                     ) : (
                       <>
                         <Wifi className="mr-2 size-4" aria-hidden />
-                        Pay with MoMo
+                        Pay {formatCedis(payableAmount)}
                       </>
                     )}
                   </Button>

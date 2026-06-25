@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom"
 import {
   BarChart3,
+  Phone,
   PieChart,
   ChevronsLeft,
   ChevronsRight,
@@ -28,6 +29,7 @@ const items = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/packages", label: "Packages", icon: Package },
   { to: "/sales-history", label: "Sales History", icon: History },
+  { to: "/location-customers", label: "Customers", icon: Phone },
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/revenue-split", label: "Revenue split", icon: PieChart },
   { to: "/vouchers", label: "Upload vouchers", icon: Ticket },

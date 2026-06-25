@@ -6,6 +6,8 @@ import {
   voucherDisplayCode,
 } from "../services/voucherSaleFulfillment.js"
 import { markAgentPaymentPendingCompleted } from "./agentMomoPayment.js"
+import { notifyAdminPaidNoVoucher } from "./adminAlerts.js"
+import { applyPercentOff, normalizePercentOff, roundMoney } from "./promoDiscount.js"
 
 /**
  * @param {string} ref
@@ -30,9 +32,13 @@ export function generateCaptivePaymentReference(suffix = "") {
  *   packageId: string
  *   locationId: string
  *   amount: number
+ *   basePrice?: number
+ *   promoCode?: string | null
+ *   promoPercentOff?: number
  * }} data
  */
 export async function saveCaptivePaymentPending(pendingCol, data) {
+  const promoPercentOff = normalizePercentOff(data.promoPercentOff)
   const doc = {
     _id: data.paymentReference,
     paymentReference: data.paymentReference,
@@ -40,6 +46,10 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
     packageId: data.packageId,
     locationId: data.locationId,
     amount: data.amount,
+    ...(typeof data.basePrice === "number" ? { basePrice: data.basePrice } : {}),
+    ...(promoPercentOff > 0
+      ? { promoCode: data.promoCode || null, promoPercentOff }
+      : {}),
     orderType: "captive_sale",
     createdAt: new Date().toISOString(),
     status: "pending",
@@ -108,29 +118,64 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
   const customerPhone = String(pendingDoc.customerPhone || "").trim()
   const packageId = String(pendingDoc.packageId || "").trim()
   const locationId = String(pendingDoc.locationId || "").trim()
+  // What Moolre actually charged (already discounted at initialize). Used for alerts so a
+  // "paid but stuck" message reflects the real amount taken from the customer.
+  const chargedAmount = typeof pendingDoc.amount === "number" ? pendingDoc.amount : undefined
+  const promoPercentOff = normalizePercentOff(pendingDoc.promoPercentOff)
+  const promoCode = typeof pendingDoc.promoCode === "string" ? pendingDoc.promoCode : null
 
   if (!customerPhone || !packageId || !locationId) {
     console.error(`[captive-momo] ${source} invalid pending`, { paymentReference, pendingDoc })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      locationId,
+      amount: chargedAmount,
+      reason: "incomplete order record",
+    })
     return { ok: false, status: "invalid_pending" }
   }
 
   const pkg = await packages.findOne({ _id: packageId })
   if (!pkg) {
     console.error(`[captive-momo] ${source} unknown package`, { paymentReference, packageId })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      packageName: packageId,
+      locationId,
+      amount: chargedAmount,
+      reason: "package no longer exists",
+    })
     return { ok: false, status: "unknown_package" }
   }
 
   const resolved = resolvePackageForLocation(pkg, locationId)
   if (resolved.status !== "Active") {
     console.error(`[captive-momo] ${source} inactive package`, { paymentReference, packageId })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      packageName: resolved.name?.trim() ? resolved.name.trim() : packageId,
+      locationId,
+      amount: chargedAmount ?? (typeof resolved.priceGHS === "number" ? resolved.priceGHS : undefined),
+      reason: "package is inactive",
+    })
     return { ok: false, status: "inactive_package" }
   }
 
   const priceGHS = resolved.priceGHS
+  // Re-apply the promo discount on the backend so the recorded sale amount matches what the
+  // customer was charged (never trust a client-sent total).
+  const finalAmount = promoPercentOff > 0 ? applyPercentOff(priceGHS, promoPercentOff) : priceGHS
   const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
   const voucherToUse = await vouchers.findOne(availFilter)
   if (!voucherToUse) {
     console.error(`[captive-momo] ${source} no voucher stock`, { paymentReference, packageId, locationId })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      packageName: resolved.name?.trim() ? resolved.name.trim() : packageId,
+      locationId,
+      amount: chargedAmount ?? finalAmount,
+      reason: "no voucher stock left",
+    })
     return { ok: false, status: "no_stock" }
   }
 
@@ -147,7 +192,7 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     paymentNumber: customerPhone,
     packageType,
     packageId,
-    amount: priceGHS,
+    amount: finalAmount,
     locationId,
     date,
     soldAt,
@@ -157,6 +202,14 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     channel: "captive_portal",
     paymentReference,
     smsSent: false,
+    ...(promoPercentOff > 0
+      ? {
+          promoCode,
+          promoPercentOff,
+          originalAmount: roundMoney(priceGHS),
+          discountAmount: roundMoney(priceGHS - finalAmount),
+        }
+      : {}),
   }
 
   await sales.insertOne(saleDoc)
@@ -177,6 +230,13 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
   if (marked.modifiedCount === 0) {
     await sales.deleteOne({ _id: saleId })
     console.error(`[captive-momo] ${source} voucher reserve race`, { paymentReference })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      packageName: packageType,
+      locationId,
+      amount: chargedAmount ?? finalAmount,
+      reason: "voucher reservation race",
+    })
     return { ok: false, status: "reserve_failed" }
   }
 
@@ -200,7 +260,7 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     await auditLogs.insertOne({
       _id: `audit-${randomUUID().slice(0, 12)}`,
       actor: "captive-portal",
-      action: `Captive portal sale ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference} (${source})`,
+      action: `Captive portal sale ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${finalAmount} GHS${promoPercentOff > 0 ? ` (promo ${promoCode || ""} ${promoPercentOff}% off, was ${roundMoney(priceGHS)})` : ""} · ref ${paymentReference} (${source})`,
       at: new Date().toISOString(),
     })
   } catch (e) {
@@ -215,6 +275,42 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
   })
 
   return { ok: true, status: "success", saleId, voucherCode, smsSent: false }
+}
+
+/**
+ * Alert the admin exactly once that a paid customer could not be issued a voucher.
+ * The atomic claim on the pending doc means repeated polls/webhooks can't spam.
+ * @param {import("mongodb").Collection} pending
+ * @param {string} paymentReference
+ * @param {{
+ *   customerPhone?: string
+ *   packageName?: string
+ *   locationId?: string
+ *   amount?: number
+ *   reason?: string
+ * }} info
+ */
+async function alertPaidNoVoucherOnce(pending, paymentReference, info) {
+  try {
+    const claim = await pending.updateOne(
+      { _id: paymentReference, adminAlertedPaidNoVoucher: { $ne: true } },
+      {
+        $set: {
+          adminAlertedPaidNoVoucher: true,
+          lastFulfillError: info.reason || "fulfillment_failed",
+          lastFulfillErrorAt: new Date().toISOString(),
+        },
+      },
+    )
+    if (claim.modifiedCount === 1) {
+      notifyAdminPaidNoVoucher({ ...info, paymentReference })
+    }
+  } catch (err) {
+    console.error("[captive-momo] alertPaidNoVoucherOnce failed", {
+      paymentReference,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 }
 
 /**
