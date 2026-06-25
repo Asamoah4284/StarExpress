@@ -1,4 +1,5 @@
 import { getApiBaseUrl, getDefaultAppName, getDefaultCompanyName } from "@/lib/env.js"
+import { formatGhanaPhoneLocal, ghanaPhoneDedupeKey } from "@/lib/ghanaPhone.js"
 
 /**
  * @param {unknown} data
@@ -30,6 +31,130 @@ function url(path) {
   const base = getApiBaseUrl().replace(/\/$/, "")
   const p = path.startsWith("/") ? path : `/${path}`
   return `${base}${p}`
+}
+
+/** @param {Response} res @param {unknown} data */
+function apiErrorMessage(res, data) {
+  if (typeof data === "object" && data && "error" in data) {
+    const err = String(data.error)
+    if (err.includes("<!DOCTYPE") || err.includes("Cannot GET") || err.includes("Cannot POST")) {
+      if (res.status === 404) {
+        return "This feature is not available on the server yet. Redeploy the backend API to enable it."
+      }
+      return res.statusText || "Request failed."
+    }
+    if (err.length > 200) return res.statusText || "Request failed."
+    return err
+  }
+  return res.statusText || "Request failed."
+}
+
+function roundMoney(n) {
+  const x = Number(n)
+  if (!Number.isFinite(x)) return 0
+  return Math.round(x * 100) / 100
+}
+
+/**
+ * @param {Array<string | { phone?: string, purchases?: number, totalSpent?: number, lastPurchase?: string, activeDays?: number }>} rows
+ */
+function mergeAndSortCustomers(rows) {
+  /** @type {Map<string, { phone: string, purchases: number, totalSpent: number, lastPurchase: string, activeDays: number }>} */
+  const byKey = new Map()
+  for (const row of rows) {
+    const phone = typeof row === "string" ? row : String(row?.phone || "")
+    if (!phone) continue
+    const key = ghanaPhoneDedupeKey(phone)
+    const local = formatGhanaPhoneLocal(phone)
+    if (!key || key.length < 7 || !local) continue
+
+    const purchases =
+      typeof row === "object" && row != null && "purchases" in row ? Number(row.purchases) || 0 : 1
+    const totalSpent = typeof row === "object" && row != null ? Number(row.totalSpent) || 0 : 0
+    const lastPurchase =
+      typeof row === "object" && row != null && typeof row.lastPurchase === "string"
+        ? row.lastPurchase
+        : ""
+    const activeDays = typeof row === "object" && row != null ? Number(row.activeDays) || 0 : 0
+
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.purchases += purchases || 1
+      existing.totalSpent = roundMoney(existing.totalSpent + totalSpent)
+      existing.activeDays = Math.max(existing.activeDays, activeDays)
+      if (lastPurchase && lastPurchase > existing.lastPurchase) existing.lastPurchase = lastPurchase
+    } else {
+      byKey.set(key, {
+        phone: local,
+        purchases: purchases || 1,
+        totalSpent: roundMoney(totalSpent),
+        lastPurchase,
+        activeDays,
+      })
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (b.purchases !== a.purchases) return b.purchases - a.purchases
+    if (b.activeDays !== a.activeDays) return b.activeDays - a.activeDays
+    if (b.totalSpent !== a.totalSpent) return b.totalSpent - a.totalSpent
+    return a.phone.localeCompare(b.phone, undefined, { numeric: true })
+  })
+}
+
+/**
+ * Fallback when GET /catalog/customers is missing on an older API deployment.
+ * @param {string} token
+ * @param {string} locationId
+ * @param {Array<{ id: string, name?: string }>} locations
+ * @param {string} [agentLocationId]
+ */
+async function fetchCustomersViaLocations(token, locationId, locations, agentLocationId) {
+  const scope = locationId || "all"
+  /** @type {Array<{ id: string, name?: string }>} */
+  let targetLocations = locations
+
+  if (agentLocationId) {
+    targetLocations = locations.filter((l) => l.id === agentLocationId)
+    if (targetLocations.length === 0) {
+      return {
+        ok: false,
+        error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
+      }
+    }
+  } else if (scope !== "all") {
+    targetLocations = locations.filter((l) => l.id === scope)
+    if (targetLocations.length === 0) {
+      return { ok: false, error: "Location not found." }
+    }
+  }
+
+  /** @type {Array<{ phone?: string, purchases?: number, totalSpent?: number, lastPurchase?: string, activeDays?: number } | string>} */
+  const allRows = []
+  for (const loc of targetLocations) {
+    const result = await fetchLocationCustomerNumbers(token, loc.id)
+    if (!result.ok) {
+      if (targetLocations.length === 1) return result
+      continue
+    }
+    allRows.push(...result.customers)
+  }
+
+  const customers = mergeAndSortCustomers(allRows)
+  const resolvedScope = agentLocationId || scope
+  const scopeLabel = agentLocationId
+    ? String(targetLocations[0]?.name || "Your store")
+    : scope === "all"
+      ? "All locations"
+      : String(targetLocations[0]?.name || scope)
+
+  return {
+    ok: true,
+    scope: resolvedScope,
+    scopeLabel,
+    totalUniqueNumbers: customers.length,
+    top: customers.slice(0, 5),
+    customers,
+  }
 }
 
 /**
@@ -613,23 +738,34 @@ export async function fetchLocationCustomerNumbers(token, locationId) {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    const msg = apiErrorMessage(res, data)
     return { ok: false, error: msg }
   }
-  if (typeof data !== "object" || data === null || !Array.isArray(data.customers)) {
+  const rawList = Array.isArray(data?.customers)
+    ? data.customers
+    : Array.isArray(data?.phones)
+      ? data.phones
+      : null
+  if (typeof data !== "object" || data === null || !rawList) {
     return { ok: false, error: "Unexpected response from server." }
   }
   return {
     ok: true,
     locationId: String(data.locationId || locationId),
     locationName: String(data.locationName || ""),
-    totalUniqueNumbers: Number(data.totalUniqueNumbers) || data.customers.length,
-    customers: data.customers.map((c) => ({
-      phone: String(c?.phone || ""),
-      purchases: Number(c?.purchases) || 0,
-      totalSpent: Number(c?.totalSpent) || 0,
-      lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
-    })),
+    totalUniqueNumbers: Number(data.totalUniqueNumbers) || rawList.length,
+    customers: rawList.map((c) => {
+      if (typeof c === "string") {
+        return { phone: c, purchases: 0, totalSpent: 0, lastPurchase: "", activeDays: 0 }
+      }
+      return {
+        phone: String(c?.phone || ""),
+        purchases: Number(c?.purchases) || 0,
+        totalSpent: Number(c?.totalSpent) || 0,
+        lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
+        activeDays: Number(c?.activeDays) || 0,
+      }
+    }),
   }
 }
 
@@ -638,15 +774,28 @@ export async function fetchLocationCustomerNumbers(token, locationId) {
  * how consistently they buy. Sales agents are always scoped to their store server-side.
  * @param {string} token
  * @param {string} [locationId] "" or "all" for every location, or a specific location id
+ * @param {{ locations?: Array<{ id: string, name?: string }>, agentLocationId?: string }} [options]
  */
-export async function fetchCustomers(token, locationId = "all") {
+export async function fetchCustomers(token, locationId = "all", options = {}) {
   const q = encodeURIComponent(locationId || "all")
   const { res, data } = await parseJsonResponse(`/api/catalog/customers?locationId=${q}`, {
     headers: { Authorization: `Bearer ${token}` },
   })
+
+  if (res.status === 404) {
+    let locations = options.locations
+    if (!locations?.length) {
+      const catalogResult = await fetchCatalog(token)
+      if (!catalogResult.ok) {
+        return { ok: false, error: catalogResult.error || "Failed to load customers." }
+      }
+      locations = catalogResult.catalog.locations
+    }
+    return fetchCustomersViaLocations(token, locationId, locations, options.agentLocationId)
+  }
+
   if (!res.ok) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
-    return { ok: false, error: msg }
+    return { ok: false, error: apiErrorMessage(res, data) }
   }
   if (typeof data !== "object" || data === null || !Array.isArray(data.customers)) {
     return { ok: false, error: "Unexpected response from server." }
@@ -693,8 +842,7 @@ export async function sendCustomersSms(token, body) {
     }),
   })
   if (!res.ok || !data || data.ok !== true) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
-    return { ok: false, error: msg || "Failed to send SMS." }
+    return { ok: false, error: apiErrorMessage(res, data) || "Failed to send SMS." }
   }
   return {
     ok: true,

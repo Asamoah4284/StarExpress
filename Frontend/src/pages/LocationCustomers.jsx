@@ -78,10 +78,13 @@ export default function LocationCustomers() {
 
   const customersQuery = useQuery({
     queryKey: ["customers", token, isAdmin ? scopeSelect : "agent-store"],
-    enabled: Boolean(token),
+    enabled: Boolean(token) && !catalog.isLoading,
     queryFn: async () => {
       if (!token) throw new Error("Not signed in")
-      const result = await fetchCustomers(token, locationParam)
+      const result = await fetchCustomers(token, locationParam, {
+        locations,
+        agentLocationId: isSalesAgent ? agentStore?.id : undefined,
+      })
       if (!result.ok) throw new Error(result.error || "Failed to load customers.")
       return result
     },
@@ -91,10 +94,10 @@ export default function LocationCustomers() {
   // main list, so picking the current view costs no extra fetch.
   const broadcastCountQuery = useQuery({
     queryKey: ["customers", token, broadcastTarget],
-    enabled: Boolean(token) && smsOpen && !smsTarget && isAdmin,
+    enabled: Boolean(token) && smsOpen && !smsTarget && isAdmin && !catalog.isLoading,
     queryFn: async () => {
       if (!token) throw new Error("Not signed in")
-      const result = await fetchCustomers(token, broadcastTarget)
+      const result = await fetchCustomers(token, broadcastTarget, { locations })
       if (!result.ok) throw new Error(result.error || "Failed to load customers.")
       return result
     },
