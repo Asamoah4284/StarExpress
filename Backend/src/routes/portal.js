@@ -18,7 +18,7 @@ import { applyPercentOff, normalizePercentOff } from "../lib/promoDiscount.js"
 import { getLocationsWithStock, getPackagesForLocation } from "../services/portalCatalog.js"
 import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
 import { buildPackageAvailabilityFilter } from "../services/voucherSaleFulfillment.js"
-import { ensureSaleVoucherSmsSent } from "../lib/saleVoucherSms.js"
+import { resolveCaptivePaymentRedirectUrl } from "../lib/frontendUrl.js"
 
 /**
  * @param {{

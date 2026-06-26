@@ -590,6 +590,7 @@ export default function CaptiveBuy() {
       </div>
 
       <MoolrePayment
+        mode="captive"
         open={showMoolre}
         authorizationUrl={moolreAuthUrl}
         callbackUrl={moolreCallbackUrl}

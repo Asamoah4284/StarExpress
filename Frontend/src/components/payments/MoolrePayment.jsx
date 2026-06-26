@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Loader2 } from "lucide-react"
+import { Loader2, X } from "lucide-react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 
 /**
@@ -7,9 +7,34 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
  * @see https://docs.moolre.com — Generate Payment Link / embed
  */
 const MOOLRE_VIEWPORT_WIDTH = 760
-const MOOLRE_VIEWPORT_HEIGHT = 540
-/** Crop empty top padding inside the Moolre embed page */
+const MOOLRE_VIEWPORT_HEIGHT = 720
+/** Crop empty top padding inside the Moolre embed page (desktop only). */
 const MOOLRE_FRAME_OFFSET_Y = 72
+const MOBILE_MAX_WIDTH = 767
+/**
+ * Moolre's checkout only lays out correctly at desktop width — its standalone mobile page
+ * collapses the form. On phones we render it at this logical width and scale it down to fit,
+ * so the full working desktop layout (number, provider, confirm) shows on a small screen.
+ */
+const MOBILE_LOGICAL_WIDTH = 760
+const MOBILE_LOGICAL_HEIGHT = 720
+
+function useViewportWidth() {
+  const [width, setWidth] = React.useState(() =>
+    typeof window !== "undefined" ? window.innerWidth : 390,
+  )
+  React.useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth)
+    onResize()
+    window.addEventListener("resize", onResize)
+    window.addEventListener("orientationchange", onResize)
+    return () => {
+      window.removeEventListener("resize", onResize)
+      window.removeEventListener("orientationchange", onResize)
+    }
+  }, [])
+  return width
+}
 
 /**
  * @param {{
@@ -19,6 +44,7 @@ const MOOLRE_FRAME_OFFSET_Y = 72
  *   paymentReference: string | null
  *   onCancel: () => void
  *   onSuccess: (payload: { reference: string, externalref: string }) => void
+ *   mode?: "captive" | "agent"
  * }} props
  */
 export function MoolrePayment({
@@ -28,10 +54,15 @@ export function MoolrePayment({
   paymentReference,
   onCancel,
   onSuccess,
+  // mode kept for call-site clarity; both flows render the same way.
+  mode = "agent",
 }) {
   const iframeRef = React.useRef(/** @type {HTMLIFrameElement | null} */ (null))
   const successFiredRef = React.useRef(false)
   const [confirming, setConfirming] = React.useState(false)
+  const viewportWidth = useViewportWidth()
+  const isMobile = viewportWidth <= MOBILE_MAX_WIDTH
+  void mode
 
   React.useEffect(() => {
     if (!open) {
@@ -71,6 +102,7 @@ export function MoolrePayment({
 
       return (
         lower.includes("agent-payment-success") ||
+        lower.includes("portal-payment-success") ||
         lower.includes("/api/moolre/payment-success") ||
         lower.includes("payment-success") ||
         lower.includes("/success") ||
@@ -133,15 +165,65 @@ export function MoolrePayment({
 
   if (!authorizationUrl) return null
 
+  // Phones: render Moolre at desktop width and scale to fit, so the full form is usable.
+  if (isMobile) {
+    if (!open) return null
+    const scale = Math.min(1, viewportWidth / MOBILE_LOGICAL_WIDTH)
+    const scaledHeight = MOBILE_LOGICAL_HEIGHT * scale
+
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col bg-[#eef0f3]">
+        <div className="flex shrink-0 items-center justify-between border-b border-[#d8dce3] bg-[#eef0f3] px-3 py-2.5">
+          <span className="text-sm font-semibold text-[#1a1a1a]">MoMo payment</span>
+          {!confirming ? (
+            <button
+              type="button"
+              onClick={handleCancel}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-[#475467] hover:text-[#1a1a1a]"
+            >
+              <X className="size-4" aria-hidden />
+              Cancel
+            </button>
+          ) : null}
+        </div>
+
+        <div className="relative flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="relative mx-auto w-full" style={{ height: scaledHeight }}>
+            <iframe
+              ref={iframeRef}
+              title="Moolre payment"
+              src={authorizationUrl}
+              className="absolute left-0 top-0 origin-top-left border-0 bg-white"
+              style={{
+                width: `${MOBILE_LOGICAL_WIDTH}px`,
+                height: `${MOBILE_LOGICAL_HEIGHT}px`,
+                transform: `scale(${scale})`,
+              }}
+              onLoad={handleIframeLoad}
+              allow="payment *"
+            />
+          </div>
+        </div>
+
+        {confirming ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#eef0f3]/95 px-6 text-center">
+            <Loader2 className="size-10 animate-spin text-[#1a2b4a]" aria-hidden />
+            <p className="text-sm font-medium text-[#1a1a1a]">Confirming payment…</p>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   const frameWidth = `min(${MOOLRE_VIEWPORT_WIDTH}px, calc(100vw - 2rem))`
-  const frameHeight = `min(${MOOLRE_VIEWPORT_HEIGHT}px, 86dvh)`
+  const frameHeight = `min(${MOOLRE_VIEWPORT_HEIGHT}px, 94dvh)`
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !confirming && handleCancel()}>
       <DialogContent
         showCloseButton={false}
         overlayClassName="bg-[#e4e7ec]/92 supports-backdrop-filter:backdrop-blur-[2px]"
-        className="top-[4vh] left-[50%] max-w-none translate-x-[-50%] translate-y-0 gap-0 overflow-hidden rounded-none border-0 bg-[#eef0f3] p-0 shadow-none ring-0 outline-none data-open:zoom-in-100 data-closed:zoom-out-100 sm:max-w-none"
+        className="top-[3vh] left-[50%] max-w-none translate-x-[-50%] translate-y-0 gap-0 overflow-hidden rounded-none border-0 bg-[#eef0f3] p-0 shadow-none ring-0 outline-none data-open:zoom-in-100 data-closed:zoom-out-100 sm:max-w-none"
         style={{ width: frameWidth, height: frameHeight }}
       >
         <DialogTitle className="sr-only">MoMo payment</DialogTitle>
