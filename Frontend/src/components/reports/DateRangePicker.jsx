@@ -80,9 +80,10 @@ function RangeDateInput({ id, label, value, onChange, onCommit, highlight, inval
  *   onChange: (range: { from?: Date, to?: Date } | undefined) => void
  *   className?: string
  *   id?: string
+ *   align?: "start" | "center" | "end"
  * }} props
  */
-export function DateRangePicker({ value, onChange, className, id }) {
+export function DateRangePicker({ value, onChange, className, id, align = "start" }) {
   const [open, setOpen] = React.useState(false)
   const monthCount = useMonthCount()
   const calendarStart = React.useMemo(() => {
@@ -215,7 +216,7 @@ export function DateRangePicker({ value, onChange, className, id }) {
       </PopoverTrigger>
       <PopoverContent
         className="w-auto max-w-[calc(100vw-1rem)] gap-0 overflow-hidden p-0"
-        align="start"
+        align={align}
         sideOffset={6}
       >
         <div className="border-border space-y-3 border-b px-4 py-3">

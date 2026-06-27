@@ -1,7 +1,7 @@
 import * as React from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
-import { useQuery } from "@tanstack/react-query"
-import { Calendar, DollarSign, Percent, ShoppingCart, Wallet } from "lucide-react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { Calendar, DollarSign, MapPin, Percent, ShoppingCart, Wallet } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { GrossRevenueTrendChart } from "@/components/charts/GrossRevenueTrendChart.jsx"
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { StatCard } from "@/components/shared/StatCard.jsx"
+import { LiveIndicator } from "@/components/customers/LiveIndicator.jsx"
 import { DateRangePicker } from "@/components/reports/DateRangePicker.jsx"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/context/AuthContext.jsx"
@@ -40,9 +41,9 @@ import {
 } from "@/lib/aggregations.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
 import { useSalesAgentCommissionRate } from "@/hooks/useAppSettings.js"
+import { LIVE_POLL_MS } from "@/hooks/useLiveCustomerDashboard.js"
 import { ROLE_SALES_AGENT } from "@/lib/roles.js"
 import {
-  formatDateRangeLabel,
   getLastNDaysRange,
   isCompleteDateRange,
   localDateToIso,
@@ -68,8 +69,12 @@ const SALES_BREAKDOWN_CHART_HEIGHT = 340
 export default function Dashboard() {
   const location = useLocation()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { user, token, authReady } = useAuth()
   const [flashMessage, setFlashMessage] = React.useState(/** @type {string | null} */ (null))
+  const [pulseKey, setPulseKey] = React.useState(0)
+  const [lastUpdated, setLastUpdated] = React.useState(/** @type {Date | null} */ (null))
+  const prevMetricsSigRef = React.useRef(/** @type {string | null} */ (null))
 
   React.useEffect(() => {
     const msg = location.state?.flashMessage
@@ -96,7 +101,6 @@ export default function Dashboard() {
   }, [])
 
   const rangeComplete = isCompleteDateRange(dateRange)
-  const dateLabel = formatDateRangeLabel(dateRange)
   const rangeEndIso =
     rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : localDateToIso(new Date())
   const calendarTodayIso = localDateToIso(new Date())
@@ -123,8 +127,19 @@ export default function Dashboard() {
       return r
     },
     enabled: authReady && Boolean(token) && isAdmin,
-    staleTime: 30_000,
+    staleTime: 0,
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
   })
+
+  React.useEffect(() => {
+    if (!token) return
+    const id = window.setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", token] })
+    }, LIVE_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [token, queryClient])
 
   const filtered = React.useMemo(() => {
     const sales = catalog.data?.sales ?? []
@@ -187,19 +202,43 @@ export default function Dashboard() {
 
   const overviewDescription = isAdmin
     ? "Key revenue and sales totals for the selected location and date range (defaults to the last 7 days through today)."
-    : `Commission and sale counts for your wifi location (${commissionPercentLabel}). Filter by date range below.`
+    : `Commission and sale counts for your wifi location (${commissionPercentLabel}). Use the date range picker above.`
 
   const salesBreakdownHint = isAdmin
     ? "Completed gross revenue trend and revenue by day of week (Mon–Sun) for the selected location and date range."
     : "Completed gross revenue trend and revenue by day of week (Mon–Sun) for your wifi location and selected date range."
 
-  const applyPresetDays = (days) => {
-    setDateRange(getLastNDaysRange(days))
-  }
+  const statsScopeKey = React.useMemo(() => {
+    const from = rangeComplete && dateRange?.from ? localDateToIso(dateRange.from) : ""
+    const to = rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : ""
+    const loc = isSalesAgent ? agentStore?.id ?? "agent" : locationId
+    return `${loc}:${from}:${to}`
+  }, [isSalesAgent, agentStore?.id, locationId, rangeComplete, dateRange])
 
-  const filterSummary = rangeComplete
-    ? dateLabel
-    : `${dateLabel} (complete both dates to filter)`
+  const metricsSig = React.useMemo(() => {
+    if (isSalesAgent && agentKpi) {
+      return `${agentKpi.totalCommission}-${agentKpi.todayCommission}-${agentKpi.totalSales}-${agentKpi.todaySales}`
+    }
+    return `${m.totalRevenue}-${m.todaysRevenue}-${m.sold}-${totalVouchersInScope}-${remainingVouchers}`
+  }, [isSalesAgent, agentKpi, m, totalVouchersInScope, remainingVouchers])
+
+  React.useEffect(() => {
+    if (catalog.isLoading) return
+    if (prevMetricsSigRef.current != null && prevMetricsSigRef.current !== metricsSig) {
+      setPulseKey((k) => k + 1)
+    }
+    prevMetricsSigRef.current = metricsSig
+    setLastUpdated(new Date())
+  }, [metricsSig, catalog.isLoading])
+
+  React.useEffect(() => {
+    if (!catalog.isFetching && !catalog.isLoading && catalog.data) {
+      setLastUpdated(new Date())
+    }
+  }, [catalog.isFetching, catalog.isLoading, catalog.dataUpdatedAt, catalog.data])
+
+  const statsReady = !catalog.isLoading && rangeComplete && Boolean(catalog.data)
+  const isLiveFetching = catalog.isFetching || (isAdmin && voucherStatsQuery.isFetching)
 
   return (
     <div className="space-y-8">
@@ -210,32 +249,19 @@ export default function Dashboard() {
         </p>
       ) : null}
 
-      <PageHeader title="Overview" description={overviewDescription} />
-
-      {flashMessage ? (
-        <p
-          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100"
-          role="status"
-        >
-          {flashMessage}
-        </p>
-      ) : null}
-
-      <Card className="border-border/80 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Filters</CardTitle>
-          <CardDescription>
-            Choose a date range (defaults to the last 7 days through today). Commission and sales totals update
-            for the selected period.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="overview-location">{isSalesAgent ? "Wifi location" : "Location"}</Label>
-              {isAdmin ? (
+      <PageHeader title="Overview" description={overviewDescription}>
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
+            {isAdmin ? (
+              <div className="space-y-1 sm:text-right">
+                <Label
+                  htmlFor="overview-location-top"
+                  className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+                >
+                  Location
+                </Label>
                 <Select value={locationId} onValueChange={setLocationId}>
-                  <SelectTrigger id="overview-location" className="w-full shadow-none">
+                  <SelectTrigger id="overview-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
                     <SelectValue placeholder="All locations" />
                   </SelectTrigger>
                   <SelectContent>
@@ -247,52 +273,61 @@ export default function Dashboard() {
                     ))}
                   </SelectContent>
                 </Select>
-              ) : (
-                <div
-                  id="overview-location"
-                  className="border-border bg-card text-card-foreground w-full rounded-md border px-3 py-2 text-sm shadow-none"
-                >
-                  {agentStore ? (
-                    <div className="space-y-0.5">
-                      <p className="font-medium leading-snug">{agentStore.name}</p>
-                      {agentStore.address ? (
-                        <p className="text-muted-foreground text-xs leading-snug">{agentStore.address}</p>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground leading-snug">
-                      No store assigned yet. Ask an administrator to link your account to a location.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="overview-date-range">Date range</Label>
+              </div>
+            ) : (
+              <p className="text-muted-foreground flex items-center gap-1.5 pb-2 text-xs sm:justify-end">
+                <MapPin className="size-3.5 shrink-0" aria-hidden />
+                <span>{agentStore?.name ?? "No store assigned"}</span>
+              </p>
+            )}
+            <div className="space-y-1 sm:text-right">
+              <Label
+                htmlFor="overview-date-range"
+                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+              >
+                Date range
+              </Label>
               <DateRangePicker
                 id="overview-date-range"
                 value={dateRange}
                 onChange={handleDateRangeChange}
+                align="end"
+                className="h-9 w-full min-w-[11rem] shadow-none sm:w-56"
               />
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground text-xs font-medium">Quick range:</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(7)}>
+          <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(getLastNDaysRange(7))}
+            >
               Last 7 days
             </Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(30)}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(getLastNDaysRange(30))}
+            >
               Last 30 days
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setDateRange(getLastNDaysRange(7))}>
-              Reset to last 7 days
-            </Button>
           </div>
-          <p className="text-muted-foreground text-sm">
-            Showing <span className="text-foreground font-medium">{filterSummary}</span>
-          </p>
-        </CardContent>
-      </Card>
+          <LiveIndicator lastUpdated={lastUpdated} isFetching={isLiveFetching} />
+        </div>
+      </PageHeader>
+
+      {flashMessage ? (
+        <p
+          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100"
+          role="status"
+        >
+          {flashMessage}
+        </p>
+      ) : null}
 
       <div className="grid auto-rows-auto grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
         {isSalesAgent && agentKpi && agentDod ? (
@@ -302,6 +337,11 @@ export default function Dashboard() {
               icon={Percent}
               label="Total Commission"
               value={formatCedis(agentKpi.totalCommission)}
+              moneyAmount={agentKpi.totalCommission}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady}
               subline={`${agentKpi.totalSales} completed in range`}
               trend={{ text: commissionPercentLabel, positive: true }}
               sparkline={{ data: sparkTotalCommission, variant: "area" }}
@@ -311,6 +351,11 @@ export default function Dashboard() {
               icon={DollarSign}
               label={endDayCommissionLabel}
               value={formatCedis(agentKpi.todayCommission)}
+              moneyAmount={agentKpi.todayCommission}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady}
               subline={`Previous day ${formatCedis(agentDod.prevDayCommission)}`}
               trend={moneyDayTrend(agentDod.commissionDelta)}
               sparkline={{ data: sparkTodayCommission, variant: "bar" }}
@@ -320,6 +365,11 @@ export default function Dashboard() {
               icon={ShoppingCart}
               label="Total Sales"
               value={String(agentKpi.totalSales)}
+              countValue={agentKpi.totalSales}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady}
               subline={agentKpi.pending > 0 ? `${agentKpi.pending} pending` : "All completed"}
               trend={countDayTrend(agentDod.soldDelta)}
               sparkline={{ data: sparkCumulativeSales, variant: "bar" }}
@@ -329,6 +379,11 @@ export default function Dashboard() {
               icon={Calendar}
               label={endDaySalesLabel}
               value={String(agentKpi.todaySales)}
+              countValue={agentKpi.todaySales}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady}
               subline={`${agentKpi.totalSales} in selected range`}
               trend={countDayTrend(agentDod.soldDelta)}
               sparkline={{ data: sparkSold, variant: "area" }}
@@ -341,6 +396,11 @@ export default function Dashboard() {
               icon={DollarSign}
               label="Total Revenue"
               value={formatCedis(m.totalRevenue)}
+              moneyAmount={m.totalRevenue}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady}
               subline={`${m.sold} completed`}
               trend={{ text: `${m.utilizationRate}% utilized`, positive: true }}
               sparkline={{ data: sparkTotalRevenue, variant: "area" }}
@@ -350,6 +410,11 @@ export default function Dashboard() {
               icon={Calendar}
               label="Today's Revenue"
               value={formatCedis(m.todaysRevenue)}
+              moneyAmount={m.todaysRevenue}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady}
               subline={`Yesterday ${formatCedis(dod.prevDayCompletedRevenue)}`}
               trend={moneyDayTrend(dod.revenueDelta)}
               sparkline={{ data: sparkTodayRevenue, variant: "bar" }}
@@ -365,6 +430,11 @@ export default function Dashboard() {
                     ? "—"
                     : String(totalVouchersInScope)
               }
+              countValue={totalVouchersInScope}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady && !voucherStatsQuery.isLoading && !voucherStatsQuery.isError}
               subline={
                 voucherStatsQuery.isError
                   ? "Could not load vouchers"
@@ -378,6 +448,11 @@ export default function Dashboard() {
               icon={Wallet}
               label="Sold Vouchers"
               value={String(m.sold)}
+              countValue={m.sold}
+              animate
+              scopeKey={statsScopeKey}
+              pulseKey={pulseKey}
+              animateEnabled={statsReady}
               subline={
                 voucherStatsQuery.isLoading
                   ? "…"

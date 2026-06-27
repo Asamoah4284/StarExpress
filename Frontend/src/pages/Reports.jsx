@@ -121,10 +121,6 @@ export default function Reports() {
     ? `${locationLabel} · ${dateLabel}`
     : `${locationLabel} · ${dateLabel} (complete both dates to filter)`
 
-  const applyPresetDays = (days) => {
-    setDateRange(getLastNDaysRange(days))
-  }
-
   return (
     <div className="space-y-8">
       {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading reports…</p> : null}
@@ -136,22 +132,23 @@ export default function Reports() {
 
       <PageHeader
         title="Reports"
-        description="Filter by wifi location and any custom date range you choose. Defaults to the last 7 days through today."
-      />
-
-      <Card className="border-border/80 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Filters</CardTitle>
-          <CardDescription>
-            Choose a location, then open the calendar to set a custom start and end date and click Apply range.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="report-location">Location</Label>
+        description={
+          rangeComplete
+            ? `Revenue and sales for ${locationLabel} · ${dateLabel}.`
+            : "Filter by wifi location and date range. Defaults to the last 7 days through today."
+        }
+      >
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
+            <div className="space-y-1 sm:text-right">
+              <Label
+                htmlFor="report-location-top"
+                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+              >
+                Location
+              </Label>
               <Select value={locationId} onValueChange={setLocationId}>
-                <SelectTrigger id="report-location" className="w-full shadow-none">
+                <SelectTrigger id="report-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
                   <SelectValue placeholder="All locations" />
                 </SelectTrigger>
                 <SelectContent>
@@ -164,32 +161,44 @@ export default function Reports() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="report-date-range">Date range</Label>
+            <div className="space-y-1 sm:text-right">
+              <Label
+                htmlFor="report-date-range-top"
+                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+              >
+                Date range
+              </Label>
               <DateRangePicker
-                id="report-date-range"
+                id="report-date-range-top"
                 value={dateRange}
                 onChange={handleDateRangeChange}
+                align="end"
+                className="h-9 w-full min-w-[11rem] shadow-none sm:w-56"
               />
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground text-xs font-medium">Quick range:</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(7)}>
+          <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(getLastNDaysRange(7))}
+            >
               Last 7 days
             </Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(30)}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(getLastNDaysRange(30))}
+            >
               Last 30 days
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setDateRange(getLastNDaysRange(7))}>
-              Reset to last 7 days
-            </Button>
           </div>
-          <p className="text-muted-foreground text-sm">
-            Showing <span className="text-foreground font-medium">{filterSummary}</span>
-          </p>
-        </CardContent>
-      </Card>
+        </div>
+      </PageHeader>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <ReportStat

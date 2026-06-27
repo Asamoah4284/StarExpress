@@ -1,10 +1,11 @@
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { DateRangePicker } from "@/components/reports/DateRangePicker.jsx"
+import { LiveIndicator } from "@/components/customers/LiveIndicator.jsx"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -13,7 +14,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
+import { LIVE_POLL_MS, useLiveSales } from "@/hooks/useLiveCustomerDashboard.js"
 import { useCompanyName } from "@/hooks/useAppSettings.js"
 import { filterSalesByDateRange, filterSalesByLocation, salesToCsv } from "@/lib/aggregations.js"
 import {
@@ -28,6 +31,8 @@ import { locationNameById } from "@/lib/locations.js"
 import { formatCedis } from "@/lib/utils"
 
 export default function SalesHistory() {
+  const { token } = useAuth()
+  const queryClient = useQueryClient()
   const catalog = useCatalog()
   const companyName = useCompanyName()
   const locations = catalog.data?.locations ?? []
@@ -69,6 +74,32 @@ export default function SalesHistory() {
       return ta < tb ? 1 : ta > tb ? -1 : 0
     })
   }, [catalog.data, locationId, dateRange, rangeComplete])
+
+  const salesScopeKey = React.useMemo(() => {
+    const from = rangeComplete && dateRange?.from ? localDateToIso(dateRange.from) : ""
+    const to = rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : ""
+    return `${locationId}|${from}|${to}`
+  }, [locationId, dateRange, rangeComplete])
+
+  React.useEffect(() => {
+    if (!token) return
+    const id = window.setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", token] })
+    }, LIVE_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [token, queryClient])
+
+  const { highlightSaleIds, lastUpdated, markRefreshed } = useLiveSales({
+    sales: filtered,
+    scopeKey: salesScopeKey,
+    enabled: Boolean(catalog.data) && !catalog.isLoading,
+  })
+
+  React.useEffect(() => {
+    if (!catalog.isFetching && catalog.data) {
+      markRefreshed()
+    }
+  }, [catalog.isFetching, catalog.dataUpdatedAt, catalog.data, markRefreshed])
 
   const columns = React.useMemo(
     () => {
@@ -138,38 +169,27 @@ export default function SalesHistory() {
     URL.revokeObjectURL(url)
   }
 
-  const applyPresetDays = (days) => {
-    setDateRange(getLastNDaysRange(days))
-  }
-
   return (
     <div className="space-y-6">
-      <PageHeader title="Sales History" description="Browse and export sales. Filter by location and date range.">
-        <Button type="button" onClick={exportCsv} disabled={!filtered.length}>
-          Export to CSV
-        </Button>
-      </PageHeader>
-
-      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
-      {catalog.error ? (
-        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
-          {catalog.error instanceof Error ? catalog.error.message : "Failed to load"}
-        </p>
-      ) : null}
-
-      <Card className="border-border/80 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Filters</CardTitle>
-          <CardDescription>
-            Choose a location and date range, then click Apply range on the calendar.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="sales-history-location">Location</Label>
+      <PageHeader
+        title="Sales History"
+        description={
+          rangeComplete
+            ? `${filtered.length} sale${filtered.length === 1 ? "" : "s"} for ${locationLabel} · ${dateLabel}.`
+            : "Browse and export sales. Filter by location and date range."
+        }
+      >
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
+            <div className="space-y-1 sm:text-right">
+              <Label
+                htmlFor="sales-history-location-top"
+                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+              >
+                Location
+              </Label>
               <Select value={locationId} onValueChange={setLocationId}>
-                <SelectTrigger id="sales-history-location" className="w-full shadow-none">
+                <SelectTrigger id="sales-history-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
                   <SelectValue placeholder="All locations" />
                 </SelectTrigger>
                 <SelectContent>
@@ -182,44 +202,63 @@ export default function SalesHistory() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="sales-history-date-range">Date range</Label>
+            <div className="space-y-1 sm:text-right">
+              <Label
+                htmlFor="sales-history-date-range-top"
+                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+              >
+                Date range
+              </Label>
               <DateRangePicker
-                id="sales-history-date-range"
+                id="sales-history-date-range-top"
                 value={dateRange}
                 onChange={handleDateRangeChange}
+                align="end"
+                className="h-9 w-full min-w-[11rem] shadow-none sm:w-56"
               />
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground text-xs font-medium">Quick range:</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(7)}>
+          <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
+            <LiveIndicator lastUpdated={lastUpdated} isFetching={catalog.isFetching} />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(getLastNDaysRange(7))}
+            >
               Last 7 days
             </Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => applyPresetDays(30)}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(getLastNDaysRange(30))}
+            >
               Last 30 days
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setDateRange(getLastNDaysRange(7))}>
-              Reset to last 7 days
+            <Button type="button" onClick={exportCsv} disabled={!filtered.length}>
+              Export to CSV
             </Button>
           </div>
-          <p className="text-muted-foreground text-sm">
-            Showing{" "}
-            <span className="text-foreground font-medium">
-              {locationLabel} · {rangeComplete ? dateLabel : `${dateLabel} (complete both dates to filter)`}
-            </span>
-            {rangeComplete ? (
-              <>
-                {" "}
-                · <span className="text-foreground font-medium">{filtered.length}</span> sale
-                {filtered.length === 1 ? "" : "s"}
-              </>
-            ) : null}
-          </p>
-        </CardContent>
-      </Card>
+        </div>
+      </PageHeader>
 
-      <DataTable data={filtered} columns={columns} pageSize={10} searchPlaceholder="Search all columns…" />
+      {catalog.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {catalog.error ? (
+        <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
+          {catalog.error instanceof Error ? catalog.error.message : "Failed to load"}
+        </p>
+      ) : null}
+
+      <DataTable
+        data={filtered}
+        columns={columns}
+        pageSize={10}
+        searchPlaceholder="Search all columns…"
+        highlightRowIds={highlightSaleIds}
+      />
     </div>
   )
 }

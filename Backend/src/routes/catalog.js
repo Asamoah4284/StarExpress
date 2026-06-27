@@ -19,6 +19,7 @@ import {
   ghanaPhoneDedupeKey,
 } from "../lib/ghanaPhone.js"
 import { normalizePercentOff, roundMoney } from "../lib/promoDiscount.js"
+import { aggregateCustomers, summarizeCustomers } from "../lib/customerAnalytics.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -142,61 +143,10 @@ function toLocation(d) {
   }
 }
 
-/**
- * Collapse sale docs into one row per real buyer (024…/233… for the same line merge),
- * with the stats used to spot consistent buyers. Sorted by purchases, then the number of
- * distinct days they bought on, then total spend.
- * @param {import("mongodb").Document[]} saleDocs
- * @returns {{ phone: string, purchases: number, totalSpent: number, lastPurchase: string, activeDays: number }[]}
- */
-function aggregateCustomers(saleDocs) {
-  /** @type {Map<string, { phone: string, purchases: number, totalSpent: number, lastPurchase: string, days: Set<string> }>} */
-  const byKey = new Map()
-  for (const sale of saleDocs) {
-    const raw = typeof sale.customerPhone === "string" ? sale.customerPhone.trim() : ""
-    if (!raw) continue
-    const key = ghanaPhoneDedupeKey(raw)
-    if (!key || key.length < 7) continue
-    const localPhone = formatGhanaPhoneLocal(raw)
-    if (!localPhone) continue
-    const amount = Number(sale.amount)
-    const soldAt =
-      typeof sale.soldAt === "string" && sale.soldAt
-        ? sale.soldAt
-        : typeof sale.date === "string"
-          ? sale.date
-          : ""
-    const day = soldAt ? soldAt.slice(0, 10) : ""
-    const existing = byKey.get(key)
-    if (existing) {
-      existing.purchases += 1
-      if (Number.isFinite(amount)) existing.totalSpent += amount
-      if (soldAt && soldAt > existing.lastPurchase) existing.lastPurchase = soldAt
-      if (day) existing.days.add(day)
-    } else {
-      byKey.set(key, {
-        phone: localPhone,
-        purchases: 1,
-        totalSpent: Number.isFinite(amount) ? amount : 0,
-        lastPurchase: soldAt,
-        days: new Set(day ? [day] : []),
-      })
-    }
-  }
-  return Array.from(byKey.values())
-    .map((c) => ({
-      phone: c.phone,
-      purchases: c.purchases,
-      totalSpent: roundMoney(c.totalSpent),
-      lastPurchase: c.lastPurchase,
-      activeDays: c.days.size,
-    }))
-    .sort((a, b) => {
-      if (b.purchases !== a.purchases) return b.purchases - a.purchases
-      if (b.activeDays !== a.activeDays) return b.activeDays - a.activeDays
-      if (b.totalSpent !== a.totalSpent) return b.totalSpent - a.totalSpent
-      return a.phone.localeCompare(b.phone, undefined, { numeric: true })
-    })
+/** Sales with a phone that count toward customer analytics. */
+const CUSTOMER_SALE_FILTER = {
+  status: "Completed",
+  customerPhone: { $exists: true, $nin: [null, ""] },
 }
 
 /**
@@ -1599,7 +1549,7 @@ export function createCatalogRouter(deps) {
 
       const saleDocs = await sales
         .find(
-          { locationId, customerPhone: { $exists: true, $nin: [null, ""] } },
+          { ...CUSTOMER_SALE_FILTER, locationId },
           { projection: { customerPhone: 1, soldAt: 1, date: 1, amount: 1 } },
         )
         .toArray()
@@ -1610,6 +1560,7 @@ export function createCatalogRouter(deps) {
         locationId,
         locationName: typeof loc.name === "string" ? loc.name : locationId,
         totalUniqueNumbers: customers.length,
+        summary: summarizeCustomers(customers),
         customers,
       })
     } catch (err) {
@@ -1625,7 +1576,7 @@ export function createCatalogRouter(deps) {
     try {
       const requested = String(req.query?.locationId || "").trim()
       /** @type {Record<string, unknown>} */
-      const filter = { customerPhone: { $exists: true, $nin: [null, ""] } }
+      const filter = { ...CUSTOMER_SALE_FILTER }
       let scope = "all"
       let scopeLabel = "All locations"
 
@@ -1656,6 +1607,7 @@ export function createCatalogRouter(deps) {
         scope,
         scopeLabel,
         totalUniqueNumbers: customers.length,
+        summary: summarizeCustomers(customers),
         top: customers.slice(0, 5),
         customers,
       })
@@ -1672,6 +1624,7 @@ export function createCatalogRouter(deps) {
       const message = typeof req.body?.message === "string" ? req.body.message.trim() : ""
       const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : ""
       const requested = String(req.body?.locationId || "").trim()
+      const phonesRaw = Array.isArray(req.body?.phones) ? req.body.phones : null
 
       if (!message) return res.status(400).json({ error: "Message is required." })
       if (message.length > 480) {
@@ -1679,7 +1632,7 @@ export function createCatalogRouter(deps) {
       }
 
       /** @type {Record<string, unknown>} */
-      const filter = { customerPhone: { $exists: true, $nin: [null, ""] } }
+      const filter = { ...CUSTOMER_SALE_FILTER }
       let scopeLabel = "All locations"
 
       if (req.auth.role !== "Admin") {
@@ -1707,8 +1660,23 @@ export function createCatalogRouter(deps) {
         }
         recipients = [local]
         scopeLabel = "single customer"
+      } else if (phonesRaw && phonesRaw.length > 0) {
+        const seen = new Set()
+        for (const raw of phonesRaw) {
+          if (typeof raw !== "string") continue
+          const local = formatGhanaPhoneLocal(raw.trim())
+          if (!local || ghanaPhoneDedupeKey(local).length < 7) continue
+          const key = ghanaPhoneDedupeKey(local)
+          if (seen.has(key)) continue
+          seen.add(key)
+          recipients.push(local)
+        }
+        if (recipients.length === 0) {
+          return res.status(400).json({ error: "No valid phone numbers in the list." })
+        }
+        scopeLabel = `${recipients.length} selected customers`
       } else {
-        const saleDocs = await sales.find(filter, { projection: { customerPhone: 1 } }).toArray()
+        const saleDocs = await sales.find(filter, { projection: { customerPhone: 1, soldAt: 1, date: 1, amount: 1 } }).toArray()
         recipients = aggregateCustomers(saleDocs).map((c) => c.phone)
       }
 

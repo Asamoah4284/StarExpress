@@ -1,4 +1,5 @@
 import { getApiBaseUrl, getDefaultAppName, getDefaultCompanyName } from "@/lib/env.js"
+import { enrichCustomerRow, summarizeCustomers } from "@/lib/customerAnalytics.js"
 import { formatGhanaPhoneLocal, ghanaPhoneDedupeKey } from "@/lib/ghanaPhone.js"
 
 /**
@@ -56,10 +57,52 @@ function roundMoney(n) {
 }
 
 /**
- * @param {Array<string | { phone?: string, purchases?: number, totalSpent?: number, lastPurchase?: string, activeDays?: number }>} rows
+ * @param {unknown} c
+ */
+function normalizeCustomer(c) {
+  const row = {
+    phone: String(c?.phone || ""),
+    purchases: Number(c?.purchases) || 0,
+    totalSpent: Number(c?.totalSpent) || 0,
+    firstPurchase: typeof c?.firstPurchase === "string" ? c.firstPurchase : "",
+    lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
+    activeDays: Number(c?.activeDays) || 0,
+    daysSinceLastPurchase:
+      c?.daysSinceLastPurchase != null && Number.isFinite(Number(c.daysSinceLastPurchase))
+        ? Number(c.daysSinceLastPurchase)
+        : null,
+    avgDaysBetweenPurchases:
+      c?.avgDaysBetweenPurchases != null && Number.isFinite(Number(c.avgDaysBetweenPurchases))
+        ? Number(c.avgDaysBetweenPurchases)
+        : null,
+    segment: typeof c?.segment === "string" ? c.segment : undefined,
+  }
+  return enrichCustomerRow(row)
+}
+
+/**
+ * @param {unknown} data
+ */
+function normalizeCustomerSummary(data, customers) {
+  if (typeof data === "object" && data != null && typeof data.summary === "object" && data.summary != null) {
+    const s = data.summary
+    return {
+      total: Number(s.total) || customers.length,
+      active: Number(s.active) || 0,
+      inactive: Number(s.inactive) || 0,
+      repeat: Number(s.repeat) || 0,
+      oneTime: Number(s.oneTime) || 0,
+      inactiveThresholdDays: Number(s.inactiveThresholdDays) || 5,
+    }
+  }
+  return summarizeCustomers(customers)
+}
+
+/**
+ * @param {Array<string | { phone?: string, purchases?: number, totalSpent?: number, firstPurchase?: string, lastPurchase?: string, activeDays?: number, daysSinceLastPurchase?: number | null, avgDaysBetweenPurchases?: number | null, segment?: string }>} rows
  */
 function mergeAndSortCustomers(rows) {
-  /** @type {Map<string, { phone: string, purchases: number, totalSpent: number, lastPurchase: string, activeDays: number }>} */
+  /** @type {Map<string, { phone: string, purchases: number, totalSpent: number, firstPurchase: string, lastPurchase: string, activeDays: number }>} */
   const byKey = new Map()
   for (const row of rows) {
     const phone = typeof row === "string" ? row : String(row?.phone || "")
@@ -75,6 +118,10 @@ function mergeAndSortCustomers(rows) {
       typeof row === "object" && row != null && typeof row.lastPurchase === "string"
         ? row.lastPurchase
         : ""
+    const firstPurchase =
+      typeof row === "object" && row != null && typeof row.firstPurchase === "string"
+        ? row.firstPurchase
+        : lastPurchase
     const activeDays = typeof row === "object" && row != null ? Number(row.activeDays) || 0 : 0
 
     const existing = byKey.get(key)
@@ -83,22 +130,28 @@ function mergeAndSortCustomers(rows) {
       existing.totalSpent = roundMoney(existing.totalSpent + totalSpent)
       existing.activeDays = Math.max(existing.activeDays, activeDays)
       if (lastPurchase && lastPurchase > existing.lastPurchase) existing.lastPurchase = lastPurchase
+      if (firstPurchase && (!existing.firstPurchase || firstPurchase < existing.firstPurchase)) {
+        existing.firstPurchase = firstPurchase
+      }
     } else {
       byKey.set(key, {
         phone: local,
         purchases: purchases || 1,
         totalSpent: roundMoney(totalSpent),
+        firstPurchase: firstPurchase || lastPurchase,
         lastPurchase,
         activeDays,
       })
     }
   }
-  return Array.from(byKey.values()).sort((a, b) => {
-    if (b.purchases !== a.purchases) return b.purchases - a.purchases
-    if (b.activeDays !== a.activeDays) return b.activeDays - a.activeDays
-    if (b.totalSpent !== a.totalSpent) return b.totalSpent - a.totalSpent
-    return a.phone.localeCompare(b.phone, undefined, { numeric: true })
-  })
+  return Array.from(byKey.values())
+    .sort((a, b) => {
+      if (b.purchases !== a.purchases) return b.purchases - a.purchases
+      if (b.activeDays !== a.activeDays) return b.activeDays - a.activeDays
+      if (b.totalSpent !== a.totalSpent) return b.totalSpent - a.totalSpent
+      return a.phone.localeCompare(b.phone, undefined, { numeric: true })
+    })
+    .map((row) => enrichCustomerRow(row))
 }
 
 /**
@@ -152,6 +205,7 @@ async function fetchCustomersViaLocations(token, locationId, locations, agentLoc
     scope: resolvedScope,
     scopeLabel,
     totalUniqueNumbers: customers.length,
+    summary: summarizeCustomers(customers),
     top: customers.slice(0, 5),
     customers,
   }
@@ -800,27 +854,14 @@ export async function fetchCustomers(token, locationId = "all", options = {}) {
   if (typeof data !== "object" || data === null || !Array.isArray(data.customers)) {
     return { ok: false, error: "Unexpected response from server." }
   }
-  const customers = data.customers.map((c) => ({
-    phone: String(c?.phone || ""),
-    purchases: Number(c?.purchases) || 0,
-    totalSpent: Number(c?.totalSpent) || 0,
-    lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
-    activeDays: Number(c?.activeDays) || 0,
-  }))
+  const customers = data.customers.map(normalizeCustomer)
   return {
     ok: true,
     scope: String(data.scope || "all"),
     scopeLabel: String(data.scopeLabel || "All locations"),
     totalUniqueNumbers: Number(data.totalUniqueNumbers) || customers.length,
-    top: Array.isArray(data.top)
-      ? data.top.map((c) => ({
-          phone: String(c?.phone || ""),
-          purchases: Number(c?.purchases) || 0,
-          totalSpent: Number(c?.totalSpent) || 0,
-          lastPurchase: typeof c?.lastPurchase === "string" ? c.lastPurchase : "",
-          activeDays: Number(c?.activeDays) || 0,
-        }))
-      : customers.slice(0, 5),
+    summary: normalizeCustomerSummary(data, customers),
+    top: Array.isArray(data.top) ? data.top.map(normalizeCustomer) : customers.slice(0, 5),
     customers,
   }
 }
@@ -829,7 +870,7 @@ export async function fetchCustomers(token, locationId = "all", options = {}) {
  * Send an SMS update to one customer (`phone`) or broadcast to everyone in the current
  * scope (`locationId` "all" or a specific id). Sales agents are scoped to their store.
  * @param {string} token
- * @param {{ locationId?: string, phone?: string, message: string }} body
+ * @param {{ locationId?: string, phone?: string, phones?: string[], message: string }} body
  */
 export async function sendCustomersSms(token, body) {
   const { res, data } = await parseJsonResponse("/api/catalog/customers/sms", {
@@ -838,6 +879,7 @@ export async function sendCustomersSms(token, body) {
     body: JSON.stringify({
       locationId: body.locationId || "all",
       ...(body.phone ? { phone: body.phone } : {}),
+      ...(Array.isArray(body.phones) && body.phones.length > 0 ? { phones: body.phones } : {}),
       message: String(body.message ?? ""),
     }),
   })

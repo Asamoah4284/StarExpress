@@ -104,6 +104,8 @@ export function DataTable({
    * Default false — filter updates as the user types.
    */
   searchOnButton = false,
+  /** Sale/row ids to flash when new live data arrives. */
+  highlightRowIds,
 }) {
   const [internalFilter, setInternalFilter] = React.useState("")
   const [searchDraft, setSearchDraft] = React.useState("")
@@ -113,6 +115,11 @@ export function DataTable({
   React.useEffect(() => {
     if (controlledFilter !== undefined) setSearchDraft(controlledFilter)
   }, [controlledFilter])
+
+  const highlightSet = React.useMemo(
+    () => new Set((highlightRowIds ?? []).map(String)),
+    [highlightRowIds],
+  )
 
   // TanStack Table returns unstable function references; React Compiler skips memoization here.
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table
@@ -225,7 +232,11 @@ export function DataTable({
           <TableBody>
             {table.getRowModel().rows.length ? (
               table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id} data-state={row.getIsSelected() && "selected"}>
+                <TableRow
+                  key={row.id}
+                  data-state={row.getIsSelected() && "selected"}
+                  className={cn(highlightSet.has(String(row.original.id)) && "animate-sale-flash")}
+                >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell
                       key={cell.id}
@@ -262,11 +273,15 @@ export function DataTable({
           table.getRowModel().rows.map((row) => {
             const headerRow = table.getHeaderGroups()[0]
             const hero = getMobileHero(row.original)
+            const isHighlighted = highlightSet.has(String(row.original.id))
             return (
               <div
                 key={row.id}
                 role="listitem"
-                className="border-border bg-card overflow-hidden rounded-lg border shadow-none"
+                className={cn(
+                  "border-border bg-card overflow-hidden rounded-lg border shadow-none",
+                  isHighlighted && "animate-sale-flash",
+                )}
               >
                 {hero ? (
                   <div className="border-border/80 bg-muted/15 border-b px-4 py-3">

@@ -1,12 +1,11 @@
 import * as React from "react"
 import { useNavigate } from "react-router-dom"
-import { Trash2 } from "lucide-react"
+import { MapPin, Trash2 } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -576,9 +575,41 @@ export default function Packages() {
   return (
     <div className="space-y-6">
       <PageHeader title="Packages" description={pageDescription}>
-        <Button type="button" onClick={openAdd} disabled={!isAdmin}>
-          Add package
-        </Button>
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+          {isAdmin ? (
+            <div className="space-y-1 sm:text-right">
+              <Label
+                htmlFor="packages-location-top"
+                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+              >
+                Location
+              </Label>
+              <Select value={locationFilterId} onValueChange={setLocationFilterId}>
+                <SelectTrigger id="packages-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
+                  <SelectValue placeholder="All locations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All locations</SelectItem>
+                  {locations.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>
+                      {l.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : (
+            <p className="text-muted-foreground flex items-center gap-1.5 text-xs sm:justify-end">
+              <MapPin className="size-3.5 shrink-0" aria-hidden />
+              <span>{agentStore?.name ?? "No store assigned"}</span>
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <Button type="button" onClick={openAdd} disabled={!isAdmin}>
+              Add package
+            </Button>
+          </div>
+        </div>
       </PageHeader>
 
       {sellSuccess ? (
@@ -624,54 +655,6 @@ export default function Packages() {
         <p className="text-destructive bg-destructive/10 rounded-md px-3 py-2 text-sm" role="alert">
           {inventoryError instanceof Error ? inventoryError.message : "Could not load voucher counts."}
         </p>
-      ) : null}
-
-      {isAdmin ? (
-        <Card className="border-border/80 shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Filters</CardTitle>
-            <CardDescription>
-              Choose a location to show only packages with vouchers at that site. Totals and remaining stock are
-              scoped to that location.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="space-y-1.5 sm:max-w-xs">
-              <Label htmlFor="packages-location-filter">Location</Label>
-              <Select value={locationFilterId} onValueChange={setLocationFilterId}>
-                <SelectTrigger id="packages-location-filter" className="w-full shadow-none">
-                  <SelectValue placeholder="All locations" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All locations</SelectItem>
-                  {locations.map((l) => (
-                    <SelectItem key={l.id} value={l.id}>
-                      {l.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <p className="text-muted-foreground text-sm">
-              {viewingAllLocations ? (
-                <>
-                  Showing all <span className="text-foreground font-medium">{allPackages.length}</span>{" "}
-                  package{allPackages.length === 1 ? "" : "s"} with combined inventory across{" "}
-                  <span className="text-foreground font-medium">{locationFilterLabel}</span>
-                </>
-              ) : inventoryLoading ? (
-                <>Loading packages for {locationFilterLabel}…</>
-              ) : (
-                <>
-                  Showing{" "}
-                  <span className="text-foreground font-medium">{tableRows.length}</span> package
-                  {tableRows.length === 1 ? "" : "s"} at{" "}
-                  <span className="text-foreground font-medium">{locationFilterLabel}</span>
-                </>
-              )}
-            </p>
-          </CardContent>
-        </Card>
       ) : null}
 
       {scopedToSingleLocation && !inventoryLoading && !inventoryError && tableRows.length === 0 ? (

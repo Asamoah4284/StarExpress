@@ -10,9 +10,12 @@ import {
   Search,
   Send,
   Trophy,
-  Users,
+  Wifi,
 } from "lucide-react"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
+import { CustomerAnalyticsOverview } from "@/components/customers/CustomerAnalyticsOverview.jsx"
+import { LiveIndicator } from "@/components/customers/LiveIndicator.jsx"
+import { LIVE_POLL_MS, useLiveCustomerDashboard } from "@/hooks/useLiveCustomerDashboard.js"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -35,13 +38,40 @@ import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import { fetchCustomers, sendCustomersSms } from "@/lib/api.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
+import {
+  formatDaysSinceLastPurchase,
+  INACTIVE_THRESHOLD_DAYS,
+  segmentLabel,
+} from "@/lib/customerAnalytics.js"
 import { formatGhanaPhoneDisplayLocal, formatGhanaPhoneLocal } from "@/lib/ghanaPhone.js"
 import { ROLE_ADMIN, ROLE_SALES_AGENT } from "@/lib/roles.js"
 import { cn, formatCedis } from "@/lib/utils"
 
 const NUMBERS_PER_PAGE = 10
 const ALL_LOCATIONS = "all"
+const ALL_SEGMENTS = "all"
 const MAX_SMS_LENGTH = 480
+const INACTIVE_SMS_PLACEHOLDER =
+  "Hi! We noticed you haven't bought WiFi with us in a while. Come back today — ask about our latest bundles and promos."
+
+function SegmentBadge({ segment }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        segment === "inactive"
+          ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+          : segment === "repeat"
+            ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+            : segment === "one_time"
+              ? "bg-sky-500/15 text-sky-700 dark:text-sky-300"
+              : "bg-primary/10 text-primary",
+      )}
+    >
+      {segmentLabel(segment)}
+    </span>
+  )
+}
 
 export default function LocationCustomers() {
   const { token, user } = useAuth()
@@ -53,12 +83,15 @@ export default function LocationCustomers() {
   const agentStore = React.useMemo(() => findAgentStoreLocation(locations, user), [locations, user])
 
   const [scopeSelect, setScopeSelect] = React.useState(ALL_LOCATIONS)
+  const [segmentSelect, setSegmentSelect] = React.useState(ALL_SEGMENTS)
   const [search, setSearch] = React.useState("")
   const [page, setPage] = React.useState(0)
 
   // SMS composer
   const [smsOpen, setSmsOpen] = React.useState(false)
   const [smsTarget, setSmsTarget] = React.useState(/** @type {string | null} */ (null))
+  const [smsSegmentPhones, setSmsSegmentPhones] = React.useState(/** @type {string[] | null} */ (null))
+  const [smsSegmentLabel, setSmsSegmentLabel] = React.useState("")
   // For a broadcast: which location to send to ("all" or a specific id). Admins can change
   // this in the dialog without touching the page filter.
   const [broadcastTarget, setBroadcastTarget] = React.useState(ALL_LOCATIONS)
@@ -70,15 +103,21 @@ export default function LocationCustomers() {
 
   // Agents are scoped to their store server-side; "all" just means "your store" for them.
   const locationParam = isAdmin ? scopeSelect : ALL_LOCATIONS
+  const salesScopeId = isAdmin ? scopeSelect : agentStore?.id ?? ALL_LOCATIONS
 
   React.useEffect(() => {
     setPage(0)
     setSearch("")
+    setSegmentSelect(ALL_SEGMENTS)
   }, [scopeSelect])
 
   const customersQuery = useQuery({
     queryKey: ["customers", token, isAdmin ? scopeSelect : "agent-store"],
     enabled: Boolean(token) && !catalog.isLoading,
+    staleTime: 0,
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
     queryFn: async () => {
       if (!token) throw new Error("Not signed in")
       const result = await fetchCustomers(token, locationParam, {
@@ -90,11 +129,19 @@ export default function LocationCustomers() {
     },
   })
 
+  React.useEffect(() => {
+    if (!token) return
+    const id = window.setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["catalog", token] })
+    }, LIVE_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [token, queryClient])
+
   // Live count for the broadcast target chosen in the dialog. Shares the query key with the
   // main list, so picking the current view costs no extra fetch.
   const broadcastCountQuery = useQuery({
     queryKey: ["customers", token, broadcastTarget],
-    enabled: Boolean(token) && smsOpen && !smsTarget && isAdmin && !catalog.isLoading,
+    enabled: Boolean(token) && smsOpen && !smsTarget && !smsSegmentPhones && isAdmin && !catalog.isLoading,
     queryFn: async () => {
       if (!token) throw new Error("Not signed in")
       const result = await fetchCustomers(token, broadcastTarget, { locations })
@@ -108,21 +155,52 @@ export default function LocationCustomers() {
     [customersQuery.data],
   )
   const topCustomers = customersQuery.data?.top ?? []
+  const summary = customersQuery.data?.summary
   const totalUnique = customersQuery.data?.totalUniqueNumbers ?? allCustomers.length
   const scopeLabel =
     customersQuery.data?.scopeLabel || (isSalesAgent ? agentStore?.name ?? "Your store" : "All locations")
+  const inactiveThreshold = summary?.inactiveThresholdDays ?? INACTIVE_THRESHOLD_DAYS
+
+  const inactiveCustomers = React.useMemo(
+    () => allCustomers.filter((c) => c.segment === "inactive"),
+    [allCustomers],
+  )
+
+  const { pulseKey, lastUpdated, markRefreshed } = useLiveCustomerDashboard({
+    sales: catalog.data?.sales,
+    locationId: salesScopeId,
+    customerTotal: totalUnique,
+    enabled: Boolean(customersQuery.data) && !customersQuery.isLoading,
+  })
+
+  React.useEffect(() => {
+    if (!customersQuery.isFetching && customersQuery.data) {
+      markRefreshed()
+    }
+  }, [customersQuery.isFetching, customersQuery.dataUpdatedAt, customersQuery.data, markRefreshed])
 
   const filteredCustomers = React.useMemo(() => {
+    let rows = allCustomers
+    if (segmentSelect === "inactive") {
+      rows = rows.filter((c) => c.segment === "inactive")
+    } else if (segmentSelect === "active") {
+      rows = rows.filter((c) => c.segment !== "inactive")
+    } else if (segmentSelect === "repeat") {
+      rows = rows.filter((c) => c.purchases >= 2)
+    } else if (segmentSelect === "one_time") {
+      rows = rows.filter((c) => c.purchases <= 1)
+    }
+
     const q = search.trim().replace(/\s+/g, "")
-    if (!q) return allCustomers
+    if (!q) return rows
     const qDigits = q.replace(/\D/g, "")
-    return allCustomers.filter((c) => {
+    return rows.filter((c) => {
       const phone = c.phone || ""
       const local = formatGhanaPhoneLocal(phone)
       const display = formatGhanaPhoneDisplayLocal(phone).replace(/\s+/g, "")
       return local.includes(q) || display.includes(q) || phone.replace(/\D/g, "").includes(qDigits)
     })
-  }, [allCustomers, search])
+  }, [allCustomers, search, segmentSelect])
 
   const pageCount = Math.max(1, Math.ceil(filteredCustomers.length / NUMBERS_PER_PAGE))
   const safePage = Math.min(page, pageCount - 1)
@@ -136,10 +214,15 @@ export default function LocationCustomers() {
   }, [page, pageCount])
 
   const exportCsv = () => {
-    const header = "Phone number,Purchases,Active days,Total spent (GHS)"
+    const header =
+      "Phone number,Purchases,Active days,Total spent (GHS),First purchase,Last purchase,Days since last purchase,Avg days between purchases,Segment"
     const lines = filteredCustomers.map((c) => {
       const phone = formatGhanaPhoneLocal(c.phone).replace(/"/g, '""')
-      return `"${phone}",${c.purchases},${c.activeDays},${c.totalSpent}`
+      const first = c.firstPurchase ? c.firstPurchase.slice(0, 10) : ""
+      const last = c.lastPurchase ? c.lastPurchase.slice(0, 10) : ""
+      const daysSince = c.daysSinceLastPurchase ?? ""
+      const avgDays = c.avgDaysBetweenPurchases ?? ""
+      return `"${phone}",${c.purchases},${c.activeDays},${c.totalSpent},"${first}","${last}",${daysSince},${avgDays},${segmentLabel(c.segment)}`
     })
     const csv = [header, ...lines].join("\n")
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
@@ -157,8 +240,9 @@ export default function LocationCustomers() {
       const message = smsMessage.trim()
       if (!message) throw new Error("Enter a message to send.")
       const result = await sendCustomersSms(token, {
-        locationId: smsTarget ? locationParam : isAdmin ? broadcastTarget : ALL_LOCATIONS,
+        locationId: smsTarget || smsSegmentPhones ? locationParam : isAdmin ? broadcastTarget : ALL_LOCATIONS,
         phone: smsTarget || undefined,
+        phones: smsSegmentPhones && smsSegmentPhones.length > 0 ? smsSegmentPhones : undefined,
         message,
       })
       if (!result.ok) throw new Error(result.error || "Failed to send SMS.")
@@ -177,7 +261,20 @@ export default function LocationCustomers() {
 
   const openBroadcast = () => {
     setSmsTarget(null)
+    setSmsSegmentPhones(null)
+    setSmsSegmentLabel("")
     setBroadcastTarget(isAdmin ? scopeSelect : ALL_LOCATIONS)
+    setSmsMessage("")
+    setSmsResult(null)
+    setSmsError(null)
+    setSmsOpen(true)
+  }
+
+  const openInactiveSms = () => {
+    const phones = inactiveCustomers.map((c) => c.phone)
+    setSmsTarget(null)
+    setSmsSegmentPhones(phones)
+    setSmsSegmentLabel(`inactive customers in ${scopeLabel}`)
     setSmsMessage("")
     setSmsResult(null)
     setSmsError(null)
@@ -186,6 +283,8 @@ export default function LocationCustomers() {
 
   const openSingleSms = (phone) => {
     setSmsTarget(phone)
+    setSmsSegmentPhones(null)
+    setSmsSegmentLabel("")
     setSmsMessage("")
     setSmsResult(null)
     setSmsError(null)
@@ -203,61 +302,80 @@ export default function LocationCustomers() {
     : broadcastTarget === ALL_LOCATIONS
       ? "All locations"
       : locations.find((l) => l.id === broadcastTarget)?.name ?? "this location"
-  const recipientCount = smsTarget ? 1 : broadcastCount
+  const recipientCount = smsTarget ? 1 : smsSegmentPhones ? smsSegmentPhones.length : broadcastCount
+  const isSegmentSms = Boolean(smsSegmentPhones && smsSegmentPhones.length > 0)
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Customers"
-        description="Everyone who has purchased — across all locations by default. Filter by location, reward your most consistent buyers, and message them by SMS."
+        description="Track repeat buyers, spot customers who stopped buying after 5 days, and re-engage them by SMS."
       >
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={openBroadcast}
-            disabled={customersQuery.isLoading || totalUnique === 0}
-            className="gap-2"
-          >
-            <MessageSquare className="size-4" aria-hidden />
-            Message all
-          </Button>
-          <Button type="button" onClick={exportCsv} disabled={!filteredCustomers.length} className="gap-2">
-            <Download className="size-4" aria-hidden />
-            Export CSV
-          </Button>
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+          {isAdmin ? (
+            <div className="space-y-1 sm:text-right">
+              <Label
+                htmlFor="customers-location-top"
+                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+              >
+                WiFi location
+              </Label>
+              <Select value={scopeSelect} onValueChange={setScopeSelect}>
+                <SelectTrigger id="customers-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
+                  <SelectValue placeholder="All locations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_LOCATIONS}>All locations</SelectItem>
+                  {locations.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>
+                      {l.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : (
+            <p className="text-muted-foreground flex items-center gap-1.5 text-xs sm:justify-end">
+              <Wifi className="text-primary size-3.5 shrink-0" aria-hidden />
+              <span>{agentStore?.name ?? "No store assigned"}</span>
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <LiveIndicator
+              lastUpdated={lastUpdated}
+              isFetching={customersQuery.isFetching || catalog.isFetching}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={openBroadcast}
+              disabled={customersQuery.isLoading || totalUnique === 0}
+              className="gap-2"
+            >
+              <MessageSquare className="size-4" aria-hidden />
+              Message all
+            </Button>
+            <Button type="button" onClick={exportCsv} disabled={!filteredCustomers.length} className="gap-2">
+              <Download className="size-4" aria-hidden />
+              Export CSV
+            </Button>
+          </div>
         </div>
       </PageHeader>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Card className="border-border/80 shadow-sm">
-          <CardContent className="flex items-center gap-4 p-5">
-            <div className="bg-primary/10 flex size-11 shrink-0 items-center justify-center rounded-xl">
-              <Users className="text-primary size-5" aria-hidden />
-            </div>
-            <div>
-              <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Customers</p>
-              <p className="text-2xl font-bold tabular-nums">
-                {customersQuery.isLoading ? "…" : totalUnique}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-border/80 shadow-sm sm:col-span-1 lg:col-span-2">
-          <CardContent className="flex items-center gap-4 p-5">
-            <div className="bg-muted flex size-11 shrink-0 items-center justify-center rounded-xl">
-              <MapPin className="text-muted-foreground size-5" aria-hidden />
-            </div>
-            <div className="min-w-0">
-              <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Viewing</p>
-              <p className="truncate text-lg font-semibold">{scopeLabel}</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <CustomerAnalyticsOverview
+        loading={customersQuery.isLoading}
+        scopeLabel={scopeLabel}
+        inactiveThreshold={inactiveThreshold}
+        summary={summary}
+        customers={allCustomers}
+        inactiveCount={inactiveCustomers.length}
+        onMessageInactive={inactiveCustomers.length > 0 ? openInactiveSms : undefined}
+        pulseKey={pulseKey}
+      />
 
       {topCustomers.length > 0 ? (
-        <Card className="border-amber-500/30 bg-amber-500/[0.04] shadow-sm">
+        <Card className="border-amber-500/30 bg-amber-500/[0.04] shadow-none ring-1 ring-amber-500/20">
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
               <Trophy className="size-4 text-amber-500" aria-hidden />
@@ -312,7 +430,7 @@ export default function LocationCustomers() {
         </Card>
       ) : null}
 
-      <Card className="border-border/80 overflow-hidden shadow-sm">
+      <Card className="border-border/80 overflow-hidden shadow-none ring-1 ring-border">
         <CardHeader className="border-border/60 border-b pb-4">
           <CardTitle className="text-base">Filter</CardTitle>
           <CardDescription>
@@ -322,31 +440,27 @@ export default function LocationCustomers() {
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
           <div className="grid gap-4 md:grid-cols-2">
-            {isAdmin ? (
-              <div className="space-y-1.5">
-                <Label htmlFor="customers-location">WiFi location</Label>
-                <Select value={scopeSelect} onValueChange={setScopeSelect}>
-                  <SelectTrigger id="customers-location" className="w-full shadow-none">
-                    <SelectValue placeholder="All locations" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ALL_LOCATIONS}>All locations</SelectItem>
-                    {locations.map((l) => (
-                      <SelectItem key={l.id} value={l.id}>
-                        {l.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <Label>Your store</Label>
-                <p className="border-border bg-muted/30 rounded-md border px-3 py-2 text-sm font-medium">
-                  {agentStore?.name ?? "No store assigned"}
-                </p>
-              </div>
-            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="customers-segment">Segment</Label>
+              <Select
+                value={segmentSelect}
+                onValueChange={(v) => {
+                  setSegmentSelect(v)
+                  setPage(0)
+                }}
+              >
+                <SelectTrigger id="customers-segment" className="w-full shadow-none">
+                  <SelectValue placeholder="All segments" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_SEGMENTS}>All segments</SelectItem>
+                  <SelectItem value="active">Active (within {inactiveThreshold} days)</SelectItem>
+                  <SelectItem value="inactive">Inactive ({inactiveThreshold}+ days)</SelectItem>
+                  <SelectItem value="repeat">Repeat buyers</SelectItem>
+                  <SelectItem value="one_time">One-time buyers</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="customers-search">Search numbers</Label>
               <div className="relative">
@@ -373,7 +487,7 @@ export default function LocationCustomers() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/80 overflow-hidden shadow-sm">
+      <Card className="border-border/80 overflow-hidden shadow-none ring-1 ring-border">
         <CardHeader className="border-border/60 border-b pb-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -381,7 +495,7 @@ export default function LocationCustomers() {
               <CardDescription className="mt-1">
                 {customersQuery.isLoading
                   ? "Loading…"
-                  : `${filteredCustomers.length} customer${filteredCustomers.length === 1 ? "" : "s"}${search.trim() ? " matching search" : ", most active first"}`}
+                  : `${filteredCustomers.length} customer${filteredCustomers.length === 1 ? "" : "s"}${search.trim() || segmentSelect !== ALL_SEGMENTS ? " matching filters" : ", most active first"}`}
               </CardDescription>
             </div>
           </div>
@@ -391,7 +505,9 @@ export default function LocationCustomers() {
             <div className="text-muted-foreground flex justify-center py-16 text-sm">Loading customers…</div>
           ) : pageCustomers.length === 0 ? (
             <div className="text-muted-foreground py-16 text-center text-sm">
-              {search.trim() ? "No numbers match your search." : "No customers found yet."}
+              {search.trim() || segmentSelect !== ALL_SEGMENTS
+                ? "No customers match your filters."
+                : "No customers found yet."}
             </div>
           ) : (
             <ul className="divide-border divide-y">
@@ -399,7 +515,8 @@ export default function LocationCustomers() {
                 const rowNumber = safePage * NUMBERS_PER_PAGE + index + 1
                 const display = formatGhanaPhoneDisplayLocal(customer.phone)
                 const local = formatGhanaPhoneLocal(customer.phone)
-                const isTop = !search.trim() && rowNumber === 1 && customer.purchases > 0
+                const isTop = !search.trim() && segmentSelect === ALL_SEGMENTS && rowNumber === 1 && customer.purchases > 0
+                const recency = formatDaysSinceLastPurchase(customer.daysSinceLastPurchase)
                 return (
                   <li
                     key={local}
@@ -418,10 +535,16 @@ export default function LocationCustomers() {
                       {isTop ? <Trophy className="size-4" aria-hidden /> : <Phone className="size-4" aria-hidden />}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="font-mono text-base font-semibold tracking-wide tabular-nums">{display}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-mono text-base font-semibold tracking-wide tabular-nums">{display}</p>
+                        <SegmentBadge segment={customer.segment} />
+                      </div>
                       <p className="text-muted-foreground text-xs">
                         {local}
-                        {customer.lastPurchase ? ` · last ${customer.lastPurchase.slice(0, 10)}` : ""}
+                        {customer.activeDays > 0
+                          ? ` · ${customer.activeDays} active day${customer.activeDays === 1 ? "" : "s"}`
+                          : ""}
+                        {customer.lastPurchase ? ` · Last bought ${recency.toLowerCase()}` : ""}
                       </p>
                     </div>
                     <div className="shrink-0 text-right">
@@ -494,18 +617,28 @@ export default function LocationCustomers() {
           if (!o) {
             setSmsResult(null)
             setSmsError(null)
+            setSmsSegmentPhones(null)
+            setSmsSegmentLabel("")
           }
         }}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{smsTarget ? "Send SMS to customer" : "Message all customers"}</DialogTitle>
+            <DialogTitle>
+              {smsTarget
+                ? "Send SMS to customer"
+                : isSegmentSms
+                  ? "Message inactive customers"
+                  : "Message all customers"}
+            </DialogTitle>
             <DialogDescription>
               {smsTarget
                 ? `To ${formatGhanaPhoneDisplayLocal(smsTarget)}.`
-                : recipientCount == null
-                  ? `To all customers in ${broadcastLabel}.`
-                  : `To all ${recipientCount} customer${recipientCount === 1 ? "" : "s"} in ${broadcastLabel}.`}{" "}
+                : isSegmentSms
+                  ? `To ${recipientCount} ${smsSegmentLabel || "selected customers"}.`
+                  : recipientCount == null
+                    ? `To all customers in ${broadcastLabel}.`
+                    : `To all ${recipientCount} customer${recipientCount === 1 ? "" : "s"} in ${broadcastLabel}.`}{" "}
               Standard SMS rates apply.
             </DialogDescription>
           </DialogHeader>
@@ -526,7 +659,7 @@ export default function LocationCustomers() {
             </div>
           ) : (
             <div className="space-y-3">
-              {!smsTarget && isAdmin ? (
+              {!smsTarget && !isSegmentSms && isAdmin ? (
                 <div className="space-y-1.5">
                   <Label htmlFor="sms-target">Send to</Label>
                   <Select
@@ -560,7 +693,11 @@ export default function LocationCustomers() {
                   value={smsMessage}
                   onChange={(e) => setSmsMessage(e.target.value.slice(0, MAX_SMS_LENGTH))}
                   rows={4}
-                  placeholder="e.g. New data bundles are live at the front desk today. Reply STOP to opt out."
+                  placeholder={
+                    isSegmentSms
+                      ? INACTIVE_SMS_PLACEHOLDER
+                      : "e.g. New data bundles are live at the front desk today."
+                  }
                   disabled={smsMutation.isPending}
                   className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 flex min-h-24 w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none transition-[color,box-shadow] focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50"
                 />

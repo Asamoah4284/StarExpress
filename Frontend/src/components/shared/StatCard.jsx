@@ -1,4 +1,6 @@
 import { Card, CardContent } from "@/components/ui/card"
+import { AnimatedMoneyValue } from "@/components/shared/AnimatedMoneyValue.jsx"
+import { AnimatedStatValue } from "@/components/customers/AnimatedStatValue.jsx"
 import { StatSparkline } from "@/components/shared/StatSparkline.jsx"
 import { cn } from "@/lib/utils"
 
@@ -28,10 +30,50 @@ const TONE_SPARK = {
  * @param {{ text: string, positive: boolean } | null | undefined} props.trend
  * @param {{ data: { x?: string, y: number }[], variant?: "area" | "bar" } | null | undefined} props.sparkline
  * @param {StatTone} [props.tone]
+ * @param {boolean} [props.animate]
+ * @param {number} [props.countValue]
+ * @param {number} [props.moneyAmount]
+ * @param {string} [props.scopeKey]
+ * @param {number} [props.pulseKey]
+ * @param {boolean} [props.animateEnabled]
  */
-export function StatCard({ icon: Icon, label, value, subline, trend, sparkline, tone = "violet", className }) {
+export function StatCard({
+  icon: Icon,
+  label,
+  value,
+  subline,
+  trend,
+  sparkline,
+  tone = "violet",
+  className,
+  animate = false,
+  countValue,
+  moneyAmount,
+  scopeKey = "",
+  pulseKey = 0,
+  animateEnabled = true,
+}) {
   const iconTone = TONE_ICON[tone] ?? TONE_ICON.violet
   const sparkTone = TONE_SPARK[tone] ?? TONE_SPARK.violet
+
+  const displayValue =
+    animate && animateEnabled && moneyAmount != null && Number.isFinite(Number(moneyAmount)) ? (
+      <AnimatedMoneyValue
+        amount={Number(moneyAmount)}
+        scopeKey={scopeKey}
+        pulseKey={pulseKey}
+        enabled={animateEnabled}
+      />
+    ) : animate && animateEnabled && countValue != null && Number.isFinite(Number(countValue)) ? (
+      <AnimatedStatValue
+        value={Math.round(Number(countValue))}
+        scopeKey={scopeKey}
+        pulseKey={pulseKey}
+        enabled={animateEnabled}
+      />
+    ) : (
+      value
+    )
 
   return (
     <Card
@@ -52,7 +94,7 @@ export function StatCard({ icon: Icon, label, value, subline, trend, sparkline, 
 
         <div className="mt-1.5 flex items-start justify-between gap-2">
           <p className="text-foreground min-w-0 flex-1 text-xl font-semibold tracking-tight tabular-nums sm:text-[1.35rem]">
-            {value}
+            {displayValue}
           </p>
           {trend ? (
             <span

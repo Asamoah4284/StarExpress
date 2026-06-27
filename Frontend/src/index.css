@@ -190,3 +190,47 @@
   transform: translateY(-50%);
   fill: var(--muted-foreground);
 }
+
+@keyframes stat-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.12);
+    color: var(--primary);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes sale-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--success) 28%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes live-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+.animate-stat-pop {
+  animation: stat-pop 0.65s ease-out;
+}
+
+.animate-sale-flash {
+  animation: sale-flash 1.8s ease-out;
+}
+
+.animate-live-ring {
+  animation: live-ring 2s ease-in-out infinite;
+}
