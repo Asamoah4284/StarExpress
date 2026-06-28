@@ -5,7 +5,7 @@ const BUCKET_COLORS = ["#22c55e", "#4ade80", "#f59e0b", "#fb923c", "#ef4444"]
 /**
  * @param {{ customers: Array<{ daysSinceLastPurchase?: number | null }>, thresholdDays?: number, height?: number }} props
  */
-export function CustomerRecencyBarChart({ customers, thresholdDays = 5, height = 200 }) {
+export function CustomerRecencyBarChart({ customers, thresholdDays = 8, height = 200 }) {
   const buckets = [
     { name: "Today", min: 0, max: 0, value: 0 },
     { name: "1–4 days", min: 1, max: thresholdDays - 1, value: 0 },

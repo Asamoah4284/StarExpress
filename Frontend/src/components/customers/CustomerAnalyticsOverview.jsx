@@ -81,6 +81,11 @@ export function CustomerAnalyticsOverview({
                 )}
               </p>
               <p className="text-muted-foreground mt-1 text-sm">Unique buyers in scope</p>
+              {scopeLabel === "All locations" ? (
+                <p className="text-muted-foreground/80 mt-0.5 text-xs">
+                  Deduplicated across stores — not added per location.
+                </p>
+              ) : null}
             </div>
 
             <div className="border-border/60 grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border/60 sm:grid-cols-4">

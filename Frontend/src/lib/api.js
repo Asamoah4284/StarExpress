@@ -1,5 +1,5 @@
 import { getApiBaseUrl, getDefaultAppName, getDefaultCompanyName } from "@/lib/env.js"
-import { enrichCustomerRow, summarizeCustomers } from "@/lib/customerAnalytics.js"
+import { enrichCustomerRow, pickNewBuyersOutsideTop, summarizeCustomers } from "@/lib/customerAnalytics.js"
 import { formatGhanaPhoneLocal, ghanaPhoneDedupeKey } from "@/lib/ghanaPhone.js"
 
 /**
@@ -76,6 +76,7 @@ function normalizeCustomer(c) {
         ? Number(c.avgDaysBetweenPurchases)
         : null,
     segment: typeof c?.segment === "string" ? c.segment : undefined,
+    displayName: typeof c?.displayName === "string" && c.displayName.trim() ? c.displayName.trim() : undefined,
   }
   return enrichCustomerRow(row)
 }
@@ -92,7 +93,7 @@ function normalizeCustomerSummary(data, customers) {
       inactive: Number(s.inactive) || 0,
       repeat: Number(s.repeat) || 0,
       oneTime: Number(s.oneTime) || 0,
-      inactiveThresholdDays: Number(s.inactiveThresholdDays) || 5,
+      inactiveThresholdDays: Number(s.inactiveThresholdDays) || 8,
     }
   }
   return summarizeCustomers(customers)
@@ -207,6 +208,7 @@ async function fetchCustomersViaLocations(token, locationId, locations, agentLoc
     totalUniqueNumbers: customers.length,
     summary: summarizeCustomers(customers),
     top: customers.slice(0, 5),
+    newBuyers: pickNewBuyersOutsideTop(customers, 5),
     customers,
   }
 }
@@ -862,7 +864,36 @@ export async function fetchCustomers(token, locationId = "all", options = {}) {
     totalUniqueNumbers: Number(data.totalUniqueNumbers) || customers.length,
     summary: normalizeCustomerSummary(data, customers),
     top: Array.isArray(data.top) ? data.top.map(normalizeCustomer) : customers.slice(0, 5),
+    newBuyers: Array.isArray(data.newBuyers)
+      ? data.newBuyers.map(normalizeCustomer)
+      : Array.isArray(data.dailyBuyers)
+        ? data.dailyBuyers.map(normalizeCustomer)
+        : pickNewBuyersOutsideTop(customers, 5),
     customers,
+  }
+}
+
+/**
+ * Update a customer's display name or remove them from the scoped buyer list.
+ * Sales history is kept; excluded numbers are hidden from analytics only.
+ * @param {string} token
+ * @param {{ phone: string, locationId?: string, displayName?: string | null, excluded?: boolean }} body
+ */
+export async function patchCustomerProfile(token, body) {
+  const { res, data } = await parseJsonResponse("/api/catalog/customers/profile", {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    return { ok: false, error: apiErrorMessage(res, data) }
+  }
+  return {
+    ok: true,
+    scope: typeof data?.scope === "string" ? data.scope : "",
+    phone: typeof data?.phone === "string" ? data.phone : body.phone,
+    displayName: typeof data?.displayName === "string" ? data.displayName : null,
+    excluded: data?.excluded === true,
   }
 }
 

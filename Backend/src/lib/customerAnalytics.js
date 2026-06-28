@@ -3,7 +3,7 @@ import { roundMoney } from "./promoDiscount.js"
 
 /** @typedef {"active" | "inactive" | "one_time" | "repeat"} CustomerSegment */
 
-export const INACTIVE_THRESHOLD_DAYS = 5
+export const INACTIVE_THRESHOLD_DAYS = 8
 
 /**
  * @param {string} isoOrDate
@@ -50,6 +50,17 @@ export function avgDaysBetweenPurchases(firstPurchase, lastPurchase, purchases) 
 }
 
 /**
+ * Prefer customerPhone, fall back to paymentNumber for buyer identity.
+ * @param {{ customerPhone?: unknown, paymentNumber?: unknown }} sale
+ */
+export function resolveSaleCustomerPhone(sale) {
+  const customer = typeof sale.customerPhone === "string" ? sale.customerPhone.trim() : ""
+  if (customer) return customer
+  const payment = typeof sale.paymentNumber === "string" ? sale.paymentNumber.trim() : ""
+  return payment
+}
+
+/**
  * Collapse sale docs into one row per real buyer with analytics fields.
  * @param {import("mongodb").Document[]} saleDocs
  * @param {{ thresholdDays?: number, now?: Date }} [options]
@@ -72,7 +83,7 @@ export function aggregateCustomers(saleDocs, options = {}) {
   /** @type {Map<string, { phone: string, purchases: number, totalSpent: number, firstPurchase: string, lastPurchase: string, days: Set<string> }>} */
   const byKey = new Map()
   for (const sale of saleDocs) {
-    const raw = typeof sale.customerPhone === "string" ? sale.customerPhone.trim() : ""
+    const raw = resolveSaleCustomerPhone(sale)
     if (!raw) continue
     const key = ghanaPhoneDedupeKey(raw)
     if (!key || key.length < 7) continue
@@ -128,6 +139,53 @@ export function aggregateCustomers(saleDocs, options = {}) {
       if (b.activeDays !== a.activeDays) return b.activeDays - a.activeDays
       if (b.totalSpent !== a.totalSpent) return b.totalSpent - a.totalSpent
       return a.phone.localeCompare(b.phone, undefined, { numeric: true })
+    })
+}
+
+/** How far back to surface first-time numbers in the new-buyers highlight. */
+export const NEW_BUYER_LOOKBACK_DAYS = 1
+
+/**
+ * First-time buyer only: one purchase ever, on a single day, first seen within lookback.
+ * @param {{
+ *   purchases?: number,
+ *   activeDays?: number,
+ *   firstPurchase?: string,
+ *   lastPurchase?: string,
+ * }} customer
+ * @param {{ lookbackDays?: number, now?: Date }} [options]
+ */
+export function isNewBuyer(customer, options = {}) {
+  const lookbackDays = options.lookbackDays ?? NEW_BUYER_LOOKBACK_DAYS
+  const now = options.now ?? new Date()
+  if ((customer.purchases ?? 0) !== 1) return false
+  if ((customer.activeDays ?? 0) !== 1) return false
+  const firstSeen = customer.firstPurchase || customer.lastPurchase || ""
+  const daysSinceFirst = daysSincePurchase(firstSeen, now)
+  if (daysSinceFirst == null) return false
+  return daysSinceFirst <= lookbackDays
+}
+
+/**
+ * Recent first-time numbers, excluding phones already in the top-N purchase list.
+ * @param {ReturnType<typeof aggregateCustomers>} customers
+ * @param {number} [topCount]
+ * @param {{ lookbackDays?: number, now?: Date }} [options]
+ */
+export function pickNewBuyersOutsideTop(customers, topCount = 5, options = {}) {
+  const now = options.now ?? new Date()
+  const topKeys = new Set(
+    customers.slice(0, topCount).map((c) => ghanaPhoneDedupeKey(c.phone)).filter(Boolean),
+  )
+  return customers
+    .filter((c) => isNewBuyer(c, options) && !topKeys.has(ghanaPhoneDedupeKey(c.phone)))
+    .sort((a, b) => {
+      const daysA = daysSincePurchase(a.firstPurchase || a.lastPurchase || "", now) ?? 999
+      const daysB = daysSincePurchase(b.firstPurchase || b.lastPurchase || "", now) ?? 999
+      if (daysA !== daysB) return daysA - daysB
+      const ta = a.firstPurchase || a.lastPurchase || ""
+      const tb = b.firstPurchase || b.lastPurchase || ""
+      return tb.localeCompare(ta)
     })
 }
 

@@ -19,7 +19,16 @@ import {
   ghanaPhoneDedupeKey,
 } from "../lib/ghanaPhone.js"
 import { normalizePercentOff, roundMoney } from "../lib/promoDiscount.js"
-import { aggregateCustomers, summarizeCustomers } from "../lib/customerAnalytics.js"
+import { aggregateCustomers, pickNewBuyersOutsideTop, summarizeCustomers } from "../lib/customerAnalytics.js"
+import {
+  applyCustomerProfiles,
+  buildPhoneLocationMap,
+  customerProfileId,
+  loadCustomerProfileIndex,
+  normalizeDisplayNameInput,
+  parseCustomerProfilePhone,
+  resolveCustomerScope,
+} from "../lib/customerProfiles.js"
 
 const MAX_VOUCHER_BATCH_DATA_ROWS = 8_000
 
@@ -146,7 +155,10 @@ function toLocation(d) {
 /** Sales with a phone that count toward customer analytics. */
 const CUSTOMER_SALE_FILTER = {
   status: "Completed",
-  customerPhone: { $exists: true, $nin: [null, ""] },
+  $or: [
+    { customerPhone: { $exists: true, $nin: [null, ""] } },
+    { paymentNumber: { $exists: true, $nin: [null, ""] } },
+  ],
 }
 
 /**
@@ -565,14 +577,59 @@ function requireSalesAgentOrAdmin(req, res, next) {
  *   auditLogs: import("mongodb").Collection
  *   vouchers: import("mongodb").Collection
  *   users: import("mongodb").Collection
+ *   customerProfiles: import("mongodb").Collection
  *   jwtSecret: string
  * }} deps
  */
 export function createCatalogRouter(deps) {
-  const { locations, packages, sales, disputes, auditLogs, vouchers, users, agentPaymentPending, jwtSecret } =
-    deps
+  const {
+    locations,
+    packages,
+    sales,
+    disputes,
+    auditLogs,
+    vouchers,
+    users,
+    agentPaymentPending,
+    customerProfiles,
+    jwtSecret,
+  } = deps
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
+
+  /**
+   * @param {import("express").Request} req
+   * @param {string} requestedLocationId
+   */
+  async function fetchScopedCustomers(req, requestedLocationId) {
+    const resolved = await resolveCustomerScope({
+      auth: req.auth,
+      requestedLocationId,
+      locations,
+      users,
+      findAgentLocation: findConflictingLocationForSalesAgent,
+      customerSaleFilter: CUSTOMER_SALE_FILTER,
+    })
+    if ("error" in resolved) return resolved
+
+    const saleDocs = await sales
+      .find(resolved.filter, {
+        projection: {
+          customerPhone: 1,
+          paymentNumber: 1,
+          soldAt: 1,
+          date: 1,
+          amount: 1,
+          locationId: 1,
+        },
+      })
+      .toArray()
+    const phoneLocations = buildPhoneLocationMap(saleDocs)
+    const aggregated = aggregateCustomers(saleDocs)
+    const profileIndex = await loadCustomerProfileIndex(customerProfiles)
+    const customers = applyCustomerProfiles(aggregated, profileIndex, resolved.scope, phoneLocations)
+    return { ...resolved, customers }
+  }
 
   router.get("/audit-logs", requireAdmin, async (_req, res) => {
     try {
@@ -1550,11 +1607,23 @@ export function createCatalogRouter(deps) {
       const saleDocs = await sales
         .find(
           { ...CUSTOMER_SALE_FILTER, locationId },
-          { projection: { customerPhone: 1, soldAt: 1, date: 1, amount: 1 } },
+          {
+            projection: {
+              customerPhone: 1,
+              paymentNumber: 1,
+              soldAt: 1,
+              date: 1,
+              amount: 1,
+              locationId: 1,
+            },
+          },
         )
         .toArray()
 
-      const customers = aggregateCustomers(saleDocs)
+      const phoneLocations = buildPhoneLocationMap(saleDocs)
+      const aggregated = aggregateCustomers(saleDocs)
+      const profileIndex = await loadCustomerProfileIndex(customerProfiles)
+      const customers = applyCustomerProfiles(aggregated, profileIndex, locationId, phoneLocations)
 
       res.json({
         locationId,
@@ -1575,33 +1644,12 @@ export function createCatalogRouter(deps) {
   router.get("/customers", requireSalesAgentOrAdmin, async (req, res) => {
     try {
       const requested = String(req.query?.locationId || "").trim()
-      /** @type {Record<string, unknown>} */
-      const filter = { ...CUSTOMER_SALE_FILTER }
-      let scope = "all"
-      let scopeLabel = "All locations"
-
-      if (req.auth.role !== "Admin") {
-        const agentLoc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
-        if (!agentLoc) {
-          return res.status(403).json({
-            error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
-          })
-        }
-        filter.locationId = String(agentLoc._id)
-        scope = String(agentLoc._id)
-        scopeLabel = typeof agentLoc.name === "string" ? agentLoc.name : scope
-      } else if (requested && requested !== "all") {
-        const loc = await locations.findOne({ _id: requested })
-        if (!loc) return res.status(404).json({ error: "Location not found." })
-        filter.locationId = requested
-        scope = requested
-        scopeLabel = typeof loc.name === "string" ? loc.name : requested
+      const result = await fetchScopedCustomers(req, requested)
+      if ("error" in result) {
+        return res.status(result.status).json({ error: result.error })
       }
 
-      const saleDocs = await sales
-        .find(filter, { projection: { customerPhone: 1, soldAt: 1, date: 1, amount: 1 } })
-        .toArray()
-      const customers = aggregateCustomers(saleDocs)
+      const { scope, scopeLabel, customers } = result
 
       res.json({
         scope,
@@ -1609,7 +1657,97 @@ export function createCatalogRouter(deps) {
         totalUniqueNumbers: customers.length,
         summary: summarizeCustomers(customers),
         top: customers.slice(0, 5),
+        newBuyers: pickNewBuyersOutsideTop(customers, 5),
         customers,
+      })
+    } catch (err) {
+      console.error(err)
+      const { status, error } = mongoHttpError(err)
+      res.status(status).json({ error })
+    }
+  })
+
+  router.patch("/customers/profile", requireSalesAgentOrAdmin, async (req, res) => {
+    try {
+      const parsedPhone = parseCustomerProfilePhone(req.body?.phone)
+      if ("error" in parsedPhone) {
+        return res.status(400).json({ error: parsedPhone.error })
+      }
+
+      const requested = String(req.body?.locationId || req.query?.locationId || "all").trim()
+      const resolved = await resolveCustomerScope({
+        auth: req.auth,
+        requestedLocationId: requested,
+        locations,
+        users,
+        findAgentLocation: findConflictingLocationForSalesAgent,
+        customerSaleFilter: CUSTOMER_SALE_FILTER,
+      })
+      if ("error" in resolved) {
+        return res.status(resolved.status).json({ error: resolved.error })
+      }
+
+      const hasDisplayName = Object.prototype.hasOwnProperty.call(req.body ?? {}, "displayName")
+      const hasExcluded = Object.prototype.hasOwnProperty.call(req.body ?? {}, "excluded")
+      if (!hasDisplayName && !hasExcluded) {
+        return res.status(400).json({ error: "Provide displayName and/or excluded in the request body." })
+      }
+
+      const displayName = hasDisplayName ? normalizeDisplayNameInput(req.body.displayName) : undefined
+      const excluded = hasExcluded ? Boolean(req.body.excluded) : undefined
+
+      const id = customerProfileId(resolved.scope, parsedPhone.phoneKey)
+      const now = new Date().toISOString()
+      /** @type {Record<string, unknown>} */
+      const setFields = {
+        scope: resolved.scope,
+        phoneKey: parsedPhone.phoneKey,
+        phone: parsedPhone.phone,
+        updatedAt: now,
+        updatedBy: req.auth.userId,
+      }
+      /** @type {Record<string, unknown>} */
+      const unsetFields = {}
+
+      if (hasDisplayName) {
+        if (displayName) setFields.displayName = displayName
+        else unsetFields.displayName = ""
+      }
+      if (hasExcluded) {
+        setFields.excluded = excluded === true
+      }
+
+      /** @type {Record<string, unknown>} */
+      const update = { $set: setFields }
+      if (Object.keys(unsetFields).length > 0) {
+        update.$unset = unsetFields
+      }
+
+      await customerProfiles.updateOne({ _id: id }, update, { upsert: true })
+
+      const label = displayName || parsedPhone.phone
+      if (hasExcluded && excluded) {
+        await appendAuditLog(
+          auditLogs,
+          req.auth,
+          `Removed customer ${label} from ${resolved.scopeLabel} buyer list (sales kept)`,
+        )
+      } else if (hasDisplayName) {
+        await appendAuditLog(
+          auditLogs,
+          req.auth,
+          displayName
+            ? `Named customer ${parsedPhone.phone} as "${displayName}" in ${resolved.scopeLabel}`
+            : `Cleared customer name for ${parsedPhone.phone} in ${resolved.scopeLabel}`,
+        )
+      }
+
+      res.json({
+        ok: true,
+        scope: resolved.scope,
+        phone: parsedPhone.phone,
+        displayName: displayName ?? null,
+        excluded: excluded === true,
       })
     } catch (err) {
       console.error(err)
@@ -1676,7 +1814,7 @@ export function createCatalogRouter(deps) {
         }
         scopeLabel = `${recipients.length} selected customers`
       } else {
-        const saleDocs = await sales.find(filter, { projection: { customerPhone: 1, soldAt: 1, date: 1, amount: 1 } }).toArray()
+        const saleDocs = await sales.find(filter, { projection: { customerPhone: 1, paymentNumber: 1, soldAt: 1, date: 1, amount: 1 } }).toArray()
         recipients = aggregateCustomers(saleDocs).map((c) => c.phone)
       }
 

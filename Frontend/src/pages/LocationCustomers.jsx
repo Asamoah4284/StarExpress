@@ -4,12 +4,15 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  MapPin,
   MessageSquare,
+  Pencil,
   Phone,
   Search,
   Send,
+  Trash2,
   Trophy,
+  User,
+  UserPlus,
   Wifi,
 } from "lucide-react"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
@@ -22,6 +25,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -36,10 +40,11 @@ import {
 } from "@/components/ui/select"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
-import { fetchCustomers, sendCustomersSms } from "@/lib/api.js"
+import { fetchCustomers, patchCustomerProfile, sendCustomersSms } from "@/lib/api.js"
 import { findAgentStoreLocation } from "@/lib/agentLocation.js"
 import {
   formatDaysSinceLastPurchase,
+  formatFirstSeenLabel,
   INACTIVE_THRESHOLD_DAYS,
   segmentLabel,
 } from "@/lib/customerAnalytics.js"
@@ -73,6 +78,10 @@ function SegmentBadge({ segment }) {
   )
 }
 
+function customerPrimaryLabel(customer) {
+  return customer.displayName?.trim() || formatGhanaPhoneDisplayLocal(customer.phone)
+}
+
 export default function LocationCustomers() {
   const { token, user } = useAuth()
   const queryClient = useQueryClient()
@@ -100,6 +109,15 @@ export default function LocationCustomers() {
     /** @type {{ total: number, sent: number, failed: number } | null} */ (null),
   )
   const [smsError, setSmsError] = React.useState(/** @type {string | null} */ (null))
+
+  const [nameDialogOpen, setNameDialogOpen] = React.useState(false)
+  const [nameDialogPhone, setNameDialogPhone] = React.useState(/** @type {string | null} */ (null))
+  const [nameDraft, setNameDraft] = React.useState("")
+  const [nameError, setNameError] = React.useState(/** @type {string | null} */ (null))
+
+  const [removeDialogOpen, setRemoveDialogOpen] = React.useState(false)
+  const [removeDialogPhone, setRemoveDialogPhone] = React.useState(/** @type {string | null} */ (null))
+  const [removeError, setRemoveError] = React.useState(/** @type {string | null} */ (null))
 
   // Agents are scoped to their store server-side; "all" just means "your store" for them.
   const locationParam = isAdmin ? scopeSelect : ALL_LOCATIONS
@@ -155,6 +173,7 @@ export default function LocationCustomers() {
     [customersQuery.data],
   )
   const topCustomers = customersQuery.data?.top ?? []
+  const newBuyers = customersQuery.data?.newBuyers ?? customersQuery.data?.dailyBuyers ?? []
   const summary = customersQuery.data?.summary
   const totalUnique = customersQuery.data?.totalUniqueNumbers ?? allCustomers.length
   const scopeLabel =
@@ -198,7 +217,13 @@ export default function LocationCustomers() {
       const phone = c.phone || ""
       const local = formatGhanaPhoneLocal(phone)
       const display = formatGhanaPhoneDisplayLocal(phone).replace(/\s+/g, "")
-      return local.includes(q) || display.includes(q) || phone.replace(/\D/g, "").includes(qDigits)
+      const name = (c.displayName || "").toLowerCase()
+      return (
+        local.includes(q) ||
+        display.includes(q) ||
+        phone.replace(/\D/g, "").includes(qDigits) ||
+        name.includes(q.toLowerCase())
+      )
     })
   }, [allCustomers, search, segmentSelect])
 
@@ -215,14 +240,15 @@ export default function LocationCustomers() {
 
   const exportCsv = () => {
     const header =
-      "Phone number,Purchases,Active days,Total spent (GHS),First purchase,Last purchase,Days since last purchase,Avg days between purchases,Segment"
+      "Name,Phone number,Purchases,Active days,Total spent (GHS),First purchase,Last purchase,Days since last purchase,Avg days between purchases,Segment"
     const lines = filteredCustomers.map((c) => {
+      const name = (c.displayName || "").replace(/"/g, '""')
       const phone = formatGhanaPhoneLocal(c.phone).replace(/"/g, '""')
       const first = c.firstPurchase ? c.firstPurchase.slice(0, 10) : ""
       const last = c.lastPurchase ? c.lastPurchase.slice(0, 10) : ""
       const daysSince = c.daysSinceLastPurchase ?? ""
       const avgDays = c.avgDaysBetweenPurchases ?? ""
-      return `"${phone}",${c.purchases},${c.activeDays},${c.totalSpent},"${first}","${last}",${daysSince},${avgDays},${segmentLabel(c.segment)}`
+      return `"${name}","${phone}",${c.purchases},${c.activeDays},${c.totalSpent},"${first}","${last}",${daysSince},${avgDays},${segmentLabel(c.segment)}`
     })
     const csv = [header, ...lines].join("\n")
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
@@ -233,6 +259,35 @@ export default function LocationCustomers() {
     a.click()
     URL.revokeObjectURL(url)
   }
+
+  const profileMutation = useMutation({
+    mutationFn: async (/** @type {{ phone: string, displayName?: string | null, excluded?: boolean }} */ payload) => {
+      if (!token) throw new Error("Not signed in")
+      const result = await patchCustomerProfile(token, {
+        phone: payload.phone,
+        locationId: locationParam,
+        ...(Object.prototype.hasOwnProperty.call(payload, "displayName")
+          ? { displayName: payload.displayName }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(payload, "excluded") ? { excluded: payload.excluded } : {}),
+      })
+      if (!result.ok) throw new Error(result.error || "Could not update customer.")
+      return result
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["customers", token, isAdmin ? scopeSelect : "agent-store"] })
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      setNameDialogOpen(false)
+      setRemoveDialogOpen(false)
+      setNameError(null)
+      setRemoveError(null)
+    },
+    onError: (e) => {
+      const message = e instanceof Error ? e.message : "Could not update customer."
+      if (nameDialogOpen) setNameError(message)
+      if (removeDialogOpen) setRemoveError(message)
+    },
+  })
 
   const smsMutation = useMutation({
     mutationFn: async () => {
@@ -291,6 +346,40 @@ export default function LocationCustomers() {
     setSmsOpen(true)
   }
 
+  const openNameDialog = (customer) => {
+    setNameDialogPhone(customer.phone)
+    setNameDraft(customer.displayName || "")
+    setNameError(null)
+    setNameDialogOpen(true)
+  }
+
+  const openRemoveDialog = (customer) => {
+    setRemoveDialogPhone(customer.phone)
+    setRemoveError(null)
+    setRemoveDialogOpen(true)
+  }
+
+  const saveCustomerName = () => {
+    if (!nameDialogPhone) return
+    profileMutation.mutate({
+      phone: nameDialogPhone,
+      displayName: nameDraft.trim() || null,
+    })
+  }
+
+  const removeCustomerFromScope = () => {
+    if (!removeDialogPhone) return
+    profileMutation.mutate({
+      phone: removeDialogPhone,
+      excluded: true,
+    })
+  }
+
+  const removeDialogCustomer = React.useMemo(
+    () => allCustomers.find((c) => c.phone === removeDialogPhone) ?? null,
+    [allCustomers, removeDialogPhone],
+  )
+
   // Recipient count + label for the broadcast confirmation. Agents are fixed to their store;
   // admins follow the dialog's target picker (falling back to the current view's count).
   const broadcastCount = isSalesAgent
@@ -309,7 +398,7 @@ export default function LocationCustomers() {
     <div className="space-y-6">
       <PageHeader
         title="Customers"
-        description="Track repeat buyers, spot customers who stopped buying after 5 days, and re-engage them by SMS."
+        description={`Track repeat buyers, spot customers who stopped buying after ${INACTIVE_THRESHOLD_DAYS} days, and re-engage them by SMS.`}
       >
         <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
           {isAdmin ? (
@@ -405,9 +494,14 @@ export default function LocationCustomers() {
                   {i + 1}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-sm font-semibold tabular-nums">
-                    {formatGhanaPhoneDisplayLocal(c.phone)}
+                  <p className="truncate text-sm font-semibold">
+                    {c.displayName || formatGhanaPhoneDisplayLocal(c.phone)}
                   </p>
+                  {c.displayName ? (
+                    <p className="text-muted-foreground truncate font-mono text-xs tabular-nums">
+                      {formatGhanaPhoneDisplayLocal(c.phone)}
+                    </p>
+                  ) : null}
                   <p className="text-muted-foreground text-xs">
                     {c.purchases} buy{c.purchases === 1 ? "" : "s"} · {c.activeDays} day
                     {c.activeDays === 1 ? "" : "s"}
@@ -420,6 +514,57 @@ export default function LocationCustomers() {
                   size="icon-sm"
                   className="text-muted-foreground hover:text-foreground shrink-0"
                   aria-label={`Send SMS to ${formatGhanaPhoneDisplayLocal(c.phone)}`}
+                  onClick={() => openSingleSms(c.phone)}
+                >
+                  <MessageSquare className="size-4" aria-hidden />
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {newBuyers.length > 0 ? (
+        <Card className="border-sky-500/30 bg-sky-500/[0.04] shadow-none ring-1 ring-sky-500/20">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <UserPlus className="size-4 text-sky-600 dark:text-sky-400" aria-hidden />
+              <CardTitle className="text-base">New buyers</CardTitle>
+            </div>
+            <CardDescription>
+              First-time numbers seen today or yesterday (one purchase only — not returning buyers), excluding the top
+              5 reward list in {scopeLabel}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {newBuyers.map((c) => (
+              <div
+                key={formatGhanaPhoneLocal(c.phone)}
+                className="border-border/70 bg-background/60 flex items-center gap-3 rounded-lg border px-3 py-2.5"
+              >
+                <span className="bg-sky-500/15 text-sky-700 dark:text-sky-300 flex size-7 shrink-0 items-center justify-center rounded-full">
+                  <UserPlus className="size-3.5" aria-hidden />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">
+                    {c.displayName || formatGhanaPhoneDisplayLocal(c.phone)}
+                  </p>
+                  {c.displayName ? (
+                    <p className="text-muted-foreground truncate font-mono text-xs tabular-nums">
+                      {formatGhanaPhoneDisplayLocal(c.phone)}
+                    </p>
+                  ) : null}
+                  <p className="text-muted-foreground text-xs">
+                    {formatFirstSeenLabel(c.firstPurchase || c.lastPurchase)}
+                    {c.totalSpent > 0 ? ` · ${formatCedis(c.totalSpent)}` : ""}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:text-foreground shrink-0"
+                  aria-label={`Send SMS to ${customerPrimaryLabel(c)}`}
                   onClick={() => openSingleSms(c.phone)}
                 >
                   <MessageSquare className="size-4" aria-hidden />
@@ -462,7 +607,7 @@ export default function LocationCustomers() {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="customers-search">Search numbers</Label>
+              <Label htmlFor="customers-search">Search customers</Label>
               <div className="relative">
                 <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
                 <Input
@@ -472,7 +617,7 @@ export default function LocationCustomers() {
                     setSearch(e.target.value)
                     setPage(0)
                   }}
-                  placeholder="e.g. 024 or 054"
+                  placeholder="Name, 024, or 054"
                   className="pl-9 shadow-none"
                 />
               </div>
@@ -529,18 +674,33 @@ export default function LocationCustomers() {
                       className={
                         isTop
                           ? "flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-500"
-                          : "bg-primary/10 text-primary flex size-9 shrink-0 items-center justify-center rounded-lg"
+                          : customer.displayName
+                            ? "bg-violet-500/10 text-violet-600 dark:text-violet-400 flex size-9 shrink-0 items-center justify-center rounded-lg"
+                            : "bg-primary/10 text-primary flex size-9 shrink-0 items-center justify-center rounded-lg"
                       }
                     >
-                      {isTop ? <Trophy className="size-4" aria-hidden /> : <Phone className="size-4" aria-hidden />}
+                      {isTop ? (
+                        <Trophy className="size-4" aria-hidden />
+                      ) : customer.displayName ? (
+                        <User className="size-4" aria-hidden />
+                      ) : (
+                        <Phone className="size-4" aria-hidden />
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-mono text-base font-semibold tracking-wide tabular-nums">{display}</p>
+                        <p
+                          className={cn(
+                            "truncate font-semibold tracking-wide",
+                            customer.displayName ? "text-base" : "font-mono text-base tabular-nums",
+                          )}
+                        >
+                          {customerPrimaryLabel(customer)}
+                        </p>
                         <SegmentBadge segment={customer.segment} />
                       </div>
                       <p className="text-muted-foreground text-xs">
-                        {local}
+                        {customer.displayName ? display : local}
                         {customer.activeDays > 0
                           ? ` · ${customer.activeDays} active day${customer.activeDays === 1 ? "" : "s"}`
                           : ""}
@@ -558,16 +718,38 @@ export default function LocationCustomers() {
                         <p className="text-muted-foreground text-xs tabular-nums">{formatCedis(customer.totalSpent)}</p>
                       ) : null}
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      className="text-muted-foreground hover:text-foreground shrink-0"
-                      aria-label={`Send SMS to ${display}`}
-                      onClick={() => openSingleSms(customer.phone)}
-                    >
-                      <MessageSquare className="size-4" aria-hidden />
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground hover:text-foreground"
+                        aria-label={`Name ${customerPrimaryLabel(customer)}`}
+                        onClick={() => openNameDialog(customer)}
+                      >
+                        <Pencil className="size-4" aria-hidden />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        aria-label={`Remove ${customerPrimaryLabel(customer)} from buyer list`}
+                        onClick={() => openRemoveDialog(customer)}
+                      >
+                        <Trash2 className="size-4" aria-hidden />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground hover:text-foreground"
+                        aria-label={`Send SMS to ${display}`}
+                        onClick={() => openSingleSms(customer.phone)}
+                      >
+                        <MessageSquare className="size-4" aria-hidden />
+                      </Button>
+                    </div>
                   </li>
                 )
               })}
@@ -732,6 +914,97 @@ export default function LocationCustomers() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={nameDialogOpen}
+        onOpenChange={(open) => {
+          setNameDialogOpen(open)
+          if (!open) {
+            setNameDialogPhone(null)
+            setNameDraft("")
+            setNameError(null)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Name this customer</DialogTitle>
+            <DialogDescription>
+              Add a friendly name for{" "}
+              {nameDialogPhone ? formatGhanaPhoneDisplayLocal(nameDialogPhone) : "this number"}. Leave blank to clear an
+              existing name. Sales and purchase history are not changed.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="customer-display-name">Display name</Label>
+              <Input
+                id="customer-display-name"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                placeholder="e.g. Kofi, Room 12, Front desk"
+                maxLength={80}
+                className="shadow-none"
+                disabled={profileMutation.isPending}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    saveCustomerName()
+                  }
+                }}
+              />
+            </div>
+            {nameError ? (
+              <p className="text-destructive text-sm" role="alert">
+                {nameError}
+              </p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setNameDialogOpen(false)} disabled={profileMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={saveCustomerName} disabled={profileMutation.isPending}>
+                {profileMutation.isPending ? "Saving…" : "Save name"}
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={removeDialogOpen}
+        onOpenChange={(open) => {
+          setRemoveDialogOpen(open)
+          if (!open) {
+            setRemoveDialogPhone(null)
+            setRemoveError(null)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove from buyer list?</DialogTitle>
+            <DialogDescription>
+              {removeDialogCustomer
+                ? `${customerPrimaryLabel(removeDialogCustomer)} will be removed from the unique buyers list for ${scopeLabel}. Past sales stay in Sales History.`
+                : `This number will be removed from the unique buyers list for ${scopeLabel}. Past sales stay in Sales History.`}
+            </DialogDescription>
+          </DialogHeader>
+          {removeError ? (
+            <p className="text-destructive text-sm" role="alert">
+              {removeError}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setRemoveDialogOpen(false)} disabled={profileMutation.isPending}>
+              Cancel
+            </Button>
+            <Button type="button" variant="destructive" onClick={removeCustomerFromScope} disabled={profileMutation.isPending}>
+              {profileMutation.isPending ? "Removing…" : "Remove from list"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

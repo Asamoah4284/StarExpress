@@ -1,4 +1,61 @@
-export const INACTIVE_THRESHOLD_DAYS = 5
+import { ghanaPhoneDedupeKey } from "@/lib/ghanaPhone.js"
+
+export const INACTIVE_THRESHOLD_DAYS = 8
+export const NEW_BUYER_LOOKBACK_DAYS = 1
+
+/**
+ * @param {{
+ *   purchases?: number,
+ *   activeDays?: number,
+ *   firstPurchase?: string,
+ *   lastPurchase?: string,
+ * }} customer
+ * @param {{ lookbackDays?: number, now?: Date }} [options]
+ */
+export function isNewBuyer(customer, options = {}) {
+  const lookbackDays = options.lookbackDays ?? NEW_BUYER_LOOKBACK_DAYS
+  const now = options.now ?? new Date()
+  if ((customer.purchases ?? 0) !== 1) return false
+  if ((customer.activeDays ?? 0) !== 1) return false
+  const firstSeen = customer.firstPurchase || customer.lastPurchase || ""
+  const daysSinceFirst = daysSincePurchase(firstSeen, now)
+  if (daysSinceFirst == null) return false
+  return daysSinceFirst <= lookbackDays
+}
+
+/**
+ * @param {ReturnType<typeof enrichCustomerRow>[]} customers
+ * @param {number} [topCount]
+ * @param {{ lookbackDays?: number, now?: Date }} [options]
+ */
+export function pickNewBuyersOutsideTop(customers, topCount = 5, options = {}) {
+  const now = options.now ?? new Date()
+  const topKeys = new Set(
+    customers.slice(0, topCount).map((c) => ghanaPhoneDedupeKey(c.phone)).filter(Boolean),
+  )
+  return customers
+    .filter((c) => isNewBuyer(c, options) && !topKeys.has(ghanaPhoneDedupeKey(c.phone)))
+    .sort((a, b) => {
+      const daysA = daysSincePurchase(a.firstPurchase || a.lastPurchase || "", now) ?? 999
+      const daysB = daysSincePurchase(b.firstPurchase || b.lastPurchase || "", now) ?? 999
+      if (daysA !== daysB) return daysA - daysB
+      const ta = a.firstPurchase || a.lastPurchase || ""
+      const tb = b.firstPurchase || b.lastPurchase || ""
+      return tb.localeCompare(ta)
+    })
+}
+
+/**
+ * @param {string} firstPurchase
+ * @param {Date} [now]
+ */
+export function formatFirstSeenLabel(firstPurchase, now = new Date()) {
+  const days = daysSincePurchase(firstPurchase, now)
+  if (days == null) return "Unknown"
+  if (days === 0) return "First seen today"
+  if (days === 1) return "First seen yesterday"
+  return `First seen ${days} days ago`
+}
 
 /**
  * @param {string} isoOrDate
@@ -77,6 +134,9 @@ export function enrichCustomerRow(row, now = new Date()) {
         ? row.avgDaysBetweenPurchases
         : avgDaysBetweenPurchases(firstPurchase, lastPurchase, row.purchases),
     segment,
+    ...(typeof row.displayName === "string" && row.displayName.trim()
+      ? { displayName: row.displayName.trim() }
+      : {}),
   }
 }
 

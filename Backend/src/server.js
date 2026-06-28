@@ -14,6 +14,7 @@ import {
   getSignupOtpsCollection,
   getUssdSessionsCollection,
   getAgentPaymentPendingCollection,
+  getCustomerProfilesCollection,
 } from "./db/mongo.js"
 import { UserStore } from "./userStore.js"
 import { SignupOtpStore } from "./lib/signupOtpStore.js"
@@ -210,6 +211,7 @@ async function main() {
       users: getUsersCollection(),
       ussdSessions: getUssdSessionsCollection(),
       agentPaymentPending: getAgentPaymentPendingCollection(),
+      customerProfiles: getCustomerProfilesCollection(),
       jwtSecret: JWT_SECRET,
     }),
   )
