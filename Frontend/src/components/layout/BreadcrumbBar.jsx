@@ -9,6 +9,8 @@ const ROUTE_TITLES = {
   "/location-customers": "Customers",
   "/reports": "Reports",
   "/revenue-split": "Revenue split",
+  "/finance": "Finance",
+  "/finance/expenses": "Expenses",
   "/packages": "Packages",
   "/vouchers": "Upload vouchers",
   "/vouchers/uploaded": "Uploaded vouchers",

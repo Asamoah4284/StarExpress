@@ -13,17 +13,15 @@ import { useCatalog } from "@/hooks/useCatalog.js"
 import { useSalesAgentCommissionRate } from "@/hooks/useAppSettings.js"
 import { fetchUsersList } from "@/lib/api.js"
 import {
+  currentWeekRange,
   filterSalesByDateRange,
   getAgentSalesCommissionRows,
-  getWeekEndFromStart,
-  getWeekStartFromDate,
   sumAgentSalesCommissionRows,
 } from "@/lib/aggregations.js"
 import {
   formatDateRangeLabel,
   getLastNDaysRange,
   isCompleteDateRange,
-  isoToLocalDate,
   localDateToIso,
   normalizeDateRange,
 } from "@/lib/dates.js"
@@ -66,7 +64,7 @@ export default function AgentCommissions() {
   React.useEffect(() => {
     if (rangeInitialized.current) return
     rangeInitialized.current = true
-    setDateRange(getLastNDaysRange(7))
+    setDateRange(currentWeekRange())
   }, [])
 
   const rangeComplete = isCompleteDateRange(dateRange)
@@ -111,9 +109,7 @@ export default function AgentCommissions() {
 
   const applyThisWeek = () => {
     setAllTime(false)
-    const weekStart = getWeekStartFromDate(localDateToIso(new Date()))
-    const weekEnd = getWeekEndFromStart(weekStart)
-    setDateRange({ from: isoToLocalDate(weekStart), to: isoToLocalDate(weekEnd) })
+    setDateRange(currentWeekRange())
   }
 
   const columns = React.useMemo(

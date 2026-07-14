@@ -38,9 +38,14 @@ function url(path) {
 function apiErrorMessage(res, data) {
   if (typeof data === "object" && data && "error" in data) {
     const err = String(data.error)
-    if (err.includes("<!DOCTYPE") || err.includes("Cannot GET") || err.includes("Cannot POST")) {
+    if (
+      err.includes("<!DOCTYPE") ||
+      err.includes("Cannot GET") ||
+      err.includes("Cannot POST") ||
+      err.includes("Cannot PATCH")
+    ) {
       if (res.status === 404) {
-        return "This feature is not available on the server yet. Redeploy the backend API to enable it."
+        return "This feature is not available on the server yet. Restart or redeploy the backend API, then try again."
       }
       return res.statusText || "Request failed."
     }
@@ -723,7 +728,7 @@ export async function fetchAuditLogs(token) {
 
 /**
  * @param {string} token
- * @param {{ name: string, address: string, manager: string, totalSales: number, managerUserId?: string | null }} body
+ * @param {{ name: string, address: string, manager: string, totalSales: number, managerUserId?: string | null, managerPayoutNumber?: string }} body
  */
 export async function createCatalogLocation(token, body) {
   const { res, data } = await parseJsonResponse("/api/catalog/locations", {
@@ -750,6 +755,7 @@ export async function createCatalogLocation(token, body) {
  *   manager?: string
  *   totalSales?: number
  *   managerUserId?: string | null
+ *   managerPayoutNumber?: string
  * }} body
  */
 export async function updateCatalogLocation(token, id, body) {
@@ -1156,4 +1162,134 @@ export async function updateAppSettings(token, body) {
  */
 export async function updateAppSettingsCommission(token, body) {
   return updateAppSettings(token, body)
+}
+
+/**
+ * @param {string} token
+ * @param {string | { date?: string, from?: string, to?: string }} [opts]
+ *   Pass an ISO date for the finance week containing that day, or `{ from, to }` for a custom range.
+ */
+export async function fetchFinanceSummary(token, opts) {
+  const params = new URLSearchParams()
+  if (typeof opts === "string" && opts) {
+    params.set("date", opts)
+  } else if (opts && typeof opts === "object") {
+    if (opts.from) params.set("from", opts.from)
+    if (opts.to) params.set("to", opts.to)
+    if (opts.date) params.set("date", opts.date)
+  }
+  const q = params.toString() ? `?${params.toString()}` : ""
+  const { res, data } = await parseJsonResponse(`/api/finance/summary${q}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    return { ok: false, error: apiErrorMessage(res, data) }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.locations) || typeof data.totals !== "object") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return {
+    ok: true,
+    weekStart: String(data.weekStart || ""),
+    weekEnd: String(data.weekEnd || ""),
+    isFinanceWeek: data.isFinanceWeek === true,
+    lightBillWeeks: Number(data.lightBillWeeks) || 1,
+    timezone: String(data.timezone || "Africa/Accra"),
+    locations: data.locations,
+    totals: data.totals,
+    snapshot: data.snapshot ?? null,
+  }
+}
+
+/**
+ * @param {string} token
+ * @param {{ locationId?: string, from?: string, to?: string }} [filters]
+ */
+export async function fetchFinanceExpenses(token, filters = {}) {
+  const params = new URLSearchParams()
+  if (filters.locationId) params.set("locationId", filters.locationId)
+  if (filters.from) params.set("from", filters.from)
+  if (filters.to) params.set("to", filters.to)
+  const q = params.toString() ? `?${params.toString()}` : ""
+  const { res, data } = await parseJsonResponse(`/api/finance/expenses${q}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    return { ok: false, error: apiErrorMessage(res, data) }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.expenses)) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, expenses: data.expenses }
+}
+
+/**
+ * @param {string} token
+ * @param {{ title: string, category: string, amount: number, date: string, locationId?: string | null, notes?: string }} body
+ */
+export async function createFinanceExpense(token, body) {
+  const { res, data } = await parseJsonResponse("/api/finance/expenses", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    return { ok: false, error: apiErrorMessage(res, data) }
+  }
+  if (typeof data !== "object" || data === null || typeof data.expense !== "object") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, expense: data.expense }
+}
+
+/**
+ * @param {string} token
+ * @param {string} id
+ */
+export async function deleteFinanceExpense(token, id) {
+  const { res, data } = await parseJsonResponse(`/api/finance/expenses/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    return { ok: false, error: apiErrorMessage(res, data) }
+  }
+  return { ok: true }
+}
+
+/** @param {string} token */
+export async function fetchFinanceLocations(token) {
+  const { res, data } = await parseJsonResponse("/api/finance/locations", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    return { ok: false, error: apiErrorMessage(res, data) }
+  }
+  if (typeof data !== "object" || data === null || !Array.isArray(data.locations)) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, locations: data.locations }
+}
+
+/**
+ * @param {string} token
+ * @param {string} id
+ * @param {{ commissionRate?: number, lightBillAmount?: number, name?: string, manager?: string }} body
+ */
+export async function updateFinanceLocation(token, id, body) {
+  const { res, data } = await parseJsonResponse(`/api/finance/locations/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    return { ok: false, error: apiErrorMessage(res, data) }
+  }
+  if (typeof data !== "object" || data === null || typeof data.location !== "object") {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, location: data.location }
 }

@@ -1,4 +1,6 @@
-import { eachIsoDayInRange } from "./dates.js"
+import { accraTodayIso, eachIsoDayInRange, formatDateRangeLabel, isoToLocalDate } from "./dates.js"
+
+export { accraTodayIso }
 
 /**
  * Filter sales by location id or null for all.
@@ -27,22 +29,43 @@ export function filterSalesForAgentAttribution(sales) {
   })
 }
 
-/** ISO `YYYY-MM-DD` for Monday of the week containing `isoDate`. */
+
+/** ISO `YYYY-MM-DD` for Tuesday of the week containing `isoDate` (Tuesday–Monday). */
 export function getWeekStartFromDate(isoDate) {
   const d = new Date(`${isoDate}T12:00:00Z`)
   if (Number.isNaN(d.getTime())) return isoDate
   const day = d.getUTCDay()
-  const diff = day === 0 ? -6 : 1 - day
-  d.setUTCDate(d.getUTCDate() + diff)
+  const daysSinceTuesday = day === 0 ? 5 : day === 1 ? 6 : day - 2
+  d.setUTCDate(d.getUTCDate() - daysSinceTuesday)
   return d.toISOString().slice(0, 10)
 }
 
-/** ISO `YYYY-MM-DD` for Sunday of the week that starts on `weekStart` (Monday). */
+/** ISO `YYYY-MM-DD` for Monday of the week that starts on `weekStart` (Tuesday). */
 export function getWeekEndFromStart(weekStart) {
   const d = new Date(`${weekStart}T12:00:00Z`)
   if (Number.isNaN(d.getTime())) return weekStart
   d.setUTCDate(d.getUTCDate() + 6)
   return d.toISOString().slice(0, 10)
+}
+
+/**
+ * @param {string} [isoDate] any day in the target week; defaults to Accra today
+ * @returns {{ weekStart: string, weekEnd: string }}
+ */
+export function resolveWeekRange(isoDate) {
+  const anchor =
+    isoDate && /^\d{4}-\d{2}-\d{2}$/.test(String(isoDate).trim().slice(0, 10))
+      ? String(isoDate).trim().slice(0, 10)
+      : accraTodayIso()
+  const weekStart = getWeekStartFromDate(anchor)
+  const weekEnd = getWeekEndFromStart(weekStart)
+  return { weekStart, weekEnd }
+}
+
+/** @returns {{ from: Date, to: Date }} */
+export function currentWeekRange() {
+  const { weekStart, weekEnd } = resolveWeekRange()
+  return { from: isoToLocalDate(weekStart), to: isoToLocalDate(weekEnd) }
 }
 
 /**
@@ -60,22 +83,13 @@ export function filterSalesByDateRange(sales, startInclusive, endInclusive) {
  * @param {string} weekEnd
  */
 export function formatWeekRangeLabel(weekStart, weekEnd) {
-  const s = new Date(`${weekStart}T12:00:00Z`)
-  const e = new Date(`${weekEnd}T12:00:00Z`)
-  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return `${weekStart} – ${weekEnd}`
-  const dayMonth = { day: "numeric", month: "short" }
-  const dayMonthYear = { day: "numeric", month: "short", year: "numeric" }
-  if (s.getUTCFullYear() === e.getUTCFullYear() && s.getUTCMonth() === e.getUTCMonth()) {
-    return `${s.getUTCDate()}–${e.toLocaleDateString(undefined, dayMonthYear)}`
-  }
-  if (s.getUTCFullYear() === e.getUTCFullYear()) {
-    return `${s.toLocaleDateString(undefined, dayMonth)} – ${e.toLocaleDateString(undefined, dayMonthYear)}`
-  }
-  return `${s.toLocaleDateString(undefined, dayMonthYear)} – ${e.toLocaleDateString(undefined, dayMonthYear)}`
+  const from = isoToLocalDate(weekStart)
+  const to = isoToLocalDate(weekEnd)
+  return formatDateRangeLabel({ from, to })
 }
 
 /**
- * Distinct weeks (Mon–Sun) that have at least one sale, newest first.
+ * Distinct weeks (Tue–Mon) that have at least one sale, newest first.
  * @param {object[]} sales
  * @param {number} [maxWeeks]
  * @returns {{ weekStart: string, weekEnd: string, label: string }[]}

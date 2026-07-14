@@ -27,6 +27,10 @@ let ussdSessionsCollection = null
 let agentPaymentPendingCollection = null
 /** @type {import("mongodb").Collection | null} */
 let customerProfilesCollection = null
+/** @type {import("mongodb").Collection | null} */
+let expensesCollection = null
+/** @type {import("mongodb").Collection | null} */
+let financeWeeklySnapshotsCollection = null
 
 /** @param {string | undefined} value */
 function parseMongoFamilyEnv(value) {
@@ -99,6 +103,8 @@ export async function connectMongo(uri) {
   ussdSessionsCollection = db.collection("ussd_sessions")
   agentPaymentPendingCollection = db.collection("agent_payment_pending")
   customerProfilesCollection = db.collection("customer_profiles")
+  expensesCollection = db.collection("expenses")
+  financeWeeklySnapshotsCollection = db.collection("finance_weekly_snapshots")
   await usersCollection.createIndex({ email_normalized: 1 }, { unique: true })
   try {
     await usersCollection.createIndex({ phone_normalized: 1 }, { unique: true, sparse: true })
@@ -116,6 +122,10 @@ export async function connectMongo(uri) {
   } catch (e) {
     console.warn("MongoDB: could not create unique sparse index on locations.managerUserId (fix duplicates and restart).", e)
   }
+  await salesCollection.createIndex({ locationId: 1, date: 1, status: 1 })
+  await expensesCollection.createIndex({ date: 1 })
+  await expensesCollection.createIndex({ locationId: 1, date: 1 })
+  await financeWeeklySnapshotsCollection.createIndex({ weekStart: 1 }, { unique: true })
   console.log(`MongoDB connected (database: ${dbName})`)
   return { client, db }
 }
@@ -182,6 +192,16 @@ export function getCustomerProfilesCollection() {
   return customerProfilesCollection
 }
 
+export function getExpensesCollection() {
+  if (!expensesCollection) throw new Error("MongoDB not connected. Call connectMongo first.")
+  return expensesCollection
+}
+
+export function getFinanceWeeklySnapshotsCollection() {
+  if (!financeWeeklySnapshotsCollection) throw new Error("MongoDB not connected. Call connectMongo first.")
+  return financeWeeklySnapshotsCollection
+}
+
 export async function closeMongo() {
   if (client) {
     await client.close()
@@ -198,6 +218,8 @@ export async function closeMongo() {
   ussdSessionsCollection = null
   agentPaymentPendingCollection = null
   customerProfilesCollection = null
+  expensesCollection = null
+  financeWeeklySnapshotsCollection = null
   }
 }
 

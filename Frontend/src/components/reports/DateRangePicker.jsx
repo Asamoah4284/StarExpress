@@ -13,6 +13,7 @@ import {
   normalizeDateRange,
   parseFlexibleDate,
 } from "@/lib/dates.js"
+import { currentWeekRange } from "@/lib/aggregations.js"
 import { cn } from "@/lib/utils"
 
 function useMonthCount() {
@@ -74,6 +75,23 @@ function RangeDateInput({ id, label, value, onChange, onCommit, highlight, inval
   )
 }
 
+function resolveCalendarYearBounds(value, draft) {
+  const nowYear = new Date().getFullYear()
+  /** @type {number[]} */
+  const years = [nowYear, nowYear + 1]
+  for (const d of [value?.from, value?.to, draft?.from, draft?.to]) {
+    if (d instanceof Date && !Number.isNaN(d.getTime())) years.push(d.getFullYear())
+  }
+  const toYear = Math.max(...years)
+  const fromYear = Math.min(nowYear - 10, ...years)
+  return {
+    fromYear,
+    toYear,
+    calendarStart: new Date(fromYear, 0, 1),
+    calendarEnd: new Date(toYear, 11, 31),
+  }
+}
+
 /**
  * @param {{
  *   value?: { from?: Date, to?: Date }
@@ -81,24 +99,23 @@ function RangeDateInput({ id, label, value, onChange, onCommit, highlight, inval
  *   className?: string
  *   id?: string
  *   align?: "start" | "center" | "end"
+ *   fromYear?: number
+ *   toYear?: number
  * }} props
  */
-export function DateRangePicker({ value, onChange, className, id, align = "start" }) {
+export function DateRangePicker({ value, onChange, className, id, align = "start", fromYear: fromYearProp, toYear: toYearProp }) {
   const [open, setOpen] = React.useState(false)
   const monthCount = useMonthCount()
-  const calendarStart = React.useMemo(() => {
-    const now = new Date()
-    return new Date(now.getFullYear() - 10, 0, 1)
-  }, [])
-  const calendarEnd = React.useMemo(() => {
-    const now = new Date()
-    return new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  }, [])
-  const today = React.useMemo(() => new Date(), [])
-  const fromYear = calendarStart.getFullYear()
-  const toYear = today.getFullYear()
-
   const [draft, setDraft] = React.useState(value)
+  const yearBounds = React.useMemo(
+    () => resolveCalendarYearBounds(value, draft),
+    [value, draft],
+  )
+  const calendarStart = fromYearProp != null ? new Date(fromYearProp, 0, 1) : yearBounds.calendarStart
+  const calendarEnd = toYearProp != null ? new Date(toYearProp, 11, 31) : yearBounds.calendarEnd
+  const today = React.useMemo(() => new Date(), [])
+  const fromYear = fromYearProp ?? yearBounds.fromYear
+  const toYear = toYearProp ?? yearBounds.toYear
   const [calendarKey, setCalendarKey] = React.useState(0)
   const [fromText, setFromText] = React.useState("")
   const [toText, setToText] = React.useState("")
@@ -197,6 +214,11 @@ export function DateRangePicker({ value, onChange, className, id, align = "start
     setOpen(false)
   }
 
+  const applyThisWeek = () => {
+    onChange(currentWeekRange())
+    setOpen(false)
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -282,12 +304,16 @@ export function DateRangePicker({ value, onChange, className, id, align = "start
         </div>
 
         <div className="border-border bg-muted/30 flex flex-wrap items-center gap-2 border-t px-3 py-2.5">
+          <Button type="button" variant="secondary" size="sm" onClick={applyThisWeek}>
+            This week
+          </Button>
           <Button type="button" variant="secondary" size="sm" onClick={() => applyPreset(7)}>
             Last 7 days
           </Button>
           <Button type="button" variant="secondary" size="sm" onClick={() => applyPreset(30)}>
             Last 30 days
           </Button>
+          {/* Presets use completed days ending yesterday (Africa/Accra), not including today. */}
           <Button
             type="button"
             variant="ghost"

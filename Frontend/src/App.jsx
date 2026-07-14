@@ -18,6 +18,8 @@ import UploadedVouchers from "@/pages/UploadedVouchers.jsx"
 import Vouchers from "@/pages/Vouchers.jsx"
 import RevenueSplit from "@/pages/RevenueSplit.jsx"
 import AgentCommissions from "@/pages/AgentCommissions.jsx"
+import FinanceSummary from "@/pages/FinanceSummary.jsx"
+import FinanceExpenses from "@/pages/FinanceExpenses.jsx"
 import AgentPaymentSuccess from "@/pages/AgentPaymentSuccess.jsx"
 import CaptiveBuy from "@/pages/CaptiveBuy.jsx"
 import CaptiveRetrieveVoucher from "@/pages/CaptiveRetrieveVoucher.jsx"
@@ -47,6 +49,8 @@ export default function App() {
             <Route path="vouchers" element={<Vouchers />} />
           </Route>
           <Route element={<AdminOnlyRoute />}>
+            <Route path="finance" element={<FinanceSummary />} />
+            <Route path="finance/expenses" element={<FinanceExpenses />} />
             <Route path="agent-commissions" element={<AgentCommissions />} />
             <Route path="users" element={<Users />} />
             <Route path="audit-logs" element={<AuditLogs />} />

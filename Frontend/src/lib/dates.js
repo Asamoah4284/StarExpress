@@ -128,14 +128,32 @@ export function eachIsoDayInRange(fromIso, toIso) {
   return days
 }
 
+/** ISO `YYYY-MM-DD` for today in Africa/Accra. */
+export function accraTodayIso() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Accra" }).format(new Date())
+}
+
+/** ISO `YYYY-MM-DD` for yesterday in Africa/Accra. */
+export function accraYesterdayIso() {
+  const d = new Date(`${accraTodayIso()}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - 1)
+  return d.toISOString().slice(0, 10)
+}
+
 /**
- * Last N calendar days ending on `endDate` (default today), local time.
+ * Last N completed calendar days ending on `endDate` (default: yesterday, Africa/Accra).
  * @param {number} dayCount
  * @param {Date} [endDate]
  */
-export function getLastNDaysRange(dayCount, endDate = new Date()) {
+export function getLastNDaysRange(dayCount, endDate) {
   const n = Math.max(1, Math.floor(dayCount))
-  const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate())
+  let end
+  if (endDate) {
+    end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate())
+  } else {
+    const [y, m, d] = accraYesterdayIso().split("-").map(Number)
+    end = new Date(y, m - 1, d)
+  }
   const start = new Date(end)
   start.setDate(start.getDate() - (n - 1))
   return { from: start, to: end }

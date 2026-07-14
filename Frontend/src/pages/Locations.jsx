@@ -67,6 +67,15 @@ export default function Locations() {
     salesAgentId: null,
     legacyManager: "",
     totalSales: "",
+    managerPayoutNumber: "",
+  })
+  const emptyForm = () => ({
+    name: "",
+    address: "",
+    salesAgentId: null,
+    legacyManager: "",
+    totalSales: "",
+    managerPayoutNumber: "",
   })
   const [formError, setFormError] = React.useState(null)
   const [agentPickerOpen, setAgentPickerOpen] = React.useState(false)
@@ -116,6 +125,7 @@ export default function Locations() {
           manager,
           totalSales: total,
           managerUserId: form.salesAgentId || null,
+          managerPayoutNumber: form.managerPayoutNumber.trim(),
         })
         if (!r.ok) throw new Error(r.error || "Update failed")
       } else {
@@ -125,6 +135,7 @@ export default function Locations() {
           manager,
           totalSales: total,
           managerUserId: form.salesAgentId || null,
+          managerPayoutNumber: form.managerPayoutNumber.trim(),
         })
         if (!r.ok) throw new Error(r.error || "Create failed")
       }
@@ -134,7 +145,7 @@ export default function Locations() {
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
       setOpen(false)
       setEditing(null)
-      setForm({ name: "", address: "", salesAgentId: null, legacyManager: "", totalSales: "" })
+      setForm(emptyForm())
       setFormError(null)
       setAgentPickerOpen(false)
       setAgentSearch("")
@@ -157,7 +168,7 @@ export default function Locations() {
       setEditing((e) => {
         if (e?.id === deletedId) {
           setOpen(false)
-          setForm({ name: "", address: "", salesAgentId: null, legacyManager: "", totalSales: "" })
+          setForm(emptyForm())
           setFormError(null)
           setAgentPickerOpen(false)
           setAgentSearch("")
@@ -177,7 +188,7 @@ export default function Locations() {
   }, [])
 
   const reset = () => {
-    setForm({ name: "", address: "", salesAgentId: null, legacyManager: "", totalSales: "" })
+    setForm(emptyForm())
     setEditing(null)
     setFormError(null)
     setAgentPickerOpen(false)
@@ -212,6 +223,7 @@ export default function Locations() {
         salesAgentId,
         legacyManager,
         totalSales: String(row.totalSales),
+        managerPayoutNumber: String(row.managerPayoutNumber ?? ""),
       })
       setFormError(null)
       setAgentPickerOpen(false)
@@ -260,6 +272,14 @@ export default function Locations() {
       { accessorKey: "name", header: "Name" },
       { accessorKey: "address", header: "Address" },
       { accessorKey: "manager", header: "Sales agent" },
+      {
+        accessorKey: "managerPayoutNumber",
+        header: "Payout number",
+        cell: ({ getValue }) => {
+          const v = String(getValue() ?? "").trim()
+          return v || "—"
+        },
+      },
       {
         accessorKey: "totalSales",
         header: "Total sales",
@@ -323,7 +343,12 @@ export default function Locations() {
         </p>
       ) : null}
 
-      <DataTable data={rows} columns={columns} searchPlaceholder="Search name, address, sales agent…" pageSize={8} />
+      <DataTable
+        data={rows}
+        columns={columns}
+        searchPlaceholder="Search name, address, sales agent, payout…"
+        pageSize={8}
+      />
 
       <Dialog
         open={deleteTarget != null}
@@ -565,6 +590,20 @@ export default function Locations() {
                   Pick a different sales agent anytime, or remove the assignment and save.
                 </p>
               ) : null}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="loc-payout">Hostel manager payout number</Label>
+              <Input
+                id="loc-payout"
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="e.g. 0241234567"
+                value={form.managerPayoutNumber}
+                onChange={(e) => setForm((f) => ({ ...f, managerPayoutNumber: e.target.value }))}
+              />
+              <p className="text-muted-foreground text-xs">
+                MoMo / phone number used when paying the hostel manager for this location.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="loc-total">Total sales (count)</Label>

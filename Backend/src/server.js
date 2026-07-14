@@ -15,6 +15,8 @@ import {
   getUssdSessionsCollection,
   getAgentPaymentPendingCollection,
   getCustomerProfilesCollection,
+  getExpensesCollection,
+  getFinanceWeeklySnapshotsCollection,
 } from "./db/mongo.js"
 import { UserStore } from "./userStore.js"
 import { SignupOtpStore } from "./lib/signupOtpStore.js"
@@ -23,11 +25,13 @@ import { mountHealthRoutes } from "./routes/health.js"
 import { createUsersRouter } from "./routes/users.js"
 import { createCatalogRouter } from "./routes/catalog.js"
 import { createSettingsRouter } from "./routes/settings.js"
+import { createFinanceRouter } from "./routes/finance.js"
 import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
 import { createUssdRouter } from "./routes/ussd.js"
 import { createPortalRouter } from "./routes/portal.js"
 import { createMoolrePaymentSuccessHandler } from "./lib/moolrePaymentSuccessPage.js"
 import { startCaptivePendingSweep } from "./lib/captivePendingSweep.js"
+import { startFinanceWeeklyCron } from "./lib/financeCron.js"
 
 /** @param {string} key */
 function envTruthy(key) {
@@ -234,6 +238,18 @@ async function main() {
     }),
   )
 
+  app.use(
+    "/api/finance",
+    createFinanceRouter({
+      locations: getLocationsCollection(),
+      sales: getSalesCollection(),
+      expenses: getExpensesCollection(),
+      financeWeeklySnapshots: getFinanceWeeklySnapshotsCollection(),
+      auditLogs: getAuditLogsCollection(),
+      jwtSecret: JWT_SECRET,
+    }),
+  )
+
   const authRouter = createAuthRouter({
     userStore,
     signupOtpStore,
@@ -250,6 +266,13 @@ async function main() {
     vouchers: getVouchersCollection(),
     sales: getSalesCollection(),
     auditLogs: getAuditLogsCollection(),
+  })
+
+  startFinanceWeeklyCron({
+    locations: getLocationsCollection(),
+    sales: getSalesCollection(),
+    expenses: getExpensesCollection(),
+    financeWeeklySnapshots: getFinanceWeeklySnapshotsCollection(),
   })
 
   app.listen(PORT, () => {

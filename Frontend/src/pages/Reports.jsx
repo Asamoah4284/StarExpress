@@ -1,5 +1,6 @@
 import * as React from "react"
-import { BarChart3, CalendarRange, MapPin, Package } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
+import { BarChart3, MapPin, Package, PiggyBank } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import {
@@ -12,11 +13,13 @@ import {
 import { Button } from "@/components/ui/button"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DateRangePicker } from "@/components/reports/DateRangePicker.jsx"
+import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import { RevenueLineChart } from "@/components/charts/RevenueLineChart.jsx"
 import { SalesByLocationBarChart } from "@/components/charts/SalesByLocationBarChart.jsx"
 import { PackageTypePieChart } from "@/components/charts/PackageTypePieChart.jsx"
 import {
+  currentWeekRange,
   filterSalesByDateRange,
   filterSalesByLocation,
   getDashboardMetrics,
@@ -24,6 +27,8 @@ import {
   getRevenueByDateRange,
   getSalesByLocation,
 } from "@/lib/aggregations.js"
+import { fetchFinanceExpenses } from "@/lib/api.js"
+import { computeReportNetProfit } from "@/lib/reportFinance.js"
 import {
   formatDateRangeLabel,
   getLastNDaysRange,
@@ -31,6 +36,7 @@ import {
   localDateToIso,
   normalizeDateRange,
 } from "@/lib/dates.js"
+import { isAdminRole } from "@/lib/roles.js"
 import { cn, formatCedis } from "@/lib/utils"
 
 const CHART_H = 300
@@ -53,10 +59,12 @@ function ReportStat({ label, value, hint, icon: Icon, className }) {
 }
 
 export default function Reports() {
+  const { token, user, authReady } = useAuth()
   const catalog = useCatalog()
   const allSales = catalog.data?.sales ?? []
   const locations = catalog.data?.locations ?? []
   const packages = catalog.data?.packages ?? []
+  const isAdmin = isAdminRole(user?.role)
 
   const [locationId, setLocationId] = React.useState("all")
   const [dateRange, setDateRange] = React.useState(/** @type {{ from?: Date, to?: Date } | undefined} */ (undefined))
@@ -69,10 +77,27 @@ export default function Reports() {
   React.useEffect(() => {
     if (rangeInitialized.current) return
     rangeInitialized.current = true
-    setDateRange(getLastNDaysRange(7))
+    setDateRange(currentWeekRange())
   }, [])
 
   const rangeComplete = isCompleteDateRange(dateRange)
+  const dateFromIso = rangeComplete && dateRange?.from ? localDateToIso(dateRange.from) : null
+  const dateToIso = rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : null
+
+  const expensesQuery = useQuery({
+    queryKey: ["financeExpenses", token, dateFromIso, dateToIso, locationId],
+    queryFn: async () => {
+      if (!token || !dateFromIso || !dateToIso) return []
+      const result = await fetchFinanceExpenses(token, {
+        from: dateFromIso,
+        to: dateToIso,
+        ...(locationId !== "all" ? { locationId } : {}),
+      })
+      if (!result.ok) return []
+      return result.expenses
+    },
+    enabled: authReady && isAdmin && Boolean(token) && Boolean(dateFromIso) && Boolean(dateToIso),
+  })
 
   const filteredSales = React.useMemo(() => {
     let rows = filterSalesByLocation(allSales, locationId)
@@ -86,9 +111,6 @@ export default function Reports() {
     return rows
   }, [allSales, locationId, dateRange, rangeComplete])
 
-  const dateFromIso = rangeComplete && dateRange?.from ? localDateToIso(dateRange.from) : null
-  const dateToIso = rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : null
-
   const revenue = React.useMemo(() => {
     if (!dateFromIso || !dateToIso) return []
     return getRevenueByDateRange(filteredSales, dateFromIso, dateToIso)
@@ -100,7 +122,16 @@ export default function Reports() {
 
   const metrics = React.useMemo(() => getDashboardMetrics(filteredSales, packages), [filteredSales, packages])
 
-  const revenueRangeTotal = React.useMemo(() => revenue.reduce((sum, d) => sum + d.revenue, 0), [revenue])
+  const netProfit = React.useMemo(() => {
+    if (!rangeComplete) return null
+    return computeReportNetProfit({
+      sales: filteredSales,
+      locations,
+      expenses: expensesQuery.data ?? [],
+      locationId,
+    })
+  }, [rangeComplete, filteredSales, locations, expensesQuery.data, locationId])
+
   const avgCompleted = React.useMemo(
     () => (metrics.sold > 0 ? metrics.totalRevenue / metrics.sold : 0),
     [metrics.sold, metrics.totalRevenue],
@@ -135,7 +166,7 @@ export default function Reports() {
         description={
           rangeComplete
             ? `Revenue and sales for ${locationLabel} · ${dateLabel}.`
-            : "Filter by wifi location and date range. Defaults to the last 7 days through today."
+            : "Filter by wifi location and date range. Defaults to this week (Tuesday–Monday)."
         }
       >
         <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
@@ -183,6 +214,15 @@ export default function Reports() {
               variant="outline"
               size="sm"
               className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(currentWeekRange())}
+            >
+              This week
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
               onClick={() => handleDateRangeChange(getLastNDaysRange(7))}
             >
               Last 7 days
@@ -208,9 +248,9 @@ export default function Reports() {
           hint={`${metrics.sold} completed · ${metrics.pending} pending`}
         />
         <ReportStat
-          icon={CalendarRange}
-          label="Revenue in range"
-          value={formatCedis(revenueRangeTotal)}
+          icon={PiggyBank}
+          label="Net profit"
+          value={netProfit == null ? "—" : formatCedis(netProfit)}
           hint={rangeComplete ? dateLabel : "Select start and end dates"}
         />
         <ReportStat

@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useTheme } from "next-themes"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { Button } from "@/components/ui/button"
@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { APP_SETTINGS_QUERY_KEY, useAppSettings } from "@/hooks/useAppSettings.js"
-import { updateAppSettings, updateAppSettingsCommission } from "@/lib/api.js"
+import { fetchFinanceLocations, updateAppSettings, updateAppSettingsCommission, updateFinanceLocation } from "@/lib/api.js"
 import { getDefaultAppName, getDefaultCompanyName, getSalesAgentCommissionRate } from "@/lib/env.js"
 import { readImageFileAsDataUrl } from "@/lib/readImageFile.js"
 
@@ -55,6 +55,44 @@ export default function Settings() {
   const [alertsMessage, setAlertsMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [promosVisible, setPromosVisible] = React.useState(true)
   const [promosMessage, setPromosMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
+  const [hostelRates, setHostelRates] = React.useState(/** @type {Record<string, string>} */ ({}))
+  const [lightBillAmounts, setLightBillAmounts] = React.useState(/** @type {Record<string, string>} */ ({}))
+  const [hostelMessage, setHostelMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
+  const [savingHostelId, setSavingHostelId] = React.useState(/** @type {string | null} */ (null))
+
+  const financeLocationsQuery = useQuery({
+    queryKey: ["financeLocations", token],
+    queryFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const result = await fetchFinanceLocations(token)
+      if (!result.ok) throw new Error(result.error || "Failed to load locations.")
+      return result.locations
+    },
+    enabled: Boolean(token),
+  })
+
+  React.useEffect(() => {
+    const locs = financeLocationsQuery.data
+    if (!locs?.length) return
+    setHostelRates((prev) => {
+      const next = { ...prev }
+      for (const loc of locs) {
+        if (next[loc.id] === undefined) {
+          next[loc.id] = String(loc.commissionRate ?? 20)
+        }
+      }
+      return next
+    })
+    setLightBillAmounts((prev) => {
+      const next = { ...prev }
+      for (const loc of locs) {
+        if (next[loc.id] === undefined) {
+          next[loc.id] = String(loc.lightBillAmount ?? 50)
+        }
+      }
+      return next
+    })
+  }, [financeLocationsQuery.data])
 
   const loadedRate = settingsQuery.data?.salesAgentCommissionRate
   const loadedAppName = settingsQuery.data?.appName
@@ -318,6 +356,150 @@ export default function Settings() {
           {settingsQuery.isError ? (
             <p className="text-destructive mt-3 text-sm" role="alert">
               Could not load saved commission. Showing default until the API is available.
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Weekly deductions</CardTitle>
+          <CardDescription>
+            For each location’s weekly gross: <span className="text-foreground font-medium">10% tithe</span>, then that
+            location’s light bill (default GH₵ 50; Outdoor is GH₵ 0). Hostel manager fee is taken from what remains.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2">
+          <div className="bg-muted/40 border-border/70 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3">
+            <div>
+              <p className="text-sm font-medium">Tithe</p>
+              <p className="text-muted-foreground text-xs">Of location gross revenue</p>
+            </div>
+            <p className="text-2xl font-semibold tabular-nums">10%</p>
+          </div>
+          <div className="bg-muted/40 border-border/70 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3">
+            <div>
+              <p className="text-sm font-medium">Light bill</p>
+              <p className="text-muted-foreground text-xs">Per location / week (Outdoor = 0)</p>
+            </div>
+            <p className="text-2xl font-semibold tabular-nums">GH₵ 50</p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Hostel fees by location</CardTitle>
+          <CardDescription>
+            Manager fee is % of the remainder after tithe and light bill (default 20%). Set light bill to 0 where it
+            should not apply (e.g. Outdoor).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {financeLocationsQuery.isLoading ? (
+            <p className="text-muted-foreground text-sm">Loading locations…</p>
+          ) : financeLocationsQuery.isError ? (
+            <p className="text-destructive text-sm" role="alert">
+              {financeLocationsQuery.error instanceof Error
+                ? financeLocationsQuery.error.message
+                : "Could not load locations."}
+            </p>
+          ) : (
+            (financeLocationsQuery.data ?? []).map((loc) => (
+              <div
+                key={loc.id}
+                className="border-border/70 flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-end"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{loc.name}</p>
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="space-y-1">
+                    <Label htmlFor={`light-bill-${loc.id}`} className="text-xs">
+                      Light bill (GH₵)
+                    </Label>
+                    <Input
+                      id={`light-bill-${loc.id}`}
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="w-28"
+                      value={lightBillAmounts[loc.id] ?? String(loc.lightBillAmount ?? 50)}
+                      onChange={(e) =>
+                        setLightBillAmounts((prev) => ({ ...prev, [loc.id]: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor={`hostel-rate-${loc.id}`} className="text-xs">
+                      Fee of remainder (%)
+                    </Label>
+                    <Input
+                      id={`hostel-rate-${loc.id}`}
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.1}
+                      className="w-28"
+                      value={hostelRates[loc.id] ?? String(loc.commissionRate ?? 20)}
+                      onChange={(e) =>
+                        setHostelRates((prev) => ({ ...prev, [loc.id]: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={savingHostelId === loc.id}
+                    onClick={async () => {
+                      if (!token) return
+                      setSavingHostelId(loc.id)
+                      setHostelMessage(null)
+                      const rawFee = hostelRates[loc.id] ?? String(loc.commissionRate ?? 20)
+                      const pct = Number(rawFee)
+                      const rawLight = lightBillAmounts[loc.id] ?? String(loc.lightBillAmount ?? 50)
+                      const light = Number(rawLight)
+                      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+                        setSavingHostelId(null)
+                        setHostelMessage({ type: "err", text: "Enter a fee between 0 and 100." })
+                        return
+                      }
+                      if (!Number.isFinite(light) || light < 0) {
+                        setSavingHostelId(null)
+                        setHostelMessage({ type: "err", text: "Enter a light bill of 0 or more." })
+                        return
+                      }
+                      const result = await updateFinanceLocation(token, loc.id, {
+                        commissionRate: pct,
+                        lightBillAmount: light,
+                      })
+                      setSavingHostelId(null)
+                      if (!result.ok) {
+                        setHostelMessage({ type: "err", text: result.error || "Could not save." })
+                        return
+                      }
+                      queryClient.invalidateQueries({ queryKey: ["financeLocations"] })
+                      queryClient.invalidateQueries({ queryKey: ["financeSummary"] })
+                      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+                      setHostelMessage({ type: "ok", text: `Saved fees for ${loc.name}.` })
+                    }}
+                  >
+                    {savingHostelId === loc.id ? "Saving…" : "Save"}
+                  </Button>
+                </div>
+              </div>
+            ))
+          )}
+          {hostelMessage ? (
+            <p
+              className={
+                hostelMessage.type === "ok"
+                  ? "text-sm text-emerald-600 dark:text-emerald-400"
+                  : "text-sm text-destructive"
+              }
+              role="status"
+            >
+              {hostelMessage.text}
             </p>
           ) : null}
         </CardContent>

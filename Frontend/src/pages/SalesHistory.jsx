@@ -18,7 +18,7 @@ import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import { LIVE_POLL_MS, useLiveSales } from "@/hooks/useLiveCustomerDashboard.js"
 import { useCompanyName } from "@/hooks/useAppSettings.js"
-import { filterSalesByDateRange, filterSalesByLocation, salesToCsv } from "@/lib/aggregations.js"
+import { currentWeekRange, filterSalesByDateRange, filterSalesByLocation, salesToCsv } from "@/lib/aggregations.js"
 import {
   formatDateRangeLabel,
   formatSaleDateTime,
@@ -47,7 +47,7 @@ export default function SalesHistory() {
   React.useEffect(() => {
     if (rangeInitialized.current) return
     rangeInitialized.current = true
-    setDateRange(getLastNDaysRange(7))
+    setDateRange(currentWeekRange())
   }, [])
 
   const rangeComplete = isCompleteDateRange(dateRange)
@@ -220,6 +220,15 @@ export default function SalesHistory() {
           </div>
           <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
             <LiveIndicator lastUpdated={lastUpdated} isFetching={catalog.isFetching} />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(currentWeekRange())}
+            >
+              This week
+            </Button>
             <Button
               type="button"
               variant="outline"

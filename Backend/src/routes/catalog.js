@@ -19,6 +19,7 @@ import {
   ghanaPhoneDedupeKey,
 } from "../lib/ghanaPhone.js"
 import { normalizePercentOff, roundMoney } from "../lib/promoDiscount.js"
+import { hostelCommissionRateFromDoc, lightBillAmountFromDoc, normalizeHostelCommissionRate } from "../lib/locationCommission.js"
 import { aggregateCustomers, pickNewBuyersOutsideTop, summarizeCustomers } from "../lib/customerAnalytics.js"
 import {
   applyCustomerProfiles,
@@ -148,6 +149,12 @@ function toLocation(d) {
     manager: d.manager,
     ...(d.managerUserId ? { managerUserId: d.managerUserId } : {}),
     totalSales: d.totalSales,
+    commissionRate: hostelCommissionRateFromDoc(d),
+    lightBillAmount: lightBillAmountFromDoc(d),
+    managerPayoutNumber:
+      typeof d.managerPayoutNumber === "string" && d.managerPayoutNumber.trim()
+        ? d.managerPayoutNumber.trim()
+        : "",
     promo: promoToApi(d.promo),
   }
 }
@@ -242,6 +249,24 @@ function toAudit(d) {
 }
 
 const ROLE_SALES_AGENT = "Sales Agent"
+
+/**
+ * Hostel manager MoMo / payout phone. Empty clears; otherwise Ghana local format.
+ * @param {unknown} raw
+ * @returns {{ ok: true, value: string } | { ok: false, error: string }}
+ */
+function parseManagerPayoutNumber(raw) {
+  if (raw === undefined) return { ok: true, value: "" }
+  if (raw === null) return { ok: true, value: "" }
+  const trimmed = String(raw).trim()
+  if (!trimmed) return { ok: true, value: "" }
+  const local = formatGhanaPhoneLocal(trimmed)
+  const digits = local.replace(/\D/g, "")
+  if (digits.length !== 10 || !digits.startsWith("0")) {
+    return { ok: false, error: "Manager payout number must be a valid Ghana phone (e.g. 0241234567)." }
+  }
+  return { ok: true, value: local }
+}
 
 /**
  * @param {import("mongodb").Collection} users
@@ -1411,6 +1436,11 @@ export function createCatalogRouter(deps) {
           : ""
       const managerText = typeof req.body?.manager === "string" ? req.body.manager.trim() : ""
       const totalSales = Number(req.body?.totalSales)
+      const commissionRateRaw = req.body?.commissionRate
+      const commissionRate =
+        commissionRateRaw !== undefined ? normalizeHostelCommissionRate(commissionRateRaw) : 20
+      const payoutParsed = parseManagerPayoutNumber(req.body?.managerPayoutNumber)
+      if (!payoutParsed.ok) return res.status(400).json({ error: payoutParsed.error })
       if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
       if (!address) return res.status(400).json({ error: "Address is required." })
       if (!Number.isFinite(totalSales) || totalSales < 0) {
@@ -1423,7 +1453,16 @@ export function createCatalogRouter(deps) {
         const agent = await getActiveSalesAgentName(users, managerUserId)
         if (!agent.ok) return res.status(400).json({ error: agent.error })
         await clearSalesAgentFromOtherLocations(locations, users, managerUserId, undefined)
-        doc = { _id: id, name, address, manager: agent.name, managerUserId, totalSales }
+        doc = {
+          _id: id,
+          name,
+          address,
+          manager: agent.name,
+          managerUserId,
+          totalSales,
+          commissionRate,
+          managerPayoutNumber: payoutParsed.value,
+        }
       } else {
         if (!managerText) return res.status(400).json({ error: "Manager is required." })
         const resolvedId = await tryResolveUniqueSalesAgentIdFromManagerName(users, managerText)
@@ -1431,9 +1470,26 @@ export function createCatalogRouter(deps) {
           const agent = await getActiveSalesAgentName(users, resolvedId)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
           await clearSalesAgentFromOtherLocations(locations, users, resolvedId, undefined)
-          doc = { _id: id, name, address, manager: agent.name, managerUserId: resolvedId, totalSales }
+          doc = {
+            _id: id,
+            name,
+            address,
+            manager: agent.name,
+            managerUserId: resolvedId,
+            totalSales,
+            commissionRate,
+            managerPayoutNumber: payoutParsed.value,
+          }
         } else {
-          doc = { _id: id, name, address, manager: managerText, totalSales }
+          doc = {
+            _id: id,
+            name,
+            address,
+            manager: managerText,
+            totalSales,
+            commissionRate,
+            managerPayoutNumber: payoutParsed.value,
+          }
         }
       }
       await locations.insertOne(doc)
@@ -1505,6 +1561,14 @@ export function createCatalogRouter(deps) {
           return res.status(400).json({ error: "totalSales must be a non-negative number." })
         }
         $set.totalSales = totalSales
+      }
+      if (body.commissionRate !== undefined) {
+        $set.commissionRate = normalizeHostelCommissionRate(body.commissionRate)
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "managerPayoutNumber")) {
+        const payoutParsed = parseManagerPayoutNumber(body.managerPayoutNumber)
+        if (!payoutParsed.ok) return res.status(400).json({ error: payoutParsed.error })
+        $set.managerPayoutNumber = payoutParsed.value
       }
       if (Object.keys($set).length === 0 && Object.keys($unset).length === 0) {
         return res.status(400).json({ error: "No valid fields to update." })

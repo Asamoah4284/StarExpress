@@ -22,6 +22,7 @@ import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import { fetchVoucherStats } from "@/lib/api.js"
 import {
+  currentWeekRange,
   filterSalesByDateRange,
   filterSalesByLocation,
   filterSalesForAgentAttribution,
@@ -97,7 +98,7 @@ export default function Dashboard() {
   React.useEffect(() => {
     if (rangeInitialized.current) return
     rangeInitialized.current = true
-    setDateRange(getLastNDaysRange(7))
+    setDateRange(currentWeekRange())
   }, [])
 
   const rangeComplete = isCompleteDateRange(dateRange)
@@ -201,7 +202,7 @@ export default function Dashboard() {
   const commissionPercentLabel = `${Math.round(commissionRate * 1000) / 10}% of completed sales`
 
   const overviewDescription = isAdmin
-    ? "Key revenue and sales totals for the selected location and date range (defaults to the last 7 days through today)."
+    ? "Key revenue and sales totals for the selected location and date range (defaults to this week, Tuesday–Monday)."
     : `Commission and sale counts for your wifi location (${commissionPercentLabel}). Use the date range picker above.`
 
   const salesBreakdownHint = isAdmin
@@ -297,6 +298,15 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => handleDateRangeChange(currentWeekRange())}
+            >
+              This week
+            </Button>
             <Button
               type="button"
               variant="outline"
