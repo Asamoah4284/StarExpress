@@ -45,6 +45,7 @@ import { useSalesAgentCommissionRate } from "@/hooks/useAppSettings.js"
 import { LIVE_POLL_MS } from "@/hooks/useLiveCustomerDashboard.js"
 import { ROLE_SALES_AGENT } from "@/lib/roles.js"
 import {
+  accraTodayIso,
   getLastNDaysRange,
   isCompleteDateRange,
   localDateToIso,
@@ -104,10 +105,16 @@ export default function Dashboard() {
   const rangeComplete = isCompleteDateRange(dateRange)
   const rangeEndIso =
     rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : localDateToIso(new Date())
-  const calendarTodayIso = localDateToIso(new Date())
+  const rangeStartIso =
+    rangeComplete && dateRange?.from ? localDateToIso(dateRange.from) : rangeEndIso
+  const calendarTodayIso = accraTodayIso()
+  const reportingDayIso =
+    rangeStartIso <= calendarTodayIso && calendarTodayIso <= rangeEndIso
+      ? calendarTodayIso
+      : rangeEndIso
   const endDayCommissionLabel =
-    rangeEndIso === calendarTodayIso ? "Today's Commission" : "End-day Commission"
-  const endDaySalesLabel = rangeEndIso === calendarTodayIso ? "Today's Sales" : "End-day Sales"
+    reportingDayIso === calendarTodayIso ? "Today's Commission" : "End-day Commission"
+  const endDaySalesLabel = reportingDayIso === calendarTodayIso ? "Today's Sales" : "End-day Sales"
 
   const rawLocations = catalog.data?.locations
   const locations = React.useMemo(() => rawLocations ?? [], [rawLocations])
@@ -168,13 +175,13 @@ export default function Dashboard() {
 
   const m = React.useMemo(() => {
     const packages = catalog.data?.packages ?? []
-    return getDashboardMetrics(filtered, packages)
-  }, [catalog.data, filtered])
+    return getDashboardMetrics(filtered, packages, reportingDayIso)
+  }, [catalog.data, filtered, reportingDayIso])
 
   const agentKpi = React.useMemo(
     () =>
-      isSalesAgent ? getAgentCommissionMetrics(filtered, commissionRate, rangeEndIso) : null,
-    [isSalesAgent, filtered, commissionRate, rangeEndIso],
+      isSalesAgent ? getAgentCommissionMetrics(filtered, commissionRate, reportingDayIso) : null,
+    [isSalesAgent, filtered, commissionRate, reportingDayIso],
   )
 
   const sparkTotalRevenue = React.useMemo(() => getSparklineCumulativeRevenue(filtered, 14), [filtered])
@@ -192,11 +199,14 @@ export default function Dashboard() {
   const sparkCumulativeSales = React.useMemo(() => getSparklineCumulativeSoldCount(filtered, 14), [filtered])
   const grossRevenueTrend = React.useMemo(() => getMonthlyGrossRevenueTrend(filtered, 6), [filtered])
   const revenueByWeekday = React.useMemo(() => getCompletedRevenueByWeekday(filtered), [filtered])
-  const dod = React.useMemo(() => getDayOverDaySummary(filtered, rangeEndIso), [filtered, rangeEndIso])
+  const dod = React.useMemo(
+    () => getDayOverDaySummary(filtered, reportingDayIso),
+    [filtered, reportingDayIso],
+  )
   const agentDod = React.useMemo(
     () =>
-      isSalesAgent ? getDayOverDaySummaryForAgent(filtered, commissionRate, rangeEndIso) : null,
-    [isSalesAgent, filtered, commissionRate, rangeEndIso],
+      isSalesAgent ? getDayOverDaySummaryForAgent(filtered, commissionRate, reportingDayIso) : null,
+    [isSalesAgent, filtered, commissionRate, reportingDayIso],
   )
 
   const commissionPercentLabel = `${Math.round(commissionRate * 1000) / 10}% of completed sales`

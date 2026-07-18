@@ -220,14 +220,18 @@ function getReportingDate(rows) {
  * utilizationRate = sold / totalInventory * 100 (sold = completed count).
  * @param {object[]} filteredSales
  * @param {{ stockUnits: number }[]} packageList
+ * @param {string} [asOfDate] ISO date to use for today's metrics
  */
-export function getDashboardMetrics(filteredSales, packageList) {
+export function getDashboardMetrics(filteredSales, packageList, asOfDate) {
   const totalInventory = totalPackageUnits(packageList)
   const completed = filteredSales.filter((s) => s.status === "Completed")
   const sold = completed.length
   const pending = filteredSales.filter((s) => s.status === "Pending").length
 
-  const todayStr = getReportingDate(filteredSales)
+  const todayStr =
+    typeof asOfDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(asOfDate)
+      ? asOfDate
+      : getReportingDate(filteredSales)
   const todaySales = filteredSales.filter((s) => s.date === todayStr)
   const todayCompleted = todaySales.filter((s) => s.status === "Completed")
 

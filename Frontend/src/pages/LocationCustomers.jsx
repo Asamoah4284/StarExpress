@@ -172,7 +172,25 @@ export default function LocationCustomers() {
     () => customersQuery.data?.customers ?? [],
     [customersQuery.data],
   )
-  const topCustomers = customersQuery.data?.top ?? []
+  // "consistent" ranks by separate days they came back; "spent" by total GH₵ spent.
+  const [topMode, setTopMode] = React.useState(/** @type {"consistent" | "spent"} */ ("consistent"))
+  const topCustomers = React.useMemo(() => {
+    const base = allCustomers.length ? allCustomers : customersQuery.data?.top ?? []
+    return [...base]
+      .sort((a, b) => {
+        const primary =
+          topMode === "spent"
+            ? (b.totalSpent ?? 0) - (a.totalSpent ?? 0) ||
+              (b.purchases ?? 0) - (a.purchases ?? 0) ||
+              (b.activeDays ?? 0) - (a.activeDays ?? 0)
+            : (b.activeDays ?? 0) - (a.activeDays ?? 0) ||
+              (b.purchases ?? 0) - (a.purchases ?? 0) ||
+              (b.totalSpent ?? 0) - (a.totalSpent ?? 0)
+        if (primary !== 0) return primary
+        return String(a.phone ?? "").localeCompare(String(b.phone ?? ""), undefined, { numeric: true })
+      })
+      .slice(0, 5)
+  }, [allCustomers, customersQuery.data, topMode])
   const newBuyers = customersQuery.data?.newBuyers ?? customersQuery.data?.dailyBuyers ?? []
   const summary = customersQuery.data?.summary
   const totalUnique = customersQuery.data?.totalUniqueNumbers ?? allCustomers.length
@@ -466,13 +484,36 @@ export default function LocationCustomers() {
       {topCustomers.length > 0 ? (
         <Card className="border-amber-500/30 bg-amber-500/[0.04] shadow-none ring-1 ring-amber-500/20">
           <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <Trophy className="size-4 text-amber-500" aria-hidden />
-              <CardTitle className="text-base">Top 5 customers to reward</CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Trophy className="size-4 text-amber-500" aria-hidden />
+                <CardTitle className="text-base">Top 5 customers to reward</CardTitle>
+              </div>
+              <div className="border-border/70 bg-background/60 flex items-center gap-0.5 rounded-lg border p-0.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={topMode === "consistent" ? "secondary" : "ghost"}
+                  className="h-7 px-2.5 text-xs"
+                  onClick={() => setTopMode("consistent")}
+                >
+                  Most consistent
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={topMode === "spent" ? "secondary" : "ghost"}
+                  className="h-7 px-2.5 text-xs"
+                  onClick={() => setTopMode("spent")}
+                >
+                  Top spenders
+                </Button>
+              </div>
             </div>
             <CardDescription>
-              Your most consistent buyers in {scopeLabel} — by number of purchases, then how many separate days they
-              came back.
+              {topMode === "spent"
+                ? `Buyers in ${scopeLabel} who spent the most in total, then by number of purchases.`
+                : `Buyers in ${scopeLabel} who came back on the most separate days, then by number of purchases.`}
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

@@ -1861,7 +1861,7 @@ export function createCatalogRouter(deps) {
           return res.status(400).json({ error: "Invalid phone number." })
         }
         recipients = [local]
-        scopeLabel = "single customer"
+        scopeLabel = `single customer ${local}`
       } else if (phonesRaw && phonesRaw.length > 0) {
         const seen = new Set()
         for (const raw of phonesRaw) {
