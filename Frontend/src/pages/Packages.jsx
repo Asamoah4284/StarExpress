@@ -321,6 +321,7 @@ export default function Packages() {
     },
     onError: (err) => {
       setSellError(err instanceof Error ? err.message : "Request failed")
+      setSellOpen(true)
     },
   })
 
@@ -428,6 +429,9 @@ export default function Packages() {
       setMoolreAuthUrl(init.authorization_url)
       setMoolreReference(init.reference)
       setMoolreRedirectUrl(init.redirect_url)
+      // Hide the sell form so the MoMo screen can take over (esp. on mobile,
+      // where both use z-50 and the Dialog portal otherwise covers payment).
+      setSellOpen(false)
       setShowMoolre(true)
     } catch (err) {
       setSellError(err instanceof Error ? err.message : "Failed to start payment")
@@ -441,6 +445,7 @@ export default function Packages() {
     if (!ref) {
       setSellError("No payment reference returned from Moolre.")
       resetMoolreState()
+      setSellOpen(true)
       return
     }
     setSellError(null)
@@ -451,6 +456,8 @@ export default function Packages() {
 
   const handleMoolreCancel = () => {
     resetMoolreState()
+    // Restore the sell form so the agent can edit and try again.
+    setSellOpen(true)
   }
 
   const columns = React.useMemo(
@@ -757,6 +764,9 @@ export default function Packages() {
       <Dialog
         open={sellOpen}
         onOpenChange={(o) => {
+          // Payment screen owns the flow — don't wipe MoMo state if the sell
+          // dialog tries to close while checkout is open.
+          if (!o && showMoolre) return
           setSellOpen(o)
           if (!o) {
             sellRowRef.current = null

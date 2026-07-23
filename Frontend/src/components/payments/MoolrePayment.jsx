@@ -1,4 +1,5 @@
 import * as React from "react"
+import { createPortal } from "react-dom"
 import { Loader2, X } from "lucide-react"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 
@@ -17,23 +18,36 @@ const MOBILE_MAX_WIDTH = 767
  * so the full working desktop layout (number, provider, confirm) shows on a small screen.
  */
 const MOBILE_LOGICAL_WIDTH = 760
-const MOBILE_LOGICAL_HEIGHT = 720
+/** Tall enough for the full POS form (amount, phone, network, pay) plus footer. */
+const MOBILE_LOGICAL_HEIGHT = 980
 
-function useViewportWidth() {
-  const [width, setWidth] = React.useState(() =>
-    typeof window !== "undefined" ? window.innerWidth : 390,
-  )
+function useViewport() {
+  const read = () => {
+    if (typeof window === "undefined") {
+      return { width: 390, height: 700 }
+    }
+    const vv = window.visualViewport
+    return {
+      width: Math.round(vv?.width ?? window.innerWidth),
+      height: Math.round(vv?.height ?? window.innerHeight),
+    }
+  }
+  const [viewport, setViewport] = React.useState(read)
   React.useEffect(() => {
-    const onResize = () => setWidth(window.innerWidth)
+    const onResize = () => setViewport(read())
     onResize()
     window.addEventListener("resize", onResize)
     window.addEventListener("orientationchange", onResize)
+    window.visualViewport?.addEventListener("resize", onResize)
+    window.visualViewport?.addEventListener("scroll", onResize)
     return () => {
       window.removeEventListener("resize", onResize)
       window.removeEventListener("orientationchange", onResize)
+      window.visualViewport?.removeEventListener("resize", onResize)
+      window.visualViewport?.removeEventListener("scroll", onResize)
     }
   }, [])
-  return width
+  return viewport
 }
 
 /**
@@ -60,8 +74,8 @@ export function MoolrePayment({
   const iframeRef = React.useRef(/** @type {HTMLIFrameElement | null} */ (null))
   const successFiredRef = React.useRef(false)
   const [confirming, setConfirming] = React.useState(false)
-  const viewportWidth = useViewportWidth()
-  const isMobile = viewportWidth <= MOBILE_MAX_WIDTH
+  const viewport = useViewport()
+  const isMobile = viewport.width <= MOBILE_MAX_WIDTH
   void mode
 
   React.useEffect(() => {
@@ -70,6 +84,16 @@ export function MoolrePayment({
       setConfirming(false)
     }
   }, [open])
+
+  // Keep the page behind the fullscreen mobile checkout from scrolling.
+  React.useEffect(() => {
+    if (!open || !isMobile) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [open, isMobile])
 
   const extractRef = React.useCallback(
     (url) => {
@@ -165,30 +189,59 @@ export function MoolrePayment({
 
   if (!authorizationUrl) return null
 
-  // Phones: render Moolre at desktop width and scale to fit, so the full form is usable.
+  // Phones: fullscreen overlay, desktop POS layout scaled to the screen width.
   if (isMobile) {
-    if (!open) return null
-    const scale = Math.min(1, viewportWidth / MOBILE_LOGICAL_WIDTH)
+    if (!open || typeof document === "undefined") return null
+
+    const headerH = 52
+    const availableW = Math.max(280, viewport.width)
+    const availableH = Math.max(320, viewport.height - headerH)
+    const scale = Math.min(1, availableW / MOBILE_LOGICAL_WIDTH)
     const scaledHeight = MOBILE_LOGICAL_HEIGHT * scale
 
-    return (
-      <div className="fixed inset-0 z-50 flex flex-col bg-[#eef0f3]">
-        <div className="flex shrink-0 items-center justify-between border-b border-[#d8dce3] bg-[#eef0f3] px-3 py-2.5">
-          <span className="text-sm font-semibold text-[#1a1a1a]">MoMo payment</span>
+    return createPortal(
+      <div
+        className="fixed inset-0 z-[200] flex flex-col bg-[#eef0f3]"
+        style={{
+          width: "100vw",
+          height: "100dvh",
+          paddingTop: "env(safe-area-inset-top, 0px)",
+          paddingBottom: "env(safe-area-inset-bottom, 0px)",
+          paddingLeft: "env(safe-area-inset-left, 0px)",
+          paddingRight: "env(safe-area-inset-right, 0px)",
+        }}
+        role="dialog"
+        aria-modal="true"
+        aria-label="MoMo payment"
+      >
+        <div
+          className="flex shrink-0 items-center justify-between border-b border-[#d8dce3] bg-[#eef0f3] px-3"
+          style={{ minHeight: headerH }}
+        >
+          <span className="text-base font-semibold text-[#1a1a1a]">MoMo payment</span>
           {!confirming ? (
             <button
               type="button"
               onClick={handleCancel}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-[#475467] hover:text-[#1a1a1a]"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-md px-3 text-sm font-medium text-[#475467] active:bg-black/5"
             >
-              <X className="size-4" aria-hidden />
+              <X className="size-5" aria-hidden />
               Cancel
             </button>
           ) : null}
         </div>
 
-        <div className="relative flex-1 overflow-y-auto overflow-x-hidden">
-          <div className="relative mx-auto w-full" style={{ height: scaledHeight }}>
+        <div
+          className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-[#eef0f3]"
+          style={{ WebkitOverflowScrolling: "touch" }}
+        >
+          <div
+            className="relative mx-auto"
+            style={{
+              width: availableW,
+              height: Math.max(scaledHeight, availableH),
+            }}
+          >
             <iframe
               ref={iframeRef}
               title="Moolre payment"
@@ -211,7 +264,8 @@ export function MoolrePayment({
             <p className="text-sm font-medium text-[#1a1a1a]">Confirming payment…</p>
           </div>
         ) : null}
-      </div>
+      </div>,
+      document.body,
     )
   }
 
