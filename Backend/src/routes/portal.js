@@ -1,5 +1,4 @@
 import express from "express"
-import { formatPhoneNumber } from "../lib/ussdHelpers.js"
 import {
   billingEmailFromPhone,
   initializeMoolreEmbedLink,
@@ -18,16 +17,18 @@ import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { getAppSettings } from "../lib/appSettings.js"
 import { applyPercentOff, normalizePercentOff } from "../lib/promoDiscount.js"
 import { generateRadiusSession, isRadiusConfigured } from "../lib/radiusAuth.js"
-import { ensureSaleVoucherSmsSent } from "../lib/saleVoucherSms.js"
-import { getLocationsWithStock, getPackagesForLocation } from "../services/portalCatalog.js"
+import { getPortalLocations, getPortalPackagesForLocation } from "../services/portalCatalog.js"
+import { formatPhoneNumber } from "../lib/ussdHelpers.js"
 import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
-import { buildPackageAvailabilityFilter } from "../services/voucherSaleFulfillment.js"
 
 /**
+ * Captive portal (/buy) — FreeRADIUS automatic authentication only.
+ * No voucher codes, voucher SMS, or voucher UI for this channel.
+ *
  * @param {{
  *   locations: import("mongodb").Collection
  *   packages: import("mongodb").Collection
- *   vouchers: import("mongodb").Collection
+ *   vouchers?: import("mongodb").Collection
  *   sales: import("mongodb").Collection
  *   auditLogs: import("mongodb").Collection
  *   agentPaymentPending: import("mongodb").Collection
@@ -35,12 +36,10 @@ import { buildPackageAvailabilityFilter } from "../services/voucherSaleFulfillme
  * }} deps
  */
 export function createPortalRouter(deps) {
-  const { locations, packages, vouchers, sales, auditLogs, agentPaymentPending, appSettings } = deps
+  const { locations, packages, sales, auditLogs, agentPaymentPending, appSettings } = deps
   const router = express.Router()
 
   /**
-   * The promo a buyer should see for a location, or null. Gated by the global
-   * "show promos" setting AND the location's own active flag + a non-empty code.
    * @param {import("mongodb").Document} loc
    */
   async function getVisiblePromoForLocation(loc) {
@@ -62,9 +61,6 @@ export function createPortalRouter(deps) {
   }
 
   /**
-   * Validate a buyer-submitted promo code against a location's active promo (same
-   * global + per-location gating as the banner). Returns the canonical code + percent
-   * to apply, or null if it doesn't match / isn't active. Case-insensitive.
    * @param {import("mongodb").Document} loc
    * @param {string} submittedCode
    */
@@ -84,20 +80,9 @@ export function createPortalRouter(deps) {
     return { code, percentOff: normalizePercentOff(promo.percentOff) }
   }
 
-  /**
-   * @param {import("mongodb").Document} sale
-   * @param {string} source
-   */
-  function queueVoucherSms(sale, source) {
-    if (sale?.smsSent === true) return
-    void ensureSaleVoucherSmsSent({ sale, packages, sales, source }).catch((err) => {
-      console.error(`[portal] ${source} background SMS failed`, err)
-    })
-  }
-
   router.get("/locations", async (_req, res) => {
     try {
-      const items = await getLocationsWithStock(locations, vouchers)
+      const items = await getPortalLocations(locations)
       res.json({ locations: items })
     } catch (err) {
       console.error("[portal] GET /locations", err)
@@ -113,7 +98,7 @@ export function createPortalRouter(deps) {
       }
       const loc = await locations.findOne({ _id: locationId })
       if (!loc) return res.status(404).json({ error: "Unknown location." })
-      const items = await getPackagesForLocation(packages, vouchers, locationId)
+      const items = await getPortalPackagesForLocation(packages, locationId)
       const promo = await getVisiblePromoForLocation(loc)
       res.json({
         locationId,
@@ -135,6 +120,21 @@ export function createPortalRouter(deps) {
       const locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
       const promoCodeRaw = typeof req.body?.promoCode === "string" ? req.body.promoCode.trim().slice(0, 64) : ""
       const portalParams = normalizeCaptivePortalParams(req.body)
+
+      console.log("[portal] initialize portal params", {
+        login_url: portalParams.login_url ? "[set]" : "",
+        ap_mac: portalParams.ap_mac || "",
+        client_mac: portalParams.client_mac || "",
+        orig_url: portalParams.orig_url ? "[set]" : "",
+        ssid: portalParams.ssid || "",
+      })
+
+      if (!hasCaptivePortalAuthParams(portalParams)) {
+        return res.status(400).json({
+          error:
+            "Missing captive portal session (login_url / client_mac). Connect through the WiFi hotspot splash page to buy access.",
+        })
+      }
 
       if (!locationId) return res.status(400).json({ error: "locationId is required." })
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
@@ -164,8 +164,6 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "Invalid package price." })
       }
 
-      // Apply a promo discount on the backend (authoritative). The client only previews the
-      // discounted price; the real charge is computed here.
       let amount = priceGHS
       let appliedPromo = /** @type {{ code: string, percentOff: number } | null} */ (null)
       if (promoCodeRaw) {
@@ -182,12 +180,6 @@ export function createPortalRouter(deps) {
           .json({ error: "Discounted total is too low to charge online. Please contact the store." })
       }
 
-      const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
-      const available = await vouchers.findOne(availFilter, { projection: { _id: 1 } })
-      if (!available) {
-        return res.status(400).json({ error: "No vouchers available for this package at this wifi location." })
-      }
-
       const paymentReference = generateCaptivePaymentReference()
       await saveCaptivePaymentPending(agentPaymentPending, {
         paymentReference,
@@ -201,9 +193,6 @@ export function createPortalRouter(deps) {
         portalParams,
       })
 
-      // Use the shared backend redirect page (same as agent sales). That page posts a
-      // `moolre-payment-success` message to the parent window so the embedded iframe can
-      // detect success reliably, and it also reconciles captive payments server-side.
       const init = await initializeMoolreEmbedLink({
         amount,
         email: billingEmail,
@@ -229,6 +218,7 @@ export function createPortalRouter(deps) {
         basePrice: priceGHS,
         promoCode: appliedPromo?.code,
         promoPercentOff: appliedPromo?.percentOff,
+        client_mac: portalParams.client_mac,
         redirectUrl: init.redirect_url,
       })
 
@@ -264,16 +254,14 @@ export function createPortalRouter(deps) {
 
       let existingSale = await sales.findOne({ paymentReference })
       if (existingSale) {
-        queueVoucherSms(existingSale, "portal-complete-idempotent")
         return res.json({
           success: true,
-          voucherCode: String(existingSale.voucherCode || ""),
           packageName:
             typeof existingSale.packageType === "string" && existingSale.packageType.trim()
               ? existingSale.packageType.trim()
               : "WiFi",
-          smsSent: existingSale.smsSent === true,
           paymentReference,
+          hotspot: true,
           idempotent: true,
         })
       }
@@ -286,7 +274,6 @@ export function createPortalRouter(deps) {
       const outcome = await processCaptiveMomoPaymentSuccess({
         pending: agentPaymentPending,
         packages,
-        vouchers,
         sales,
         auditLogs,
         paymentReference,
@@ -294,12 +281,12 @@ export function createPortalRouter(deps) {
       })
 
       if (!outcome.ok) {
-        const retryable = outcome.status === "no_pending" || outcome.status === "no_stock"
+        const retryable = outcome.status === "no_pending"
         const msg =
           outcome.status === "no_pending"
             ? "Payment is still processing. Please wait and try again."
-            : outcome.status === "no_stock"
-              ? "No vouchers available. Contact support for a refund."
+            : outcome.status === "missing_portal_params"
+              ? "Missing captive portal session data. Reconnect to WiFi and try again from the hotspot splash page."
               : "Could not complete your purchase. Please contact support."
         return res.status(retryable ? 409 : 400).json({ error: msg })
       }
@@ -307,13 +294,12 @@ export function createPortalRouter(deps) {
       existingSale = await sales.findOne({ paymentReference })
       res.json({
         success: true,
-        voucherCode: String(outcome.voucherCode || existingSale?.voucherCode || ""),
         packageName:
           typeof existingSale?.packageType === "string" && existingSale.packageType.trim()
             ? existingSale.packageType.trim()
             : "WiFi",
-        smsSent: outcome.smsSent === true,
         paymentReference,
+        hotspot: true,
       })
     } catch (err) {
       console.error("[portal] POST /payments/complete", err)
@@ -321,10 +307,7 @@ export function createPortalRouter(deps) {
     }
   })
 
-  // Lightweight poll used by the buy page while the Moolre POS iframe is open. Returns the
-  // fulfilled sale's voucher the moment it exists (via webhook) or, if not yet fulfilled, does a
-  // single quick Moolre status check and fulfills — so a stuck/timed-out POS page never blocks
-  // the customer from getting their code.
+  // Poll while the Moolre POS iframe is open — ready once the RADIUS sale record exists.
   router.get("/payments/status", async (req, res) => {
     try {
       const paymentReference =
@@ -341,7 +324,6 @@ export function createPortalRouter(deps) {
           await processCaptiveMomoPaymentSuccess({
             pending: agentPaymentPending,
             packages,
-            vouchers,
             sales,
             auditLogs,
             paymentReference,
@@ -354,16 +336,14 @@ export function createPortalRouter(deps) {
       if (!sale) {
         return res.json({ ready: false })
       }
-      queueVoucherSms(sale, "portal-status-idempotent")
 
       return res.json({
         ready: true,
-        voucherCode: String(sale.voucherCode || ""),
         packageName:
           typeof sale.packageType === "string" && sale.packageType.trim()
             ? sale.packageType.trim()
             : "WiFi",
-        smsSent: sale.smsSent === true,
+        hotspot: true,
       })
     } catch (err) {
       console.error("[portal] GET /payments/status", err)
@@ -372,9 +352,8 @@ export function createPortalRouter(deps) {
   })
 
   /**
-   * After MoMo success: if this purchase came from a Grandstream hotspot redirect,
-   * write RADIUS credentials and return the AP login URL the browser must hit.
-   * Non-hotspot purchases get { authorizeUrl: null } so the UI can show the voucher.
+   * After MoMo success: write FreeRADIUS credentials and return Grandstream authorizeUrl.
+   * This is the only successful outcome for captive purchases — never falls back to vouchers.
    */
   router.post("/payments/radius-authorize", async (req, res) => {
     try {
@@ -393,18 +372,49 @@ export function createPortalRouter(deps) {
       }
 
       const pendingDoc = await agentPaymentPending.findOne({ _id: paymentReference })
-      const portalParams = normalizeCaptivePortalParams(sale.portalParams || pendingDoc?.portalParams)
+      const fromSale = normalizeCaptivePortalParams(sale.portalParams || sale)
+      const fromPending = normalizeCaptivePortalParams(pendingDoc?.portalParams || pendingDoc)
+      const fromBody = normalizeCaptivePortalParams(req.body)
+      const portalParams = {
+        login_url: fromSale.login_url || fromPending.login_url || fromBody.login_url,
+        ap_mac: fromSale.ap_mac || fromPending.ap_mac || fromBody.ap_mac,
+        client_mac: fromSale.client_mac || fromPending.client_mac || fromBody.client_mac,
+        orig_url: fromSale.orig_url || fromPending.orig_url || fromBody.orig_url,
+        ssid: fromSale.ssid || fromPending.ssid || fromBody.ssid,
+      }
+
+      console.log("[portal] radius-authorize params", {
+        paymentReference,
+        hasLoginUrl: Boolean(portalParams.login_url),
+        client_mac: portalParams.client_mac || "",
+        source: fromSale.login_url
+          ? "sale"
+          : fromPending.login_url
+            ? "pending"
+            : fromBody.login_url
+              ? "body"
+              : "none",
+      })
 
       if (!hasCaptivePortalAuthParams(portalParams)) {
-        return res.json({
-          success: true,
-          hotspot: false,
-          authorizeUrl: null,
-          paymentReference,
+        console.error("[portal] radius-authorize missing login_url/client_mac", { paymentReference })
+        return res.status(400).json({
+          error:
+            "Missing captive portal session (login_url / client_mac). Reconnect to the WiFi hotspot and buy again from the splash page.",
         })
       }
 
+      await agentPaymentPending.updateOne(
+        { _id: paymentReference },
+        { $set: { portalParams, fulfillmentMode: "radius" } },
+      )
+      await sales.updateOne(
+        { paymentReference },
+        { $set: { portalParams, fulfillmentMode: "radius" } },
+      )
+
       if (typeof pendingDoc?.radiusAuthorizeUrl === "string" && pendingDoc.radiusAuthorizeUrl.trim()) {
+        console.log("[portal] authorizeUrl", pendingDoc.radiusAuthorizeUrl.trim())
         return res.json({
           success: true,
           hotspot: true,
@@ -416,11 +426,10 @@ export function createPortalRouter(deps) {
       }
 
       if (!isRadiusConfigured()) {
-        console.error("[portal] RADIUS DB not configured; cannot authorize hotspot session", {
-          paymentReference,
-        })
+        console.error("[portal] RADIUS DB not configured", { paymentReference })
         return res.status(503).json({
-          error: "WiFi authorization is temporarily unavailable. Use your voucher code to connect.",
+          error:
+            "WiFi authorization is temporarily unavailable (RADIUS database not configured). Please contact support — your payment was received.",
         })
       }
 
@@ -429,14 +438,17 @@ export function createPortalRouter(deps) {
 
       let session
       try {
+        console.log("[portal] generating radius session")
         session = await generateRadiusSession(portalParams, packageId, pkg)
+        console.log("[portal] radius session created", session.username)
+        console.log("[portal] authorizeUrl", session.authorizeUrl)
       } catch (err) {
         console.error("[portal] RADIUS session failed", {
           paymentReference,
           error: err instanceof Error ? err.message : err,
         })
         return res.status(500).json({
-          error: "Could not authorize WiFi access. Use your voucher code, or contact support.",
+          error: `Could not authorize WiFi access: ${err instanceof Error ? err.message : "RADIUS write failed"}. Please contact support — your payment was received.`,
         })
       }
 
@@ -447,6 +459,8 @@ export function createPortalRouter(deps) {
             radiusUsername: session.username,
             radiusAuthorizeUrl: session.authorizeUrl,
             radiusAuthorizedAt: new Date().toISOString(),
+            portalParams,
+            fulfillmentMode: "radius",
           },
         },
       )
@@ -456,6 +470,8 @@ export function createPortalRouter(deps) {
           $set: {
             radiusUsername: session.username,
             radiusAuthorizedAt: new Date().toISOString(),
+            portalParams,
+            fulfillmentMode: "radius",
           },
         },
       )
@@ -480,6 +496,9 @@ export function createPortalRouter(deps) {
     }
   })
 
+  /**
+   * Legacy / agent-sold voucher lookup (not used by FreeRADIUS captive purchases).
+   */
   router.post("/vouchers/retrieve", async (req, res) => {
     try {
       const phoneRaw = typeof req.body?.phone === "string" ? req.body.phone.trim() : ""
@@ -495,7 +514,7 @@ export function createPortalRouter(deps) {
         return res.json({
           vouchers: [],
           message:
-            "No vouchers found for this number. If you just paid, wait a moment and try again, or contact support.",
+            "No vouchers found for this number. If you bought WiFi on this hotspot, access is granted automatically after payment — reconnect to the network.",
         })
       }
 

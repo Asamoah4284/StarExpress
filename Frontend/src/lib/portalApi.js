@@ -202,6 +202,7 @@ export async function completePortalPayment(paymentReference) {
     packageName: String(data.packageName || "WiFi"),
     smsSent: data.smsSent === true,
     paymentReference: String(data.paymentReference || paymentReference),
+    hotspot: data.hotspot === true,
   }
 }
 
@@ -232,11 +233,26 @@ export async function completePortalPaymentWithRetry(paymentReference) {
  * After captive payment success: ask the backend to write RADIUS credentials and
  * return the Grandstream login_url the browser must hit (hotspot purchases only).
  * @param {string} paymentReference
+ * @param {{
+ *   login_url?: string
+ *   ap_mac?: string
+ *   client_mac?: string
+ *   orig_url?: string
+ *   ssid?: string
+ * }} [portalParams]
  */
-export async function authorizePortalRadius(paymentReference) {
+export async function authorizePortalRadius(paymentReference, portalParams = {}) {
+  const payload = {
+    paymentReference,
+    ...(portalParams.login_url ? { login_url: portalParams.login_url } : {}),
+    ...(portalParams.ap_mac ? { ap_mac: portalParams.ap_mac } : {}),
+    ...(portalParams.client_mac ? { client_mac: portalParams.client_mac } : {}),
+    ...(portalParams.orig_url ? { orig_url: portalParams.orig_url } : {}),
+    ...(portalParams.ssid ? { ssid: portalParams.ssid } : {}),
+  }
   const { res, data } = await parseJsonResponse("/api/portal/payments/radius-authorize", {
     method: "POST",
-    body: JSON.stringify({ paymentReference }),
+    body: JSON.stringify(payload),
   })
   if (res.status === 409) {
     return {
@@ -264,6 +280,35 @@ export async function authorizePortalRadius(paymentReference) {
     authorizeUrl,
     username: typeof data.username === "string" ? data.username : "",
   }
+}
+
+/**
+ * Retry radius authorize a few times (sale may still be writing).
+ * @param {string} paymentReference
+ * @param {{
+ *   login_url?: string
+ *   ap_mac?: string
+ *   client_mac?: string
+ *   orig_url?: string
+ *   ssid?: string
+ * }} [portalParams]
+ */
+export async function authorizePortalRadiusWithRetry(paymentReference, portalParams = {}) {
+  const delays = [0, 1000, 1500, 2000, 2500]
+  let last = /** @type {Awaited<ReturnType<typeof authorizePortalRadius>>} */ ({
+    ok: false,
+    retryable: true,
+    error: "Authorization pending",
+    authorizeUrl: null,
+    hotspot: false,
+  })
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i] > 0) await new Promise((r) => setTimeout(r, delays[i]))
+    last = await authorizePortalRadius(paymentReference, portalParams)
+    if (last.ok && last.authorizeUrl) return last
+    if (!last.retryable) break
+  }
+  return last
 }
 
 /**

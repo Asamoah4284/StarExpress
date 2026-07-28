@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Link, useNavigate, useSearchParams } from "react-router-dom"
+import { useNavigate, useSearchParams } from "react-router-dom"
 import { Check, ChevronLeft, ChevronRight, Copy, Gift, Loader2, Satellite, Wifi } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,6 +20,7 @@ import {
   fetchPortalPaymentStatus,
   initializePortalPayment,
 } from "@/lib/portalApi.js"
+import { hasPortalAuthParams, resolvePortalParams } from "@/lib/captivePortalParams.js"
 import { cn, formatCedis } from "@/lib/utils"
 
 function formatPackagePrice(priceGHS) {
@@ -98,13 +99,7 @@ export default function CaptiveBuy() {
   const appName = getDefaultAppName()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [portalParams, setPortalParams] = React.useState({
-    login_url: "",
-    ap_mac: "",
-    client_mac: "",
-    orig_url: "",
-    ssid: "",
-  })
+  const portalParams = React.useMemo(() => resolvePortalParams(searchParams), [searchParams])
   const [step, setStep] = React.useState(1)
   const [locations, setLocations] = React.useState(/** @type {{ locationId: string, name: string }[]} */ ([]))
   const [packages, setPackages] = React.useState(
@@ -139,16 +134,6 @@ export default function CaptiveBuy() {
     packagePage * PACKAGES_PER_PAGE,
     packagePage * PACKAGES_PER_PAGE + PACKAGES_PER_PAGE,
   )
-
-  React.useEffect(() => {
-    setPortalParams({
-      login_url: searchParams.get("login_url") || "",
-      ap_mac: searchParams.get("ap_mac") || "",
-      client_mac: searchParams.get("client_mac") || "",
-      orig_url: searchParams.get("orig_url") || "",
-      ssid: searchParams.get("ssid") || "",
-    })
-  }, [searchParams])
 
   React.useEffect(() => {
     let cancelled = false
@@ -274,6 +259,13 @@ export default function CaptiveBuy() {
       setError("Enter a valid phone number (at least 7 digits).")
       return
     }
+    if (!hasPortalAuthParams(portalParams)) {
+      setError(
+        "This page must be opened from the WiFi hotspot splash screen. Reconnect to WiFi and try again.",
+      )
+      setPaying(false)
+      return
+    }
     setError(null)
     setPaying(true)
     const result = await initializePortalPayment({
@@ -301,7 +293,7 @@ export default function CaptiveBuy() {
     const ref = response?.reference || response?.externalref || moolreReference
     setShowMoolre(false)
     if (!ref) {
-      setError("Payment could not be confirmed. Use Retrieve voucher with your phone number.")
+      setError("Payment could not be confirmed. Please try again or contact support.")
       return
     }
     navigate(`/portal-payment-success?externalref=${encodeURIComponent(ref)}`)
@@ -329,7 +321,7 @@ export default function CaptiveBuy() {
           </div>
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Buy WiFi access</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Select your location, choose a package, and pay with MoMo.</p>
+          <p className="text-muted-foreground mt-1 text-sm">Select your location, choose a package, and pay with MoMo to get online.</p>
         </div>
 
         <div className="mb-4 flex justify-center gap-2">
@@ -362,7 +354,7 @@ export default function CaptiveBuy() {
             </CardHeader>
             <CardContent className="space-y-4">
               {locations.length === 0 ? (
-                <p className="text-muted-foreground text-sm">No locations with vouchers available right now.</p>
+                <p className="text-muted-foreground text-sm">No WiFi locations available right now.</p>
               ) : (
                 <div className="space-y-2">
                   <Label htmlFor="location">Location</Label>
@@ -575,7 +567,7 @@ export default function CaptiveBuy() {
                     onChange={(e) => setPhone(e.target.value)}
                     required
                   />
-                  <p className="text-muted-foreground text-xs">Your voucher code will be sent to this number by SMS.</p>
+                  <p className="text-muted-foreground text-xs">Used for payment confirmation and support.</p>
                 </div>
                 <div className="flex gap-2">
                   <Button type="button" variant="outline" className="flex-1" onClick={() => setStep(2)}>
@@ -600,12 +592,7 @@ export default function CaptiveBuy() {
           </Card>
         ) : null}
 
-        <p className="text-muted-foreground mt-8 text-center text-sm">
-          Didn&apos;t get your code?{" "}
-          <Link to="/retrieve-voucher" className="text-primary font-medium underline-offset-4 hover:underline">
-            Retrieve voucher
-          </Link>
-        </p>
+        </div>
       </div>
 
       <MoolrePayment

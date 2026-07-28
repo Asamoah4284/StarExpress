@@ -1,10 +1,5 @@
 import { randomUUID } from "node:crypto"
 import { resolvePackageForLocation } from "./packageOverrides.js"
-import { ensureSaleVoucherSmsSent } from "./saleVoucherSms.js"
-import {
-  buildPackageAvailabilityFilter,
-  voucherDisplayCode,
-} from "../services/voucherSaleFulfillment.js"
 import { markAgentPaymentPendingCompleted } from "./agentMomoPayment.js"
 import { notifyAdminPaidNoVoucher } from "./adminAlerts.js"
 import { applyPercentOff, normalizePercentOff, roundMoney } from "./promoDiscount.js"
@@ -27,22 +22,47 @@ export function generateCaptivePaymentReference(suffix = "") {
 /**
  * Normalize Grandstream captive-portal query params for storage on the pending sale.
  * Always returns all five keys (empty string when absent).
+ * Accepts common aliases used by Grandstream firmware / older GWN splash redirects.
  * @param {unknown} raw
  * @returns {{ login_url: string, ap_mac: string, client_mac: string, orig_url: string, ssid: string }}
  */
 export function normalizeCaptivePortalParams(raw) {
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? /** @type {Record<string, unknown>} */ (raw) : {}
+  const nested =
+    src.portalParams && typeof src.portalParams === "object" && !Array.isArray(src.portalParams)
+      ? /** @type {Record<string, unknown>} */ (src.portalParams)
+      : {}
+  const merged = { ...nested, ...src }
+
   /** @param {unknown} v */
   const pick = (v) => {
     if (typeof v !== "string") return ""
     return v.trim().slice(0, 2048)
   }
+  /** @param {...string} keys */
+  const first = (...keys) => {
+    for (const key of keys) {
+      const value = pick(merged[key])
+      if (value) return value
+    }
+    return ""
+  }
+
   return {
-    login_url: pick(src.login_url),
-    ap_mac: pick(src.ap_mac),
-    client_mac: pick(src.client_mac),
-    orig_url: pick(src.orig_url),
-    ssid: pick(src.ssid),
+    login_url: first("login_url", "loginUrl", "loginurl", "authaction", "auth_action", "ga_login_url"),
+    ap_mac: first("ap_mac", "apMac", "apmac", "ap_macaddress", "called", "called_station_id"),
+    client_mac: first(
+      "client_mac",
+      "clientMac",
+      "clientmac",
+      "mac",
+      "user_mac",
+      "usermac",
+      "client_macaddress",
+      "calling_station_id",
+    ),
+    orig_url: first("orig_url", "origUrl", "origurl", "redir", "redirect", "continue", "userurl"),
+    ssid: first("ssid", "SSID", "essid"),
   }
 }
 
@@ -58,6 +78,15 @@ export function hasCaptivePortalAuthParams(params) {
       typeof params.client_mac === "string" &&
       params.client_mac.trim(),
   )
+}
+
+/**
+ * @param {import("mongodb").Document | null | undefined} saleOrPending
+ */
+export function isHotspotCaptiveSale(saleOrPending) {
+  if (!saleOrPending) return false
+  if (saleOrPending.fulfillmentMode === "radius") return true
+  return hasCaptivePortalAuthParams(normalizeCaptivePortalParams(saleOrPending.portalParams || saleOrPending))
 }
 
 /**
@@ -113,10 +142,11 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
 
 /**
  * Fulfill captive portal MoMo sale from webhook (or poll). Idempotent on paymentReference.
+ * Captive portal is FreeRADIUS-only — no voucher codes or SMS.
  * @param {{
  *   pending: import("mongodb").Collection
  *   packages: import("mongodb").Collection
- *   vouchers: import("mongodb").Collection
+ *   vouchers?: import("mongodb").Collection
  *   sales: import("mongodb").Collection
  *   auditLogs: import("mongodb").Collection
  *   paymentReference: string
@@ -124,34 +154,28 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
  * }} opts
  */
 export async function processCaptiveMomoPaymentSuccess(opts) {
-  const { pending, packages, vouchers, sales, auditLogs, paymentReference, source = "webhook" } = opts
+  const { pending, packages, sales, auditLogs, paymentReference, source = "webhook" } = opts
 
   console.log(`[captive-momo] ${source} processing`, { paymentReference })
 
   const existingSale = await sales.findOne({ paymentReference })
   if (existingSale) {
-    const sms = await ensureSaleVoucherSmsSent({
-      sale: existingSale,
-      packages,
-      sales,
-      source: `captive-momo-${source}`,
-    })
     console.log(`[captive-momo] ${source} idempotent sale exists`, {
       paymentReference,
       saleId: existingSale._id,
-      smsSent: sms.smsSent,
-      smsRetried: sms.sent,
+      fulfillmentMode: existingSale.fulfillmentMode || "radius",
     })
     await markAgentPaymentPendingCompleted(pending, paymentReference, {
       saleId: String(existingSale._id),
-      smsSent: sms.smsSent,
+      smsSent: true,
     })
     return {
       ok: true,
       status: "already_processed",
       saleId: existingSale._id,
-      smsSent: sms.smsSent,
-      voucherCode: existingSale.voucherCode,
+      smsSent: true,
+      voucherCode: "",
+      hotspot: true,
     }
   }
 
@@ -164,11 +188,10 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
   const customerPhone = String(pendingDoc.customerPhone || "").trim()
   const packageId = String(pendingDoc.packageId || "").trim()
   const locationId = String(pendingDoc.locationId || "").trim()
-  // What Moolre actually charged (already discounted at initialize). Used for alerts so a
-  // "paid but stuck" message reflects the real amount taken from the customer.
   const chargedAmount = typeof pendingDoc.amount === "number" ? pendingDoc.amount : undefined
   const promoPercentOff = normalizePercentOff(pendingDoc.promoPercentOff)
   const promoCode = typeof pendingDoc.promoCode === "string" ? pendingDoc.promoCode : null
+  const portalParams = normalizeCaptivePortalParams(pendingDoc.portalParams)
 
   if (!customerPhone || !packageId || !locationId) {
     console.error(`[captive-momo] ${source} invalid pending`, { paymentReference, pendingDoc })
@@ -179,6 +202,20 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
       reason: "incomplete order record",
     })
     return { ok: false, status: "invalid_pending" }
+  }
+
+  if (!hasCaptivePortalAuthParams(portalParams)) {
+    console.error(`[captive-momo] ${source} missing Grandstream portal params`, {
+      paymentReference,
+      portalParams,
+    })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      locationId,
+      amount: chargedAmount,
+      reason: "missing login_url or client_mac",
+    })
+    return { ok: false, status: "missing_portal_params" }
   }
 
   const pkg = await packages.findOne({ _id: packageId })
@@ -208,30 +245,20 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
   }
 
   const priceGHS = resolved.priceGHS
-  // Re-apply the promo discount on the backend so the recorded sale amount matches what the
-  // customer was charged (never trust a client-sent total).
   const finalAmount = promoPercentOff > 0 ? applyPercentOff(priceGHS, promoPercentOff) : priceGHS
-  const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
-  const voucherToUse = await vouchers.findOne(availFilter)
-  if (!voucherToUse) {
-    console.error(`[captive-momo] ${source} no voucher stock`, { paymentReference, packageId, locationId })
-    await alertPaidNoVoucherOnce(pending, paymentReference, {
-      customerPhone,
-      packageName: resolved.name?.trim() ? resolved.name.trim() : packageId,
-      locationId,
-      amount: chargedAmount ?? finalAmount,
-      reason: "no voucher stock left",
-    })
-    return { ok: false, status: "no_stock" }
-  }
-
   const packageType = resolved.name?.trim() ? resolved.name.trim() : packageId
-  const voucherCode = voucherDisplayCode(voucherToUse)
   const soldAt = new Date().toISOString()
   const date = soldAt.slice(0, 10)
   const saleId = `sale-captive-${randomUUID().slice(0, 12)}`
-
-  const portalParams = normalizeCaptivePortalParams(pendingDoc.portalParams)
+  const promoFields =
+    promoPercentOff > 0
+      ? {
+          promoCode,
+          promoPercentOff,
+          originalAmount: roundMoney(priceGHS),
+          discountAmount: roundMoney(priceGHS - finalAmount),
+        }
+      : {}
 
   const saleDoc = {
     _id: saleId,
@@ -245,89 +272,48 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     date,
     soldAt,
     status: "Completed",
-    voucherId: String(voucherToUse._id),
-    voucherCode,
+    voucherId: "",
+    voucherCode: "",
     channel: "captive_portal",
+    fulfillmentMode: "radius",
     paymentReference,
-    smsSent: false,
+    smsSent: true,
     portalParams,
-    ...(promoPercentOff > 0
-      ? {
-          promoCode,
-          promoPercentOff,
-          originalAmount: roundMoney(priceGHS),
-          discountAmount: roundMoney(priceGHS - finalAmount),
-        }
-      : {}),
+    ...promoFields,
   }
 
   await sales.insertOne(saleDoc)
-
-  const columns =
-    voucherToUse.columns && typeof voucherToUse.columns === "object" && !Array.isArray(voucherToUse.columns)
-      ? { ...voucherToUse.columns }
-      : {}
-  const statusKey =
-    "Status" in columns
-      ? "Status"
-      : "status" in columns
-        ? "status"
-        : (Object.keys(columns).find((k) => /^status$/i.test(k)) ?? "Status")
-  columns[statusKey] = "Used"
-  const marked = await vouchers.updateOne({ _id: voucherToUse._id, ...availFilter }, { $set: { columns } })
-
-  if (marked.modifiedCount === 0) {
-    await sales.deleteOne({ _id: saleId })
-    console.error(`[captive-momo] ${source} voucher reserve race`, { paymentReference })
-    await alertPaidNoVoucherOnce(pending, paymentReference, {
-      customerPhone,
-      packageName: packageType,
-      locationId,
-      amount: chargedAmount ?? finalAmount,
-      reason: "voucher reservation race",
-    })
-    return { ok: false, status: "reserve_failed" }
-  }
-
-  // Do not block the customer seeing their voucher on the SMS API. Moolre SMS can lag,
-  // so reserve the voucher and return success immediately while SMS sends in background.
-  sendVoucherSmsInBackground({
-    sale: saleDoc,
-    packages,
-    sales,
-    source: `captive-momo-${source}`,
-    paymentReference,
-    saleId,
-  })
-
-  const remaining = await vouchers.countDocuments(availFilter)
-  await packages.updateOne({ _id: packageId }, { $set: { stockUnits: remaining } })
-
-  await markAgentPaymentPendingCompleted(pending, paymentReference, { saleId, smsSent: false })
+  await markAgentPaymentPendingCompleted(pending, paymentReference, { saleId, smsSent: true })
 
   try {
     await auditLogs.insertOne({
       _id: `audit-${randomUUID().slice(0, 12)}`,
       actor: "captive-portal",
-      action: `Captive portal sale ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${finalAmount} GHS${promoPercentOff > 0 ? ` (promo ${promoCode || ""} ${promoPercentOff}% off, was ${roundMoney(priceGHS)})` : ""} · ref ${paymentReference} (${source})`,
+      action: `Captive portal RADIUS sale ${saleId}: ${customerPhone} · ${packageType} · ${finalAmount} GHS · client ${portalParams.client_mac} · ref ${paymentReference} (${source})`,
       at: new Date().toISOString(),
     })
   } catch (e) {
     console.error(`[captive-momo] ${source} audit log failed`, e)
   }
 
-  console.log(`[captive-momo] ${source} success`, {
+  console.log(`[captive-momo] ${source} success (RADIUS, no voucher)`, {
     paymentReference,
     saleId,
-    voucherCode,
-    smsSent: false,
+    client_mac: portalParams.client_mac,
   })
 
-  return { ok: true, status: "success", saleId, voucherCode, smsSent: false }
+  return {
+    ok: true,
+    status: "success",
+    saleId,
+    voucherCode: "",
+    smsSent: true,
+    hotspot: true,
+  }
 }
 
 /**
- * Alert the admin exactly once that a paid customer could not be issued a voucher.
+ * Alert the admin exactly once that a paid customer could not be fulfilled.
  * The atomic claim on the pending doc means repeated polls/webhooks can't spam.
  * @param {import("mongodb").Collection} pending
  * @param {string} paymentReference
@@ -360,37 +346,6 @@ async function alertPaidNoVoucherOnce(pending, paymentReference, info) {
       error: err instanceof Error ? err.message : String(err),
     })
   }
-}
-
-/**
- * @param {{
- *   sale: import("mongodb").Document
- *   packages: import("mongodb").Collection
- *   sales: import("mongodb").Collection
- *   source: string
- *   paymentReference: string
- *   saleId: string
- * }} opts
- */
-function sendVoucherSmsInBackground(opts) {
-  const { sale, packages, sales, source, paymentReference, saleId } = opts
-  void ensureSaleVoucherSmsSent({ sale, packages, sales, source })
-    .then((sms) => {
-      if (!sms.smsSent) {
-        console.warn(`[captive-momo] ${source} sale kept but SMS not confirmed`, {
-          paymentReference,
-          saleId,
-          error: sms.error,
-        })
-      }
-    })
-    .catch((err) => {
-      console.error(`[captive-momo] ${source} background SMS failed`, {
-        paymentReference,
-        saleId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    })
 }
 
 /**

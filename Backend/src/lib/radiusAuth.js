@@ -190,26 +190,31 @@ export async function generateRadiusSession(portalParams, packageId, pkg = null)
   }
 
   const limits = resolveRadiusPackageLimits(packageId, pkg)
+  // Ensure Session-Timeout is always written for hotspot sessions when no package limit is known.
+  const sessionTimeout = limits.sessionTimeout || (limits.maxOctets ? null : 86400)
+  const maxOctets = limits.maxOctets
   const { username, password } = generateCredentials(client_mac)
   await writeRadiusSession({
     username,
     password,
-    sessionTimeout: limits.sessionTimeout,
-    maxOctets: limits.maxOctets,
+    sessionTimeout,
+    maxOctets,
   })
+  console.log("[portal] radius session created", username)
 
   const redirectTarget = orig_url || `${resolveFrontendBaseUrl()}/portal-payment-success`
   const authorizeUrl =
     `${login_url}?username=${encodeURIComponent(username)}` +
     `&password=${encodeURIComponent(password)}` +
     `&redirect=${encodeURIComponent(redirectTarget)}`
+  console.log("[portal] authorizeUrl", authorizeUrl)
 
   return {
     username,
     password,
     authorizeUrl,
-    sessionTimeout: limits.sessionTimeout,
-    maxOctets: limits.maxOctets,
+    sessionTimeout,
+    maxOctets,
   }
 }
 
