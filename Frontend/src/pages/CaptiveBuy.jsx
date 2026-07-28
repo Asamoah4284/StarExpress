@@ -591,8 +591,6 @@ export default function CaptiveBuy() {
             </CardContent>
           </Card>
         ) : null}
-
-        </div>
       </div>
 
       <MoolrePayment
