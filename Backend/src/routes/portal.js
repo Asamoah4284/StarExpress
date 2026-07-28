@@ -122,11 +122,11 @@ export function createPortalRouter(deps) {
       const portalParams = normalizeCaptivePortalParams(req.body)
 
       console.log("[portal] initialize portal params", {
-        login_url: portalParams.login_url ? "[set]" : "",
-        ap_mac: portalParams.ap_mac || "",
-        client_mac: portalParams.client_mac || "",
-        orig_url: portalParams.orig_url ? "[set]" : "",
-        ssid: portalParams.ssid || "",
+        login_url: portalParams.login_url,
+        ap_mac: portalParams.ap_mac,
+        client_mac: portalParams.client_mac,
+        orig_url: portalParams.orig_url,
+        ssid: portalParams.ssid,
       })
 
       if (!hasCaptivePortalAuthParams(portalParams)) {
