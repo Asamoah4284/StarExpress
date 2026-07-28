@@ -438,8 +438,11 @@ export function createPortalRouter(deps) {
 
       let session
       try {
+        console.log("[portal] portalParams", portalParams)
         console.log("[portal] generating radius session")
+
         session = await generateRadiusSession(portalParams, packageId, pkg)
+
         console.log("[portal] radius session created", session.username)
         console.log("[portal] authorizeUrl", session.authorizeUrl)
       } catch (err) {
