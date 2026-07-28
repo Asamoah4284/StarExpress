@@ -112,7 +112,17 @@ export async function fetchPortalPackages(locationId) {
 }
 
 /**
- * @param {{ locationId: string, packageId: string, customerPhone: string, promoCode?: string }} body
+ * @param {{
+ *   locationId: string
+ *   packageId: string
+ *   customerPhone: string
+ *   promoCode?: string
+ *   login_url?: string
+ *   ap_mac?: string
+ *   client_mac?: string
+ *   orig_url?: string
+ *   ssid?: string
+ * }} body
  */
 export async function initializePortalPayment(body) {
   const payloadBody = {
@@ -120,6 +130,11 @@ export async function initializePortalPayment(body) {
     packageId: body.packageId,
     customerPhone: body.customerPhone,
     ...(body.promoCode ? { promoCode: body.promoCode } : {}),
+    ...(body.login_url ? { login_url: body.login_url } : {}),
+    ...(body.ap_mac ? { ap_mac: body.ap_mac } : {}),
+    ...(body.client_mac ? { client_mac: body.client_mac } : {}),
+    ...(body.orig_url ? { orig_url: body.orig_url } : {}),
+    ...(body.ssid ? { ssid: body.ssid } : {}),
   }
   const { res, data } = await parseJsonResponse("/api/portal/payments/initialize", {
     method: "POST",
@@ -211,6 +226,44 @@ export async function completePortalPaymentWithRetry(paymentReference) {
   }
 
   return { ok: false, error: lastError }
+}
+
+/**
+ * After captive payment success: ask the backend to write RADIUS credentials and
+ * return the Grandstream login_url the browser must hit (hotspot purchases only).
+ * @param {string} paymentReference
+ */
+export async function authorizePortalRadius(paymentReference) {
+  const { res, data } = await parseJsonResponse("/api/portal/payments/radius-authorize", {
+    method: "POST",
+    body: JSON.stringify({ paymentReference }),
+  })
+  if (res.status === 409) {
+    return {
+      ok: false,
+      retryable: true,
+      error: data?.error || "Payment is still processing.",
+      authorizeUrl: null,
+      hotspot: false,
+    }
+  }
+  if (!res.ok || !data || data.success !== true) {
+    return {
+      ok: false,
+      retryable: false,
+      error: data?.error || res.statusText || "Failed to authorize WiFi access.",
+      authorizeUrl: null,
+      hotspot: false,
+    }
+  }
+  const authorizeUrl =
+    typeof data.authorizeUrl === "string" && data.authorizeUrl.trim() ? data.authorizeUrl.trim() : null
+  return {
+    ok: true,
+    hotspot: data.hotspot === true,
+    authorizeUrl,
+    username: typeof data.username === "string" ? data.username : "",
+  }
 }
 
 /**

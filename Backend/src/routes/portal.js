@@ -8,17 +8,20 @@ import {
 import { checkMoolrePaymentStatus } from "../lib/moolrePaymentStatus.js"
 import {
   generateCaptivePaymentReference,
+  hasCaptivePortalAuthParams,
   isCaptivePaymentReference,
+  normalizeCaptivePortalParams,
   processCaptiveMomoPaymentSuccess,
   saveCaptivePaymentPending,
 } from "../lib/captiveMomoPayment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { getAppSettings } from "../lib/appSettings.js"
 import { applyPercentOff, normalizePercentOff } from "../lib/promoDiscount.js"
+import { generateRadiusSession, isRadiusConfigured } from "../lib/radiusAuth.js"
+import { ensureSaleVoucherSmsSent } from "../lib/saleVoucherSms.js"
 import { getLocationsWithStock, getPackagesForLocation } from "../services/portalCatalog.js"
 import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
 import { buildPackageAvailabilityFilter } from "../services/voucherSaleFulfillment.js"
-import { resolveCaptivePaymentRedirectUrl } from "../lib/frontendUrl.js"
 
 /**
  * @param {{
@@ -131,6 +134,7 @@ export function createPortalRouter(deps) {
       const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
       const locationId = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
       const promoCodeRaw = typeof req.body?.promoCode === "string" ? req.body.promoCode.trim().slice(0, 64) : ""
+      const portalParams = normalizeCaptivePortalParams(req.body)
 
       if (!locationId) return res.status(400).json({ error: "locationId is required." })
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
@@ -194,6 +198,7 @@ export function createPortalRouter(deps) {
         basePrice: priceGHS,
         promoCode: appliedPromo?.code ?? null,
         promoPercentOff: appliedPromo?.percentOff ?? 0,
+        portalParams,
       })
 
       // Use the shared backend redirect page (same as agent sales). That page posts a
@@ -363,6 +368,115 @@ export function createPortalRouter(deps) {
     } catch (err) {
       console.error("[portal] GET /payments/status", err)
       res.status(500).json({ error: "Failed to check status." })
+    }
+  })
+
+  /**
+   * After MoMo success: if this purchase came from a Grandstream hotspot redirect,
+   * write RADIUS credentials and return the AP login URL the browser must hit.
+   * Non-hotspot purchases get { authorizeUrl: null } so the UI can show the voucher.
+   */
+  router.post("/payments/radius-authorize", async (req, res) => {
+    try {
+      const paymentReference =
+        typeof req.body?.paymentReference === "string" ? req.body.paymentReference.trim() : ""
+      if (!paymentReference) {
+        return res.status(400).json({ error: "paymentReference is required." })
+      }
+      if (!isCaptivePaymentReference(paymentReference)) {
+        return res.status(400).json({ error: "Invalid payment reference." })
+      }
+
+      const sale = await sales.findOne({ paymentReference })
+      if (!sale) {
+        return res.status(409).json({ error: "Payment is not complete yet. Wait a moment and try again." })
+      }
+
+      const pendingDoc = await agentPaymentPending.findOne({ _id: paymentReference })
+      const portalParams = normalizeCaptivePortalParams(sale.portalParams || pendingDoc?.portalParams)
+
+      if (!hasCaptivePortalAuthParams(portalParams)) {
+        return res.json({
+          success: true,
+          hotspot: false,
+          authorizeUrl: null,
+          paymentReference,
+        })
+      }
+
+      if (typeof pendingDoc?.radiusAuthorizeUrl === "string" && pendingDoc.radiusAuthorizeUrl.trim()) {
+        return res.json({
+          success: true,
+          hotspot: true,
+          authorizeUrl: pendingDoc.radiusAuthorizeUrl.trim(),
+          username: typeof pendingDoc.radiusUsername === "string" ? pendingDoc.radiusUsername : "",
+          paymentReference,
+          idempotent: true,
+        })
+      }
+
+      if (!isRadiusConfigured()) {
+        console.error("[portal] RADIUS DB not configured; cannot authorize hotspot session", {
+          paymentReference,
+        })
+        return res.status(503).json({
+          error: "WiFi authorization is temporarily unavailable. Use your voucher code to connect.",
+        })
+      }
+
+      const packageId = String(sale.packageId || pendingDoc?.packageId || "").trim()
+      const pkg = packageId ? await packages.findOne({ _id: packageId }) : null
+
+      let session
+      try {
+        session = await generateRadiusSession(portalParams, packageId, pkg)
+      } catch (err) {
+        console.error("[portal] RADIUS session failed", {
+          paymentReference,
+          error: err instanceof Error ? err.message : err,
+        })
+        return res.status(500).json({
+          error: "Could not authorize WiFi access. Use your voucher code, or contact support.",
+        })
+      }
+
+      await agentPaymentPending.updateOne(
+        { _id: paymentReference },
+        {
+          $set: {
+            radiusUsername: session.username,
+            radiusAuthorizeUrl: session.authorizeUrl,
+            radiusAuthorizedAt: new Date().toISOString(),
+          },
+        },
+      )
+      await sales.updateOne(
+        { paymentReference },
+        {
+          $set: {
+            radiusUsername: session.username,
+            radiusAuthorizedAt: new Date().toISOString(),
+          },
+        },
+      )
+
+      console.log("[portal] RADIUS authorize ok", {
+        paymentReference,
+        username: session.username,
+        sessionTimeout: session.sessionTimeout,
+        maxOctets: session.maxOctets,
+      })
+
+      return res.json({
+        success: true,
+        hotspot: true,
+        authorizeUrl: session.authorizeUrl,
+        username: session.username,
+        paymentReference,
+      })
+    } catch (err) {
+      console.error("[portal] POST /payments/radius-authorize", err)
+      res.status(500).json({ error: "Failed to authorize WiFi access." })
     }
   })
 

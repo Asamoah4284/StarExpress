@@ -25,6 +25,42 @@ export function generateCaptivePaymentReference(suffix = "") {
 }
 
 /**
+ * Normalize Grandstream captive-portal query params for storage on the pending sale.
+ * Always returns all five keys (empty string when absent).
+ * @param {unknown} raw
+ * @returns {{ login_url: string, ap_mac: string, client_mac: string, orig_url: string, ssid: string }}
+ */
+export function normalizeCaptivePortalParams(raw) {
+  const src = raw && typeof raw === "object" && !Array.isArray(raw) ? /** @type {Record<string, unknown>} */ (raw) : {}
+  /** @param {unknown} v */
+  const pick = (v) => {
+    if (typeof v !== "string") return ""
+    return v.trim().slice(0, 2048)
+  }
+  return {
+    login_url: pick(src.login_url),
+    ap_mac: pick(src.ap_mac),
+    client_mac: pick(src.client_mac),
+    orig_url: pick(src.orig_url),
+    ssid: pick(src.ssid),
+  }
+}
+
+/**
+ * True when the buyer arrived via a Grandstream hotspot redirect.
+ * @param {{ login_url?: string, client_mac?: string } | null | undefined} params
+ */
+export function hasCaptivePortalAuthParams(params) {
+  return Boolean(
+    params &&
+      typeof params.login_url === "string" &&
+      params.login_url.trim() &&
+      typeof params.client_mac === "string" &&
+      params.client_mac.trim(),
+  )
+}
+
+/**
  * @param {import("mongodb").Collection} pendingCol
  * @param {{
  *   paymentReference: string
@@ -35,10 +71,18 @@ export function generateCaptivePaymentReference(suffix = "") {
  *   basePrice?: number
  *   promoCode?: string | null
  *   promoPercentOff?: number
+ *   portalParams?: {
+ *     login_url?: string
+ *     ap_mac?: string
+ *     client_mac?: string
+ *     orig_url?: string
+ *     ssid?: string
+ *   } | null
  * }} data
  */
 export async function saveCaptivePaymentPending(pendingCol, data) {
   const promoPercentOff = normalizePercentOff(data.promoPercentOff)
+  const portalParams = normalizeCaptivePortalParams(data.portalParams)
   const doc = {
     _id: data.paymentReference,
     paymentReference: data.paymentReference,
@@ -50,6 +94,7 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
     ...(promoPercentOff > 0
       ? { promoCode: data.promoCode || null, promoPercentOff }
       : {}),
+    portalParams,
     orderType: "captive_sale",
     createdAt: new Date().toISOString(),
     status: "pending",
@@ -61,6 +106,7 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
     locationId: data.locationId,
     amount: data.amount,
     customerPhone: maskPhone(data.customerPhone),
+    hasPortalAuth: hasCaptivePortalAuthParams(portalParams),
   })
   return doc
 }
@@ -185,6 +231,8 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
   const date = soldAt.slice(0, 10)
   const saleId = `sale-captive-${randomUUID().slice(0, 12)}`
 
+  const portalParams = normalizeCaptivePortalParams(pendingDoc.portalParams)
+
   const saleDoc = {
     _id: saleId,
     customerName: customerPhone,
@@ -202,6 +250,7 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     channel: "captive_portal",
     paymentReference,
     smsSent: false,
+    portalParams,
     ...(promoPercentOff > 0
       ? {
           promoCode,

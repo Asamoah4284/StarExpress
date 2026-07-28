@@ -4,7 +4,7 @@ import { CheckCircle2, Copy, Loader2, Satellite } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { getDefaultAppName } from "@/lib/env.js"
-import { completePortalPaymentWithRetry } from "@/lib/portalApi.js"
+import { authorizePortalRadius, completePortalPaymentWithRetry } from "@/lib/portalApi.js"
 
 export default function PortalPaymentSuccess() {
   const appName = getDefaultAppName()
@@ -22,6 +22,7 @@ export default function PortalPaymentSuccess() {
   const [packageName, setPackageName] = React.useState("")
   const [smsSent, setSmsSent] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
+  const [authorizingWifi, setAuthorizingWifi] = React.useState(false)
 
   React.useEffect(() => {
     document.title = "Payment successful"
@@ -48,6 +49,16 @@ export default function PortalPaymentSuccess() {
       setVoucherCode(result.voucherCode)
       setPackageName(result.packageName)
       setSmsSent(result.smsSent)
+
+      // Hotspot-originated purchases: write RADIUS creds and send the browser to login_url.
+      setAuthorizingWifi(true)
+      const radius = await authorizePortalRadius(paymentReference)
+      if (cancelled) return
+      if (radius.ok && radius.authorizeUrl) {
+        window.location.assign(radius.authorizeUrl)
+        return
+      }
+      setAuthorizingWifi(false)
       setLoading(false)
     })()
 
@@ -77,17 +88,19 @@ export default function PortalPaymentSuccess() {
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
         </div>
 
-        {loading ? (
+        {loading || authorizingWifi ? (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-12">
               <Loader2 className="text-primary size-10 animate-spin" aria-hidden />
-              <p className="text-sm font-medium">Confirming your payment…</p>
+              <p className="text-sm font-medium">
+                {authorizingWifi ? "Connecting you to WiFi…" : "Confirming your payment…"}
+              </p>
               <p className="text-muted-foreground text-xs">This may take a few seconds.</p>
             </CardContent>
           </Card>
         ) : null}
 
-        {!loading && error ? (
+        {!loading && !authorizingWifi && error ? (
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Almost there</CardTitle>
@@ -104,7 +117,7 @@ export default function PortalPaymentSuccess() {
           </Card>
         ) : null}
 
-        {!loading && !error && voucherCode ? (
+        {!loading && !authorizingWifi && !error && voucherCode ? (
           <Card>
             <CardHeader className="text-center">
               <CheckCircle2 className="text-primary mx-auto mb-2 size-12" aria-hidden />

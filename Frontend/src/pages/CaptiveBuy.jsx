@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Check, ChevronLeft, ChevronRight, Copy, Gift, Loader2, Satellite, Wifi } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -97,6 +97,14 @@ const PACKAGES_PER_PAGE = 4
 export default function CaptiveBuy() {
   const appName = getDefaultAppName()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const [portalParams, setPortalParams] = React.useState({
+    login_url: "",
+    ap_mac: "",
+    client_mac: "",
+    orig_url: "",
+    ssid: "",
+  })
   const [step, setStep] = React.useState(1)
   const [locations, setLocations] = React.useState(/** @type {{ locationId: string, name: string }[]} */ ([]))
   const [packages, setPackages] = React.useState(
@@ -131,6 +139,16 @@ export default function CaptiveBuy() {
     packagePage * PACKAGES_PER_PAGE,
     packagePage * PACKAGES_PER_PAGE + PACKAGES_PER_PAGE,
   )
+
+  React.useEffect(() => {
+    setPortalParams({
+      login_url: searchParams.get("login_url") || "",
+      ap_mac: searchParams.get("ap_mac") || "",
+      client_mac: searchParams.get("client_mac") || "",
+      orig_url: searchParams.get("orig_url") || "",
+      ssid: searchParams.get("ssid") || "",
+    })
+  }, [searchParams])
 
   React.useEffect(() => {
     let cancelled = false
@@ -263,6 +281,7 @@ export default function CaptiveBuy() {
       packageId: selectedPackage.packageId,
       customerPhone: phone.trim(),
       promoCode: appliedPromo?.code || "",
+      ...portalParams,
     })
     if (!result.ok) {
       setPaying(false)
