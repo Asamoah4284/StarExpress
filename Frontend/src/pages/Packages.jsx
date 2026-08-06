@@ -75,14 +75,21 @@ export default function Packages() {
     ? (agentStore?.name ?? "your wifi location")
     : locationFilterLabel
 
-  const [open, setOpen] = React.useState(false)
-  const [editing, setEditing] = React.useState(null)
-  const [form, setForm] = React.useState({
+  const emptyPackageForm = () => ({
     name: "",
+    description: "",
     priceGHS: "",
     dataLimit: "",
     status: "Active",
+    sessionHours: "",
+    dataCapGb: "",
+    uploadSpeed: "",
+    downloadSpeed: "",
   })
+
+  const [open, setOpen] = React.useState(false)
+  const [editing, setEditing] = React.useState(null)
+  const [form, setForm] = React.useState(emptyPackageForm)
   const [formError, setFormError] = React.useState(null)
 
   const [sellOpen, setSellOpen] = React.useState(false)
@@ -109,29 +116,42 @@ export default function Packages() {
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
       const price = Number(form.priceGHS)
+      const sessionHours = Number(form.sessionHours)
+      const radiusSessionTimeout = Math.round(sessionHours * 3600)
+      const dataCapGbTrim = form.dataCapGb.trim()
+      const radiusMaxOctets = dataCapGbTrim
+        ? Math.round(Number(dataCapGbTrim) * 1024 ** 3)
+        : null
+      const uploadTrim = form.uploadSpeed.trim()
+      const downloadTrim = form.downloadSpeed.trim()
+      const uploadSpeed = uploadTrim ? Number(uploadTrim) : null
+      const downloadSpeed = downloadTrim ? Number(downloadTrim) : null
+      /** @type {Parameters<typeof createCatalogPackage>[1]} */
+      const body = {
+        name: form.name.trim(),
+        description: form.description.trim(),
+        priceGHS: price,
+        dataLimit: form.dataLimit.trim(),
+        status: form.status,
+        radiusSessionTimeout,
+        radiusMaxOctets,
+        uploadSpeed,
+        downloadSpeed,
+        currency: "GHS",
+      }
       if (editing) {
         const editLocationId =
           isAdmin && locationFilterId !== "all" ? locationFilterId : ""
         const r = await updateCatalogPackage(
           token,
           editing.id,
-          {
-            name: form.name.trim(),
-            priceGHS: price,
-            dataLimit: form.dataLimit.trim(),
-            status: form.status,
-          },
+          body,
           editLocationId ? { locationId: editLocationId } : undefined,
         )
         if (!r.ok) throw new Error(r.error || "Update failed")
         return { mode: /** @type {"edit"} */ ("edit"), forked: Boolean(r.forked) }
       }
-      const r = await createCatalogPackage(token, {
-        name: form.name.trim(),
-        priceGHS: price,
-        dataLimit: form.dataLimit.trim(),
-        status: form.status,
-      })
+      const r = await createCatalogPackage(token, body)
       if (!r.ok) throw new Error(r.error || "Create failed")
       return { mode: /** @type {"create"} */ ("create"), forked: false }
     },
@@ -141,7 +161,7 @@ export default function Packages() {
       queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
       setOpen(false)
       setEditing(null)
-      setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
+      setForm(emptyPackageForm())
       setFormError(null)
       if (result?.mode === "edit" && result.forked) {
         setSaveSuccess(
@@ -326,7 +346,7 @@ export default function Packages() {
   })
 
   const resetForm = () => {
-    setForm({ name: "", priceGHS: "", dataLimit: "", status: "Active" })
+    setForm(emptyPackageForm())
     setEditing(null)
     setFormError(null)
   }
@@ -338,11 +358,27 @@ export default function Packages() {
 
   const openEdit = React.useCallback((row) => {
     setEditing(row)
+    const timeoutSec = Number(row.radiusSessionTimeout)
+    const sessionHours =
+      Number.isFinite(timeoutSec) && timeoutSec > 0
+        ? String(Math.round((timeoutSec / 3600) * 1000) / 1000)
+        : ""
+    const octets = Number(row.radiusMaxOctets)
+    const dataCapGb =
+      Number.isFinite(octets) && octets > 0
+        ? String(Math.round((octets / 1024 ** 3) * 1000) / 1000)
+        : ""
     setForm({
       name: row.name,
+      description: String(row.description ?? ""),
       priceGHS: String(row.priceGHS),
       dataLimit: row.dataLimit,
       status: row.status,
+      sessionHours,
+      dataCapGb,
+      uploadSpeed: row.uploadSpeed != null && row.uploadSpeed !== "" ? String(row.uploadSpeed) : "",
+      downloadSpeed:
+        row.downloadSpeed != null && row.downloadSpeed !== "" ? String(row.downloadSpeed) : "",
     })
     setFormError(null)
     setOpen(true)
@@ -380,8 +416,50 @@ export default function Packages() {
       return
     }
     const price = Number(form.priceGHS)
-    if (!form.name.trim() || Number.isNaN(price)) {
-      setFormError("Valid name and price are required.")
+    const sessionHours = Number(form.sessionHours)
+    if (!form.name.trim() || form.name.trim().length < 2) {
+      setFormError("Package name is required (at least 2 characters).")
+      return
+    }
+    if (!form.description.trim()) {
+      setFormError("Description is required.")
+      return
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      setFormError("Enter a valid price (GH₵).")
+      return
+    }
+    if (!form.dataLimit.trim()) {
+      setFormError("Data limit label is required (e.g. Unlimited · 1 week).")
+      return
+    }
+    if (!Number.isFinite(sessionHours) || sessionHours <= 0) {
+      setFormError("Session duration in hours is required (e.g. 1, 24, or 168 for a week).")
+      return
+    }
+    const dataCapTrim = form.dataCapGb.trim()
+    if (dataCapTrim) {
+      const gb = Number(dataCapTrim)
+      if (!Number.isFinite(gb) || gb <= 0) {
+        setFormError("Data cap must be empty for unlimited, or a positive GB amount.")
+        return
+      }
+    }
+    for (const [label, value] of [
+      ["Upload speed", form.uploadSpeed],
+      ["Download speed", form.downloadSpeed],
+    ]) {
+      const trim = String(value).trim()
+      if (!trim) continue
+      const n = Number(trim)
+      if (!Number.isFinite(n) || n < 0) {
+        setFormError(`${label} must be empty or a non-negative number.`)
+        return
+      }
+    }
+    const status = form.status.trim()
+    if (status !== "Active" && status !== "Inactive") {
+      setFormError("Status must be Active or Inactive.")
       return
     }
     saveMutation.mutate()
@@ -684,7 +762,7 @@ export default function Packages() {
           if (!o) resetForm()
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit package" : "Add package"}</DialogTitle>
           </DialogHeader>
@@ -718,6 +796,18 @@ export default function Packages() {
                 id="pkg-name"
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="e.g. 1 Week Unlimited"
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pkg-description">Description</Label>
+              <Input
+                id="pkg-description"
+                value={form.description}
+                onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                placeholder="e.g. Unlimited internet for 7 days"
+                required
               />
             </div>
             <div className="space-y-1.5">
@@ -727,27 +817,82 @@ export default function Packages() {
                 inputMode="decimal"
                 value={form.priceGHS}
                 onChange={(e) => setForm((f) => ({ ...f, priceGHS: e.target.value }))}
+                placeholder="e.g. 50"
+                required
               />
               <p className="text-muted-foreground text-xs">
                 Remaining stock is calculated from uploaded vouchers, not entered here.
               </p>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="pkg-limit">Data limit</Label>
+              <Label htmlFor="pkg-limit">Data limit label</Label>
               <Input
                 id="pkg-limit"
                 value={form.dataLimit}
                 onChange={(e) => setForm((f) => ({ ...f, dataLimit: e.target.value }))}
+                placeholder="e.g. Unlimited · 1 week"
+                required
               />
+              <p className="text-muted-foreground text-xs">Shown to customers on SMS and menus.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pkg-session">Session duration (hours)</Label>
+              <Input
+                id="pkg-session"
+                inputMode="decimal"
+                value={form.sessionHours}
+                onChange={(e) => setForm((f) => ({ ...f, sessionHours: e.target.value }))}
+                placeholder="e.g. 1, 24, or 168 for a week"
+                required
+              />
+              <p className="text-muted-foreground text-xs">
+                WiFi session length for RADIUS (required). 24 = 1 day, 168 = 1 week.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pkg-cap">Data cap (GB)</Label>
+              <Input
+                id="pkg-cap"
+                inputMode="decimal"
+                value={form.dataCapGb}
+                onChange={(e) => setForm((f) => ({ ...f, dataCapGb: e.target.value }))}
+                placeholder="Leave blank for unlimited"
+              />
+              <p className="text-muted-foreground text-xs">Optional. Blank means no data byte limit.</p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="pkg-upload">Upload speed</Label>
+                <Input
+                  id="pkg-upload"
+                  inputMode="numeric"
+                  value={form.uploadSpeed}
+                  onChange={(e) => setForm((f) => ({ ...f, uploadSpeed: e.target.value }))}
+                  placeholder="Optional"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pkg-download">Download speed</Label>
+                <Input
+                  id="pkg-download"
+                  inputMode="numeric"
+                  value={form.downloadSpeed}
+                  onChange={(e) => setForm((f) => ({ ...f, downloadSpeed: e.target.value }))}
+                  placeholder="Optional"
+                />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="pkg-status">Status</Label>
-              <Input
-                id="pkg-status"
-                value={form.status}
-                onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-                placeholder="Active or Inactive"
-              />
+              <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v }))}>
+                <SelectTrigger id="pkg-status" className="w-full">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Active">Active</SelectItem>
+                  <SelectItem value="Inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>

@@ -11,17 +11,27 @@ export function getApiBaseUrl() {
   return typeof v === "string" ? v : ""
 }
 
+/** Normalize legacy brand labels to EverGreen WISP. */
+function normalizeBrandLabel(name) {
+  const trimmed = typeof name === "string" ? name.trim() : ""
+  if (!trimmed) return "EverGreen WISP"
+  if (/^(tabitacum|starexpress|starlink)(\s+admin)?$/i.test(trimmed)) return "EverGreen WISP"
+  return trimmed
+}
+
 /** Default app name (sidebar, breadcrumbs) when settings API is unavailable. */
 export function getDefaultAppName() {
   const v = import.meta.env.VITE_APP_NAME
-  return typeof v === "string" && v.trim() ? v.trim() : "Tabitacum"
+  return normalizeBrandLabel(typeof v === "string" && v.trim() ? v.trim() : "EverGreen WISP")
 }
 
 /** Default company name (exports, reports) when settings API is unavailable. */
 export function getDefaultCompanyName() {
   const v = import.meta.env.VITE_COMPANY_NAME
-  return typeof v === "string" && v.trim() ? v.trim() : "Tabitacum Admin"
+  return normalizeBrandLabel(typeof v === "string" && v.trim() ? v.trim() : "EverGreen WISP")
 }
+
+export { normalizeBrandLabel }
 
 /** Fallback commission rate (0–1) when settings API is unavailable. Admin can change live rate in Settings. */
 export function getSalesAgentCommissionRate() {

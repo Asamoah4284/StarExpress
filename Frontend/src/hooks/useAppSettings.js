@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { fetchAppSettings } from "@/lib/api.js"
-import { getDefaultAppName, getDefaultCompanyName, getSalesAgentCommissionRate } from "@/lib/env.js"
+import { getDefaultAppName, getDefaultCompanyName, getSalesAgentCommissionRate, normalizeBrandLabel } from "@/lib/env.js"
 
 export const APP_SETTINGS_QUERY_KEY = "appSettings"
 
@@ -45,7 +45,7 @@ export function useAppName() {
   const fallback = getDefaultAppName()
   if (settingsQuery.isSuccess && typeof settingsQuery.data?.appName === "string") {
     const name = settingsQuery.data.appName.trim()
-    if (name) return name
+    if (name) return normalizeBrandLabel(name)
   }
   return fallback
 }
@@ -56,7 +56,7 @@ export function useCompanyName() {
   const fallback = getDefaultCompanyName()
   if (settingsQuery.isSuccess && typeof settingsQuery.data?.companyName === "string") {
     const name = settingsQuery.data.companyName.trim()
-    if (name) return name
+    if (name) return normalizeBrandLabel(name)
   }
   return fallback
 }

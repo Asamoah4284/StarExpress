@@ -14,10 +14,7 @@ import {
   Satellite,
   ScrollText,
   Settings,
-  Table2,
-  Ticket,
   Users,
-  Wallet,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -34,28 +31,35 @@ const items = [
   { to: "/reports", label: "Reports", icon: BarChart3 },
   { to: "/revenue-split", label: "Revenue split", icon: PieChart },
   { to: "/finance", label: "Finance", icon: Landmark },
-  { to: "/vouchers", label: "Upload vouchers", icon: Ticket },
-  { to: "/vouchers/uploaded", label: "Vouchers", icon: Table2 },
   { to: "/locations", label: "Locations", icon: MapPin },
-  { to: "/agent-commissions", label: "Agent commissions", icon: Wallet },
   { to: "/users", label: "Users", icon: Users },
   { to: "/audit-logs", label: "Audit Logs", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings },
 ]
 
-function SidebarBrandMark({ logoUrl }) {
+function SidebarBrandMark({ logoUrl, collapsed }) {
   if (logoUrl) {
     return (
-      <img
-        src={logoUrl}
-        alt=""
-        className="size-10 shrink-0 rounded-full border border-border bg-muted/40 object-cover"
-      />
+      <span
+        className={cn(
+          "border-border bg-card flex shrink-0 items-center justify-center overflow-hidden rounded-lg border shadow-sm",
+          collapsed ? "size-10 p-0.5" : "h-12 w-[8.75rem] px-1.5 py-1",
+        )}
+      >
+        <img
+          src={logoUrl}
+          alt=""
+          className={cn(
+            "h-full w-full",
+            collapsed ? "scale-[1.65] object-cover object-left" : "object-contain object-left",
+          )}
+        />
+      </span>
     )
   }
   return (
     <div
-      className="flex size-10 shrink-0 items-center justify-center rounded-full border border-border bg-muted/40"
+      className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/40"
       aria-hidden
     >
       <Satellite className="size-[18px] stroke-[1.5] text-primary" />
@@ -71,20 +75,20 @@ export function Sidebar({ className, collapsed, onToggleCollapse, onLogout, onNa
     <aside
       className={cn(
         "flex h-full min-h-0 flex-col border-r border-border bg-card text-card-foreground transition-[width] duration-200 ease-out",
-        collapsed ? "w-[72px]" : "w-56 sm:w-60",
+        collapsed ? "w-[72px]" : "w-60 sm:w-64",
         className,
       )}
     >
-      <div className="flex items-start justify-between gap-2 px-4 pb-3 pt-5">
-        <div className={cn("flex min-w-0 items-center gap-3", collapsed && "justify-center")}>
-          <SidebarBrandMark logoUrl={companyLogoUrl} />
-          {!collapsed ? (
-            <div className="min-w-0 leading-tight">
-              <p className="truncate font-semibold tracking-tight">{appName}</p>
-              <p className="text-muted-foreground text-xs font-medium">
-                {user?.role === "Sales Agent" ? "Sales workspace" : "Console"}
-              </p>
-            </div>
+      <div
+        className={cn(
+          "flex items-center gap-1 px-3 pb-3 pt-5 sm:px-4",
+          collapsed ? "flex-col" : "justify-between",
+        )}
+      >
+        <div className={cn("flex min-w-0 items-center gap-2.5", collapsed && "justify-center")}>
+          <SidebarBrandMark logoUrl={companyLogoUrl} collapsed={collapsed} />
+          {!collapsed && !companyLogoUrl ? (
+            <p className="min-w-0 text-[13px] font-semibold leading-snug tracking-tight sm:text-sm">{appName}</p>
           ) : null}
         </div>
         <Button

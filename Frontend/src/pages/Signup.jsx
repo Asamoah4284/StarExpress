@@ -163,7 +163,7 @@ export default function Signup() {
         <div
           className="absolute inset-0 opacity-[0.35] dark:opacity-[0.12]"
           style={{
-            backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%237c3aed' fill-opacity='0.08'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
+            backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%2328a745' fill-opacity='0.10'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`,
           }}
         />
       </div>
@@ -181,7 +181,7 @@ export default function Signup() {
           </p>
         </div>
 
-        <Card className="border-border/70 w-full gap-0 overflow-hidden rounded-xl border bg-card/90 py-0 shadow-[0_20px_60px_-24px_rgba(124,58,237,0.3),0_8px_28px_-14px_rgba(15,23,42,0.1)] ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-card/85 dark:shadow-[0_28px_90px_-32px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.06)] dark:ring-white/[0.08] sm:rounded-2xl sm:shadow-[0_28px_90px_-28px_rgba(124,58,237,0.35),0_12px_40px_-18px_rgba(15,23,42,0.12)]">
+        <Card className="border-border/70 w-full gap-0 overflow-hidden rounded-xl border bg-card/90 py-0 shadow-[0_20px_60px_-24px_rgba(40,167,69,0.28),0_8px_28px_-14px_rgba(15,23,42,0.1)] ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-card/85 dark:shadow-[0_28px_90px_-32px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.06)] dark:ring-white/[0.08] sm:rounded-2xl sm:shadow-[0_28px_90px_-28px_rgba(40,167,69,0.32),0_12px_40px_-18px_rgba(15,23,42,0.12)]">
           <div className="from-primary via-primary/90 to-primary/70 h-0.5 w-full bg-gradient-to-r sm:h-0.5" aria-hidden />
 
           <CardHeader className="space-y-2 px-4 pb-0 pt-3 text-center sm:space-y-3 sm:px-6 sm:pb-1 sm:pt-5">

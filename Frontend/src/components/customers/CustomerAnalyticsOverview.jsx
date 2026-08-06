@@ -41,7 +41,7 @@ export function CustomerAnalyticsOverview({
     { label: "Total", value: total, icon: Users, tone: "text-primary" },
     { label: "Active", value: active, icon: UserCheck, tone: "text-emerald-600 dark:text-emerald-400" },
     { label: "Inactive", value: inactive, icon: UserMinus, tone: "text-amber-600 dark:text-amber-400" },
-    { label: "Repeat", value: repeat, icon: RefreshCw, tone: "text-violet-600 dark:text-violet-400" },
+    { label: "Repeat", value: repeat, icon: RefreshCw, tone: "text-primary dark:text-primary" },
   ]
 
   return (
@@ -185,7 +185,7 @@ export function CustomerAnalyticsOverview({
                   label="Repeat buyers"
                   value={repeat}
                   total={total}
-                  color="bg-violet-500"
+                  color="bg-primary"
                   hint="2+ purchases"
                   scopeKey={scopeLabel}
                   animateKey={pulseKey}

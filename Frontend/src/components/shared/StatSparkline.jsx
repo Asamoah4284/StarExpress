@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
  * Minimal in-card trend (no axes): uses `currentColor` from the parent `className`.
  * @param {{ x?: string, y: number }[]} data
  * @param {"area" | "bar"} variant
- * @param {string} [className] e.g. Tailwind `text-violet-600` for stroke/fill
+ * @param {string} [className] e.g. Tailwind `text-primary` for stroke/fill
  */
 export function StatSparkline({ data, variant = "area", className }) {
   const uid = React.useId().replace(/:/g, "")

@@ -50,7 +50,7 @@ async function resolveAlertConfig() {
   }
   if (!appName) {
     const env = process.env.APP_NAME
-    appName = typeof env === "string" && env.trim() ? env.trim() : "Tabitacum"
+    appName = typeof env === "string" && env.trim() ? env.trim() : "EverGreen WISP"
   }
 
   const phones = alertPhone

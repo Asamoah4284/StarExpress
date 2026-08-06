@@ -1,12 +1,12 @@
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts"
 import { formatCedis } from "@/lib/utils"
 
-/** Mon–Sun: green / blue / orange / purple family (reference-style doughnut). */
+/** Mon–Sun: EverGreen greens + WISP blue + warm accents. */
 const SLICES = [
-  "#22c55e",
-  "#3b82f6",
+  "#0e733d",
+  "#2c64b4",
   "#f97316",
-  "#9333ea",
+  "#28a745",
   "#16a34a",
   "#2563eb",
   "#ea580c",

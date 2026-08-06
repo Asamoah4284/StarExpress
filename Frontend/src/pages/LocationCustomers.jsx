@@ -716,7 +716,7 @@ export default function LocationCustomers() {
                         isTop
                           ? "flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-500"
                           : customer.displayName
-                            ? "bg-violet-500/10 text-violet-600 dark:text-violet-400 flex size-9 shrink-0 items-center justify-center rounded-lg"
+                            ? "bg-primary/10 text-primary flex size-9 shrink-0 items-center justify-center rounded-lg"
                             : "bg-primary/10 text-primary flex size-9 shrink-0 items-center justify-center rounded-lg"
                       }
                     >

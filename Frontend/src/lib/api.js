@@ -728,7 +728,7 @@ export async function fetchAuditLogs(token) {
 
 /**
  * @param {string} token
- * @param {{ name: string, address: string, manager: string, totalSales: number, managerUserId?: string | null, managerPayoutNumber?: string }} body
+ * @param {{ name: string, address: string, manager: string, totalSales: number, managerUserId?: string | null, managerPayoutNumber?: string, meterNumber?: string }} body
  */
 export async function createCatalogLocation(token, body) {
   const { res, data } = await parseJsonResponse("/api/catalog/locations", {
@@ -756,6 +756,7 @@ export async function createCatalogLocation(token, body) {
  *   totalSales?: number
  *   managerUserId?: string | null
  *   managerPayoutNumber?: string
+ *   meterNumber?: string
  * }} body
  */
 export async function updateCatalogLocation(token, id, body) {
@@ -933,7 +934,18 @@ export async function sendCustomersSms(token, body) {
 
 /**
  * @param {string} token
- * @param {{ name: string, priceGHS: number, dataLimit: string, status: string }} body
+ * @param {{
+ *   name: string
+ *   priceGHS: number
+ *   dataLimit: string
+ *   status: string
+ *   description: string
+ *   radiusSessionTimeout: number
+ *   radiusMaxOctets?: number | null
+ *   uploadSpeed?: number | null
+ *   downloadSpeed?: number | null
+ *   currency?: string
+ * }} body
  */
 export async function createCatalogPackage(token, body) {
   const { res, data } = await parseJsonResponse("/api/catalog/packages", {
@@ -958,7 +970,18 @@ export async function createCatalogPackage(token, body) {
  *
  * @param {string} token
  * @param {string} id
- * @param {{ name?: string, priceGHS?: number, dataLimit?: string, status?: string }} body
+ * @param {{
+ *   name?: string
+ *   priceGHS?: number
+ *   dataLimit?: string
+ *   status?: string
+ *   description?: string
+ *   radiusSessionTimeout?: number
+ *   radiusMaxOctets?: number | null
+ *   uploadSpeed?: number | null
+ *   downloadSpeed?: number | null
+ *   currency?: string
+ * }} body
  * @param {{ locationId?: string }} [opts]
  */
 export async function updateCatalogPackage(token, id, body, opts = {}) {

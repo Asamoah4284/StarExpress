@@ -9,13 +9,13 @@ const ALERT_PHONE_RE = /^[0-9+\-(),\s]+$/
 /** @returns {string} */
 export function defaultAppName() {
   const raw = process.env.APP_NAME
-  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "Starexpress"
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "EverGreen WISP"
 }
 
 /** @returns {string} */
 export function defaultCompanyName() {
   const raw = process.env.COMPANY_NAME
-  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "Starexpress Admin"
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_LABEL_LENGTH) : "EverGreen WISP"
 }
 
 /**

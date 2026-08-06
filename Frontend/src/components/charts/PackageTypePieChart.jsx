@@ -1,6 +1,6 @@
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts"
 
-const SLICES = ["#7c3aed", "#a78bfa", "#c4b5fd", "#8b5cf6", "#6d28d9", "#5b21b6", "#9333ea"]
+const SLICES = ["#0e733d", "#28a745", "#67cf8f", "#2c64b4", "#14532d", "#16a34a", "#86efac"]
 
 /** @param {{ name: string, value: number }[]} data */
 export function PackageTypePieChart({ data, height = 340, donut = true }) {

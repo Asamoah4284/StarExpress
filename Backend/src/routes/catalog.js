@@ -155,6 +155,8 @@ function toLocation(d) {
       typeof d.managerPayoutNumber === "string" && d.managerPayoutNumber.trim()
         ? d.managerPayoutNumber.trim()
         : "",
+    meterNumber:
+      typeof d.meterNumber === "string" && d.meterNumber.trim() ? d.meterNumber.trim() : "",
     promo: promoToApi(d.promo),
   }
 }
@@ -175,11 +177,95 @@ function toPackage(d) {
   return {
     id: d._id,
     name: d.name,
+    description: typeof d.description === "string" ? d.description : "",
     priceGHS: d.priceGHS,
+    currency: typeof d.currency === "string" && d.currency.trim() ? d.currency.trim() : "GHS",
     dataLimit: d.dataLimit,
     status: d.status,
     stockUnits: d.stockUnits,
+    radiusSessionTimeout:
+      d.radiusSessionTimeout != null && d.radiusSessionTimeout !== ""
+        ? Number(d.radiusSessionTimeout)
+        : null,
+    radiusMaxOctets:
+      d.radiusMaxOctets != null && d.radiusMaxOctets !== "" ? Number(d.radiusMaxOctets) : null,
+    uploadSpeed: d.uploadSpeed != null && d.uploadSpeed !== "" ? Number(d.uploadSpeed) : null,
+    downloadSpeed: d.downloadSpeed != null && d.downloadSpeed !== "" ? Number(d.downloadSpeed) : null,
+    sortOrder: typeof d.sortOrder === "number" && Number.isFinite(d.sortOrder) ? d.sortOrder : null,
   }
+}
+
+/**
+ * Parse RADIUS / package metadata from a create/update body.
+ * @param {Record<string, unknown>} body
+ * @param {{ requireAll?: boolean }} [opts]
+ * @returns {{ ok: true, fields: Record<string, unknown> } | { ok: false, error: string }}
+ */
+function parsePackageExtraFields(body, opts = {}) {
+  const requireAll = opts.requireAll === true
+  /** @type {Record<string, unknown>} */
+  const fields = {}
+
+  const hasDescription = Object.prototype.hasOwnProperty.call(body, "description")
+  if (hasDescription || requireAll) {
+    const description = typeof body.description === "string" ? body.description.trim() : ""
+    if (!description) return { ok: false, error: "Description is required." }
+    if (description.length > 280) return { ok: false, error: "Description must be 280 characters or less." }
+    fields.description = description
+  }
+
+  const hasTimeout = Object.prototype.hasOwnProperty.call(body, "radiusSessionTimeout")
+  if (hasTimeout || requireAll) {
+    const n = Number(body.radiusSessionTimeout)
+    if (!Number.isFinite(n) || n <= 0) {
+      return { ok: false, error: "Session duration (radiusSessionTimeout) must be a positive number of seconds." }
+    }
+    fields.radiusSessionTimeout = Math.round(n)
+  }
+
+  const hasOctets = Object.prototype.hasOwnProperty.call(body, "radiusMaxOctets")
+  if (hasOctets || requireAll) {
+    const raw = body.radiusMaxOctets
+    if (raw === null || raw === undefined || raw === "") {
+      fields.radiusMaxOctets = null
+    } else {
+      const n = Number(raw)
+      if (!Number.isFinite(n) || n <= 0) {
+        return { ok: false, error: "Data cap (radiusMaxOctets) must be empty for unlimited, or a positive byte count." }
+      }
+      fields.radiusMaxOctets = Math.round(n)
+    }
+  }
+
+  for (const key of /** @type {const} */ (["uploadSpeed", "downloadSpeed"])) {
+    if (!Object.prototype.hasOwnProperty.call(body, key) && !requireAll) continue
+    const raw = body[key]
+    if (raw === null || raw === undefined || raw === "") {
+      fields[key] = null
+    } else {
+      const n = Number(raw)
+      if (!Number.isFinite(n) || n < 0) {
+        return { ok: false, error: `${key} must be empty or a non-negative number.` }
+      }
+      fields[key] = Math.round(n)
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "currency") || requireAll) {
+    const currency =
+      typeof body.currency === "string" && body.currency.trim() ? body.currency.trim().toUpperCase() : "GHS"
+    fields.currency = currency
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "sortOrder")) {
+    const n = Number(body.sortOrder)
+    if (!Number.isFinite(n) || n < 0) {
+      return { ok: false, error: "sortOrder must be a non-negative number." }
+    }
+    fields.sortOrder = Math.round(n)
+  }
+
+  return { ok: true, fields }
 }
 
 /**
@@ -266,6 +352,21 @@ function parseManagerPayoutNumber(raw) {
     return { ok: false, error: "Manager payout number must be a valid Ghana phone (e.g. 0241234567)." }
   }
   return { ok: true, value: local }
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {{ ok: true, value: string } | { ok: false, error: string }}
+ */
+function parseMeterNumber(raw) {
+  if (raw === undefined) return { ok: true, value: "" }
+  if (raw === null) return { ok: true, value: "" }
+  const trimmed = String(raw).trim()
+  if (!trimmed) return { ok: true, value: "" }
+  if (trimmed.length > 64) {
+    return { ok: false, error: "Meter number must be 64 characters or less." }
+  }
+  return { ok: true, value: trimmed }
 }
 
 /**
@@ -1441,6 +1542,8 @@ export function createCatalogRouter(deps) {
         commissionRateRaw !== undefined ? normalizeHostelCommissionRate(commissionRateRaw) : 20
       const payoutParsed = parseManagerPayoutNumber(req.body?.managerPayoutNumber)
       if (!payoutParsed.ok) return res.status(400).json({ error: payoutParsed.error })
+      const meterParsed = parseMeterNumber(req.body?.meterNumber)
+      if (!meterParsed.ok) return res.status(400).json({ error: meterParsed.error })
       if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
       if (!address) return res.status(400).json({ error: "Address is required." })
       if (!Number.isFinite(totalSales) || totalSales < 0) {
@@ -1462,10 +1565,11 @@ export function createCatalogRouter(deps) {
           totalSales,
           commissionRate,
           managerPayoutNumber: payoutParsed.value,
+          meterNumber: meterParsed.value,
         }
       } else {
-        if (!managerText) return res.status(400).json({ error: "Manager is required." })
-        const resolvedId = await tryResolveUniqueSalesAgentIdFromManagerName(users, managerText)
+        const label = managerText || UNASSIGNED_MANAGER_LABEL
+        const resolvedId = await tryResolveUniqueSalesAgentIdFromManagerName(users, label)
         if (resolvedId) {
           const agent = await getActiveSalesAgentName(users, resolvedId)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
@@ -1479,16 +1583,18 @@ export function createCatalogRouter(deps) {
             totalSales,
             commissionRate,
             managerPayoutNumber: payoutParsed.value,
+            meterNumber: meterParsed.value,
           }
         } else {
           doc = {
             _id: id,
             name,
             address,
-            manager: managerText,
+            manager: label,
             totalSales,
             commissionRate,
             managerPayoutNumber: payoutParsed.value,
+            meterNumber: meterParsed.value,
           }
         }
       }
@@ -1569,6 +1675,11 @@ export function createCatalogRouter(deps) {
         const payoutParsed = parseManagerPayoutNumber(body.managerPayoutNumber)
         if (!payoutParsed.ok) return res.status(400).json({ error: payoutParsed.error })
         $set.managerPayoutNumber = payoutParsed.value
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "meterNumber")) {
+        const meterParsed = parseMeterNumber(body.meterNumber)
+        if (!meterParsed.ok) return res.status(400).json({ error: meterParsed.error })
+        $set.meterNumber = meterParsed.value
       }
       if (Object.keys($set).length === 0 && Object.keys($unset).length === 0) {
         return res.status(400).json({ error: "No valid fields to update." })
@@ -1954,8 +2065,18 @@ export function createCatalogRouter(deps) {
       if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
       if (!dataLimit) return res.status(400).json({ error: "Data limit is required." })
       if (!Number.isFinite(priceGHS) || priceGHS < 0) return res.status(400).json({ error: "Invalid price." })
+      const extras = parsePackageExtraFields(req.body ?? {}, { requireAll: true })
+      if (!extras.ok) return res.status(400).json({ error: extras.error })
       const id = `pkg-${randomUUID().slice(0, 8)}`
-      const doc = { _id: id, name, priceGHS, dataLimit, status, stockUnits: 0 }
+      const doc = {
+        _id: id,
+        name,
+        priceGHS,
+        dataLimit,
+        status,
+        stockUnits: 0,
+        ...extras.fields,
+      }
       await packages.insertOne(doc)
       await syncPackageStockUnitsFromVouchers(vouchers, packages)
       const saved = await packages.findOne({ _id: id })
@@ -1983,13 +2104,20 @@ export function createCatalogRouter(deps) {
         if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
         fields.name = name
       }
-      if (typeof req.body?.dataLimit === "string") fields.dataLimit = req.body.dataLimit.trim()
+      if (typeof req.body?.dataLimit === "string") {
+        const dataLimit = req.body.dataLimit.trim()
+        if (!dataLimit) return res.status(400).json({ error: "Data limit is required." })
+        fields.dataLimit = dataLimit
+      }
       if (typeof req.body?.status === "string") fields.status = req.body.status.trim()
       if (req.body?.priceGHS !== undefined) {
         const priceGHS = Number(req.body.priceGHS)
         if (!Number.isFinite(priceGHS) || priceGHS < 0) return res.status(400).json({ error: "Invalid price." })
         fields.priceGHS = priceGHS
       }
+      const extras = parsePackageExtraFields(req.body ?? {}, { requireAll: false })
+      if (!extras.ok) return res.status(400).json({ error: extras.error })
+      Object.assign(fields, extras.fields)
       if (Object.keys(fields).length === 0) {
         return res.status(400).json({ error: "No valid fields to update." })
       }
@@ -2016,16 +2144,11 @@ export function createCatalogRouter(deps) {
 
         if (sharedWithOtherLocations) {
           const newId = `pkg-${randomUUID().slice(0, 8)}`
+          const { _id: _existingId, ...existingFields } = existing
           /** @type {import("mongodb").Document} */
           const forked = {
+            ...existingFields,
             _id: newId,
-            name: typeof existing.name === "string" ? existing.name : "",
-            priceGHS:
-              typeof existing.priceGHS === "number"
-                ? existing.priceGHS
-                : Number(existing.priceGHS) || 0,
-            dataLimit: typeof existing.dataLimit === "string" ? existing.dataLimit : "",
-            status: typeof existing.status === "string" ? existing.status : "Active",
             stockUnits: 0,
             ...fields,
           }

@@ -1,12 +1,13 @@
 /**
- * Insert the default "1 Hour Unlimited" package if it is missing.
+ * Insert default WiFi packages if missing (by fixed _id).
  *
  * Usage (from Backend/):
- *   node scripts/insert-default-package.js
  *   npm run seed:default-package
+ *   node scripts/insert-default-package.js
  */
 import "dotenv/config"
 import { closeMongo, connectMongo, getPackagesCollection } from "../src/db/mongo.js"
+import { DEFAULT_PACKAGES, ensureDefaultPackage } from "../src/lib/ensureDefaultPackage.js"
 
 const uri = process.env.MONGODB_URI || process.env.MONGO_URI
 if (!uri) {
@@ -14,36 +15,21 @@ if (!uri) {
   process.exit(1)
 }
 
-const DEFAULT_PACKAGE = {
-  _id: "pkg-default-1hr",
-  name: "1 Hour Unlimited",
-  description: "Unlimited internet for 1 hour",
-  priceGHS: 1,
-  currency: "GHS",
-  dataLimit: "Unlimited internet for 1 hour",
-  status: "Active",
-  stockUnits: 0,
-  radiusSessionTimeout: 3600,
-  radiusMaxOctets: null,
-  uploadSpeed: null,
-  downloadSpeed: null,
-  sortOrder: 1,
-}
-
 await connectMongo(uri)
 try {
   const packages = getPackagesCollection()
-  const existing = await packages.findOne({ _id: DEFAULT_PACKAGE._id })
-  if (existing) {
-    console.log("[packages] Default package already exists:", existing._id, existing.name)
-    process.exitCode = 0
-  } else {
-    await packages.insertOne(DEFAULT_PACKAGE)
-    console.log("[packages] Default package created")
-    console.log(JSON.stringify(DEFAULT_PACKAGE, null, 2))
+  const result = await ensureDefaultPackage(packages)
+  console.log(
+    `[packages] Done. created=${result.created} skipped=${result.skipped} totalDefaults=${DEFAULT_PACKAGES.length}`,
+  )
+  for (const pkg of DEFAULT_PACKAGES) {
+    const row = await packages.findOne({ _id: pkg._id })
+    console.log(
+      `  - ${pkg._id}: ${row ? `${row.name} · GHS ${row.priceGHS}` : "MISSING"}`,
+    )
   }
 } catch (err) {
-  console.error("[packages] Failed to insert default package:", err instanceof Error ? err.message : err)
+  console.error("[packages] Failed:", err instanceof Error ? err.message : err)
   process.exitCode = 1
 } finally {
   await closeMongo()

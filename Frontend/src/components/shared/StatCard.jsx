@@ -7,14 +7,14 @@ import { cn } from "@/lib/utils"
 /** @typedef {"violet" | "emerald" | "amber" | "sky"} StatTone */
 
 const TONE_ICON = {
-  violet: "rounded-md bg-violet-600/10 p-1.5 text-violet-600 dark:bg-violet-500/15 dark:text-violet-400",
+  violet: "rounded-md bg-primary/10 p-1.5 text-primary dark:bg-primary/15 dark:text-primary",
   emerald: "rounded-md bg-emerald-600/10 p-1.5 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400",
   amber: "rounded-md bg-amber-500/15 p-1.5 text-amber-700 dark:bg-amber-400/20 dark:text-amber-300",
   sky: "rounded-md bg-sky-600/10 p-1.5 text-sky-600 dark:bg-sky-500/15 dark:text-sky-400",
 }
 
 const TONE_SPARK = {
-  violet: "text-violet-600 dark:text-violet-400",
+  violet: "text-primary dark:text-primary",
   emerald: "text-emerald-600 dark:text-emerald-400",
   amber: "text-amber-600 dark:text-amber-400",
   sky: "text-sky-600 dark:text-sky-400",
