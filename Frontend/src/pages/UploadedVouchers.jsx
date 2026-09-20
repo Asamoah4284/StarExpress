@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
@@ -34,12 +35,22 @@ export default function UploadedVouchers() {
   const isAdmin = user?.role === ROLE_ADMIN
   const catalog = useCatalog()
   const queryClient = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const packageFromUrl = searchParams.get("packageId")?.trim() || ""
   const [statusFilter, setStatusFilter] = React.useState(/** @type {StatusFilter} */ ("all"))
-  const [packageFilter, setPackageFilter] = React.useState(/** @type {PackageFilter} */ ("all"))
+  const [packageFilter, setPackageFilter] = React.useState(
+    /** @type {PackageFilter} */ (packageFromUrl && packageFromUrl !== "all" ? packageFromUrl : "all"),
+  )
   const [search, setSearch] = React.useState("")
   const [debouncedSearch, setDebouncedSearch] = React.useState("")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(DEFAULT_PAGE_SIZE)
+
+  React.useEffect(() => {
+    if (packageFromUrl && packageFromUrl !== "all") {
+      setPackageFilter(packageFromUrl)
+    }
+  }, [packageFromUrl])
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {

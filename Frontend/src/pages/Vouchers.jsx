@@ -28,7 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { importVouchersBatch, setLocationPromo } from "@/lib/api.js"
-import { parseCsv } from "@/lib/parseCsv.js"
+import { parseCsv, ensureVoucherHeaderRow } from "@/lib/parseCsv.js"
 import { isHiddenVoucherThroughputColumnKey } from "@/lib/voucherColumnDisplay.js"
 import { ROLE_ADMIN } from "@/lib/roles.js"
 import { cn } from "@/lib/utils"
@@ -85,7 +85,7 @@ async function stagedUploadFromFile(file) {
 
   try {
     const text = await file.text()
-    const matrix = parseCsv(text)
+    const matrix = ensureVoucherHeaderRow(parseCsv(text))
     return { ...base, matrix }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not read this file"
@@ -305,7 +305,8 @@ export default function Vouchers() {
   const importCsv = React.useCallback(
     async (/** @type {StagedUpload} */ upload) => {
       if (!token || upload.kind !== "csv" || !upload.matrix?.length || upload.parseError) return
-      if (upload.matrix.length < 2) return
+      const importRows = ensureVoucherHeaderRow(upload.matrix)
+      if (importRows.length < 2) return
       const locId = selectedLocationId.trim()
       const pkgId = selectedPackageId.trim()
       if (!locId || !pkgId) return
@@ -316,7 +317,7 @@ export default function Vouchers() {
 
       const out = await importVouchersBatch(token, {
         fileName: upload.name,
-        rows: upload.matrix,
+        rows: importRows,
         locationId: locId,
         packageId: pkgId,
       })
@@ -328,18 +329,24 @@ export default function Vouchers() {
           return {
             ...x,
             importState: "success",
-            importMessage: `Saved ${out.inserted} new voucher(s) for this package. Skipped ${out.skippedAlreadyInDb} already on this package, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} row(s) without id (batch ${out.batchId}). Other packages are unchanged.`,
+            importMessage:
+              out.inserted > 0
+                ? `Saved ${out.inserted} new voucher(s) for this package. Skipped ${out.skippedAlreadyInDb} already on this package, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} row(s) without a code (batch ${out.batchId}).`
+                : `No new vouchers saved. Skipped ${out.skippedAlreadyInDb} already on this package, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} row(s) without a Username / Voucher ID. Check the CSV has a username or code column.`,
           }
         }),
       )
 
       if (out.ok) {
+        await queryClient.invalidateQueries({ queryKey: ["catalog"] })
         await queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
         await queryClient.invalidateQueries({ queryKey: ["vouchers"] })
         await queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
         await queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
         await queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
-        navigate("/vouchers/uploaded")
+        if (out.inserted > 0) {
+          navigate(`/vouchers/uploaded?packageId=${encodeURIComponent(pkgId)}`)
+        }
       }
     },
     [token, queryClient, navigate, selectedLocationId, selectedPackageId],
@@ -384,6 +391,7 @@ export default function Vouchers() {
         kind: "success",
         text: `Saved ${out.inserted} new voucher(s) for this package. Skipped ${out.skippedAlreadyInDb} already on this package, ${out.skippedDuplicateInFile} duplicate in file, ${out.skippedNoId} without id (batch ${out.batchId}).`,
       })
+      await queryClient.invalidateQueries({ queryKey: ["catalog"] })
       await queryClient.invalidateQueries({ queryKey: ["auditLogs", token] })
       await queryClient.invalidateQueries({ queryKey: ["vouchers"] })
       await queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
@@ -403,7 +411,7 @@ export default function Vouchers() {
     <div className="space-y-8">
       <PageHeader
         title="Upload vouchers"
-        description="Import daloRADIUS codes (CSV or a single ID) for a location and package. Agent, USSD, and hotspot /buy all sell from this stock — generate the codes in daloRADIUS, then upload them here."
+        description="Import daloRADIUS codes (CSV or a single ID) for a location and package. Use a CSV with a Username or Voucher ID column (comma or semicolon). Agent, USSD, and hotspot /buy all sell from this stock."
       />
 
       <Card className="border-border bg-card shadow-none ring-1 ring-border">

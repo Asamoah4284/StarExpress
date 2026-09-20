@@ -62,6 +62,65 @@ function buildUniqueSafeKeys(rawHeaders) {
 }
 
 /**
+ * @param {unknown} value
+ */
+function normalizeVoucherHeaderLabel(value) {
+  return String(value ?? "")
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * @param {unknown} value
+ */
+function isVoucherHeaderLabel(value) {
+  const h = normalizeVoucherHeaderLabel(value)
+  if (!h) return false
+  if (/voucher\s*id/.test(h)) return true
+  return /^(voucherid|voucher|username|user name|user|pin|pincode|pin code|code|wifi\s*code|hotspot|login|password|passwd|pass)$/.test(
+    h,
+  )
+}
+
+/**
+ * @param {unknown} cells
+ */
+function headerLooksLikeVoucherColumns(cells) {
+  return Array.isArray(cells) && cells.some((cell) => isVoucherHeaderLabel(cell))
+}
+
+/**
+ * Prefer daloRADIUS username / PIN over a numeric `id` column.
+ * @param {string[]} headers
+ */
+function findVoucherCodeColumnIndex(headers) {
+  const normalized = headers.map(normalizeVoucherHeaderLabel)
+  const ranked = [
+    /^(voucher\s*id|voucherid|voucher)$/,
+    /^(username|user name|user)$/,
+    /^(pin|pincode|pin code)$/,
+    /^(code|wifi\s*code|hotspot|login)$/,
+    /^(password|passwd|pass)$/,
+  ]
+  for (const re of ranked) {
+    const i = normalized.findIndex((h) => re.test(h))
+    if (i >= 0) return i
+  }
+  const voucherIdLoose = normalized.findIndex((h) => /voucher\s*id/.test(h))
+  if (voucherIdLoose >= 0) return voucherIdLoose
+  return 0
+}
+
+/**
+ * @param {unknown} value
+ */
+function isPlaceholderVoucherCode(value) {
+  const v = String(value ?? "").trim().toLowerCase()
+  return /^(id|username|user name|user|password|passwd|pass|pin|code|voucher|voucher id)$/.test(v)
+}
+
+/**
  * Human-facing voucher code (CSV id), even when Mongo `_id` is scoped per package.
  * @param {import("mongodb").Document} d
  */
@@ -965,15 +1024,19 @@ export function createCatalogRouter(deps) {
       const fileName =
         typeof req.body?.fileName === "string" ? req.body.fileName.trim().slice(0, 240) : "upload.csv"
       const rows = req.body?.rows
-      if (!Array.isArray(rows) || rows.length < 2) {
+      if (!Array.isArray(rows) || rows.length < 1) {
         return res.status(400).json({
-          error: "rows must be a non-empty matrix: first row is the header, following rows are data.",
+          error: "rows must be a matrix of CSV cells (header + data, or a list of codes).",
         })
       }
-      const header = rows[0]
-      const dataRows = rows.slice(1)
+      let header = rows[0]
+      let dataRows = rows.slice(1)
       if (!Array.isArray(header) || header.length === 0) {
         return res.status(400).json({ error: "Header row must be a non-empty array." })
+      }
+      if (!headerLooksLikeVoucherColumns(header)) {
+        dataRows = rows
+        header = ["Voucher ID"]
       }
       if (dataRows.length > MAX_VOUCHER_BATCH_DATA_ROWS) {
         return res.status(400).json({ error: `At most ${MAX_VOUCHER_BATCH_DATA_ROWS} data rows per import.` })
@@ -982,8 +1045,14 @@ export function createCatalogRouter(deps) {
       if (!header.every(strOk) || !dataRows.every((r) => Array.isArray(r) && r.every(strOk))) {
         return res.status(400).json({ error: "Each cell must be a string (send CSV text, not numbers)." })
       }
+      if (dataRows.length === 0) {
+        return res.status(400).json({
+          error: "No voucher rows found. Export from daloRADIUS as CSV with a Username or Voucher ID column.",
+        })
+      }
 
-      const rawHeaders = header.map((h, i) => String(h ?? "").trim() || `Column ${i + 1}`)
+      const rawHeaders = header.map((h, i) => String(h ?? "").replace(/^\uFEFF/, "").trim() || `Column ${i + 1}`)
+      const voucherColIndex = findVoucherCodeColumnIndex(rawHeaders)
       const safeKeys = buildUniqueSafeKeys(rawHeaders)
       const batchId = `vbatch-${randomUUID().slice(0, 12)}`
       const uploadedAt = new Date().toISOString()
@@ -996,14 +1065,11 @@ export function createCatalogRouter(deps) {
 
       for (let ri = 0; ri < dataRows.length; ri++) {
         const cells = dataRows[ri]
-        const voucherColIndex = rawHeaders.findIndex((h) => /voucher\s*id/i.test(h))
-        let voucherId = ""
-        if (voucherColIndex >= 0) {
-          voucherId = String(cells[voucherColIndex] ?? "").trim()
-        } else {
+        let voucherId = String(cells[voucherColIndex] ?? "").trim()
+        if (!voucherId && voucherColIndex !== 0) {
           voucherId = String(cells[0] ?? "").trim()
         }
-        if (!voucherId) {
+        if (!voucherId || isPlaceholderVoucherCode(voucherId)) {
           skippedNoId++
           continue
         }
@@ -1065,9 +1131,42 @@ export function createCatalogRouter(deps) {
 
       let inserted = 0
       if (toInsert.length > 0) {
-        const ins = await vouchers.insertMany(toInsert, { ordered: false })
-        inserted = ins.insertedCount
+        try {
+          const ins = await vouchers.insertMany(toInsert, { ordered: false })
+          inserted = ins.insertedCount
+        } catch (err) {
+          const partial = Number(
+            err && typeof err === "object"
+              ? err.insertedCount ?? err.result?.insertedCount
+              : NaN,
+          )
+          if (Number.isFinite(partial) && partial >= 0) {
+            inserted = partial
+            console.warn("[vouchers] batch insert partial", {
+              fileName,
+              packageId: packageIdRaw,
+              inserted,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          } else {
+            throw err
+          }
+        }
       }
+
+      console.log("[vouchers] batch import", {
+        fileName,
+        locationId: locationIdRaw,
+        packageId: packageIdRaw,
+        packageName,
+        headers: rawHeaders,
+        voucherColumn: rawHeaders[voucherColIndex],
+        totalRowsInFile: dataRows.length,
+        inserted,
+        skippedAlreadyInDb,
+        skippedDuplicateInFile,
+        skippedNoId,
+      })
 
       const summary = `Imported voucher batch "${fileName}" (${batchId}) → ${locationName} · ${packageName}: ${inserted} new, ${skippedAlreadyInDb} already on this package, ${skippedDuplicateInFile} duplicate in file, ${skippedNoId} row(s) without id.`
       await appendAuditLog(auditLogs, req.auth, summary)
