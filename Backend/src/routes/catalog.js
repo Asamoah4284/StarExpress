@@ -67,20 +67,28 @@ function buildUniqueSafeKeys(rawHeaders) {
 function normalizeVoucherHeaderLabel(value) {
   return String(value ?? "")
     .replace(/^\uFEFF/, "")
+    .replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, " ")
     .trim()
     .toLowerCase()
+}
+
+/**
+ * Collapse "User Name" / "User-Name" / "Username" → "username".
+ * @param {unknown} value
+ */
+function voucherHeaderKey(value) {
+  return normalizeVoucherHeaderLabel(value).replace(/[^a-z0-9]+/g, "")
 }
 
 /**
  * @param {unknown} value
  */
 function isVoucherHeaderLabel(value) {
-  const h = normalizeVoucherHeaderLabel(value)
-  if (!h) return false
-  if (/voucher\s*id/.test(h)) return true
-  return /^(voucherid|voucher|username|user name|user|pin|pincode|pin code|code|wifi\s*code|hotspot|login|password|passwd|pass)$/.test(
-    h,
-  )
+  const k = voucherHeaderKey(value)
+  if (!k) return false
+  if (k.includes("voucherid") || k === "voucher") return true
+  if (k.includes("username") || k === "user") return true
+  return /^(pin|pincode|code|wificode|hotspot|login|password|passwd|pass)$/.test(k)
 }
 
 /**
@@ -91,24 +99,30 @@ function headerLooksLikeVoucherColumns(cells) {
 }
 
 /**
- * Prefer daloRADIUS username / PIN over a numeric `id` column.
+ * Prefer daloRADIUS Username / PIN over Batch Name or numeric id.
  * @param {string[]} headers
  */
 function findVoucherCodeColumnIndex(headers) {
-  const normalized = headers.map(normalizeVoucherHeaderLabel)
+  const keys = headers.map(voucherHeaderKey)
   const ranked = [
-    /^(voucher\s*id|voucherid|voucher)$/,
-    /^(username|user name|user)$/,
-    /^(pin|pincode|pin code)$/,
-    /^(code|wifi\s*code|hotspot|login)$/,
-    /^(password|passwd|pass)$/,
+    "voucherid",
+    "voucher",
+    "username",
+    "user",
+    "pin",
+    "pincode",
+    "code",
+    "wificode",
+    "hotspot",
+    "login",
+    "password",
+    "passwd",
+    "pass",
   ]
-  for (const re of ranked) {
-    const i = normalized.findIndex((h) => re.test(h))
+  for (const want of ranked) {
+    const i = keys.findIndex((k) => k === want || (want.length >= 4 && k.includes(want)))
     if (i >= 0) return i
   }
-  const voucherIdLoose = normalized.findIndex((h) => /voucher\s*id/.test(h))
-  if (voucherIdLoose >= 0) return voucherIdLoose
   return 0
 }
 
@@ -116,8 +130,61 @@ function findVoucherCodeColumnIndex(headers) {
  * @param {unknown} value
  */
 function isPlaceholderVoucherCode(value) {
-  const v = String(value ?? "").trim().toLowerCase()
-  return /^(id|username|user name|user|password|passwd|pass|pin|code|voucher|voucher id)$/.test(v)
+  const v = voucherHeaderKey(value)
+  return /^(id|username|user|password|passwd|pass|pin|code|voucher|voucherid|batchname|batch|starttime|endtime)$/.test(
+    v,
+  )
+}
+
+/**
+ * @param {string} value
+ */
+function looksLikeDateTime(value) {
+  const v = String(value || "").trim()
+  if (!v) return false
+  if (/^\d{4}[-/]/.test(v)) return true
+  if (/\d{1,2}:\d{2}/.test(v)) return true
+  return false
+}
+
+/**
+ * Hotspot PIN / daloRADIUS username (e.g. EG-2AxvZN).
+ * @param {string} value
+ */
+function looksLikeWifiCode(value) {
+  const v = String(value || "").trim()
+  if (v.length < 3 || v.length > 64) return false
+  if (isPlaceholderVoucherCode(v) || looksLikeDateTime(v)) return false
+  if (/\s/.test(v)) return false
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(v)
+}
+
+/**
+ * @param {string[]} headers
+ * @param {unknown} row
+ * @param {number} preferredIndex
+ */
+function voucherCodeFromRow(headers, row, preferredIndex) {
+  const cells = Array.isArray(row) ? row.map((c) => String(c ?? "").trim()) : [String(row ?? "").trim()]
+  const tryValue = (value) => {
+    const v = String(value ?? "").trim()
+    if (!v || isPlaceholderVoucherCode(v) || looksLikeDateTime(v)) return ""
+    return v
+  }
+
+  const preferred = tryValue(cells[preferredIndex])
+  if (preferred) return preferred
+
+  for (let i = 0; i < Math.max(cells.length, headers.length); i++) {
+    if (!isVoucherHeaderLabel(headers[i] || "")) continue
+    const v = tryValue(cells[i])
+    if (v) return v
+  }
+
+  for (const cell of cells) {
+    if (looksLikeWifiCode(cell)) return cell
+  }
+  return ""
 }
 
 /**
@@ -1064,12 +1131,11 @@ export function createCatalogRouter(deps) {
       const seenInFile = new Set()
 
       for (let ri = 0; ri < dataRows.length; ri++) {
-        const cells = dataRows[ri]
-        let voucherId = String(cells[voucherColIndex] ?? "").trim()
-        if (!voucherId && voucherColIndex !== 0) {
-          voucherId = String(cells[0] ?? "").trim()
-        }
-        if (!voucherId || isPlaceholderVoucherCode(voucherId)) {
+        const cells = Array.isArray(dataRows[ri])
+          ? dataRows[ri].map((c) => String(c ?? "").trim())
+          : [String(dataRows[ri] ?? "").trim()]
+        const voucherId = voucherCodeFromRow(rawHeaders, cells, voucherColIndex)
+        if (!voucherId) {
           skippedNoId++
           continue
         }

@@ -96,15 +96,16 @@ export function ensureVoucherHeaderRow(matrix) {
  * @param {unknown} value
  */
 export function isVoucherHeaderLabel(value) {
-  const h = String(value ?? "")
+  const k = String(value ?? "")
     .replace(/^\uFEFF/, "")
+    .replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, " ")
     .trim()
     .toLowerCase()
-  if (!h) return false
-  if (/voucher\s*id/.test(h)) return true
-  return /^(voucherid|voucher|username|user name|user|pin|pincode|pin code|code|wifi\s*code|hotspot|login|password|passwd|pass)$/.test(
-    h,
-  )
+    .replace(/[^a-z0-9]+/g, "")
+  if (!k) return false
+  if (k.includes("voucherid") || k === "voucher") return true
+  if (k.includes("username") || k === "user") return true
+  return /^(pin|pincode|code|wificode|hotspot|login|password|passwd|pass)$/.test(k)
 }
 
 /**
