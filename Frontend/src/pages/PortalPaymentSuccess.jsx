@@ -1,46 +1,16 @@
 import * as React from "react"
 import { Link, useSearchParams } from "react-router-dom"
-import { Check, Copy, Loader2, Satellite } from "lucide-react"
+import { Loader2, Satellite } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { HotspotConnectForm } from "@/components/portal/HotspotConnectForm.jsx"
 import { getDefaultAppName } from "@/lib/env.js"
-import { clearPersistedPortalParams } from "@/lib/captivePortalParams.js"
+import {
+  persistPortalParams,
+  portalParamsFromApi,
+  resolvePortalParams,
+} from "@/lib/captivePortalParams.js"
 import { fetchPortalPaymentStatus, completePortalPayment } from "@/lib/portalApi.js"
-
-/**
- * @param {{ label: string, value: string }} props
- */
-function CredentialRow({ label, value }) {
-  const [copied, setCopied] = React.useState(false)
-  const copy = async () => {
-    if (!value) return
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
-  return (
-    <div className="space-y-1.5">
-      <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">{label}</p>
-      <button
-        type="button"
-        onClick={() => void copy()}
-        className="border-border bg-muted/40 hover:bg-muted/70 flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left"
-        title="Tap to copy"
-      >
-        <span className="font-mono text-xl font-bold tracking-[0.18em]">{value}</span>
-        {copied ? (
-          <Check className="size-5 shrink-0 text-emerald-500" aria-hidden />
-        ) : (
-          <Copy className="text-muted-foreground size-5 shrink-0" aria-hidden />
-        )}
-      </button>
-    </div>
-  )
-}
 
 export default function PortalPaymentSuccess() {
   const appName = getDefaultAppName()
@@ -52,11 +22,20 @@ export default function PortalPaymentSuccess() {
     searchParams.get("ref") ||
     ""
 
+  const searchKey = searchParams.toString()
+  const storedPortal = React.useMemo(
+    () => resolvePortalParams(new URLSearchParams(searchKey)),
+    [searchKey],
+  )
+  const storedPortalRef = React.useRef(storedPortal)
+  storedPortalRef.current = storedPortal
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState(/** @type {string | null} */ (null))
   const [voucherCode, setVoucherCode] = React.useState("")
   const [packageName, setPackageName] = React.useState("WiFi")
   const [smsSent, setSmsSent] = React.useState(false)
+  const [portal, setPortal] = React.useState(storedPortal)
+  const [authorizeUrl, setAuthorizeUrl] = React.useState("")
 
   React.useEffect(() => {
     document.title = "Your WiFi code"
@@ -80,9 +59,26 @@ export default function PortalPaymentSuccess() {
 
     const applyReady = (status) => {
       const code = (status.voucherCode || "").trim()
-      console.log("[buy] success applyReady", { paymentReference, code, smsSent: status.smsSent, packageName: status.packageName })
+      const stored = storedPortalRef.current
+      console.log("[buy] success applyReady", {
+        paymentReference,
+        code,
+        smsSent: status.smsSent,
+        packageName: status.packageName,
+        hasLoginUrl: Boolean(status.login_url || stored.login_url),
+      })
       if (!code) return false
-      clearPersistedPortalParams()
+      const fromApi = portalParamsFromApi(status)
+      const merged = {
+        login_url: fromApi.login_url || stored.login_url,
+        ap_mac: fromApi.ap_mac || stored.ap_mac,
+        client_mac: fromApi.client_mac || stored.client_mac,
+        orig_url: fromApi.orig_url || stored.orig_url,
+        ssid: fromApi.ssid || stored.ssid,
+      }
+      if (merged.login_url || merged.client_mac) persistPortalParams(merged)
+      setPortal(merged)
+      setAuthorizeUrl(typeof status.authorizeUrl === "string" ? status.authorizeUrl.trim() : "")
       setVoucherCode(code)
       setPackageName(status.packageName || "WiFi")
       setSmsSent(status.smsSent === true)
@@ -176,19 +172,25 @@ export default function PortalPaymentSuccess() {
         {!loading && !error && voucherCode ? (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Your WiFi code</CardTitle>
+              <CardTitle className="text-lg">Connect to WiFi</CardTitle>
               <CardDescription>
-                {packageName}. Enter this code on the WiFi login page. You can share it with someone else.
+                {packageName}. Enter the code below and tap Connect to WiFi. You can share this code
+                with someone else.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <CredentialRow label="Code" value={voucherCode} />
+              <HotspotConnectForm
+                defaultCode={voucherCode}
+                loginUrl={portal.login_url}
+                origUrl={portal.orig_url}
+                authorizeUrl={authorizeUrl}
+              />
               <p className="text-muted-foreground text-sm">
                 {smsSent
                   ? "We also texted this code to the phone number you paid with."
                   : "Save this code. If SMS did not arrive, use Look up by phone with the number you paid with."}
               </p>
-              <Button asChild className="w-full">
+              <Button asChild variant="outline" className="w-full">
                 <Link to="/retrieve-voucher">Look up by phone</Link>
               </Button>
             </CardContent>

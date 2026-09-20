@@ -327,7 +327,7 @@ export default function CaptiveBuy() {
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Buy WiFi access</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Pay with MoMo, then we text a WiFi code. Enter it on the login page — yours or someone else's.
+            Pay with MoMo, then we show a WiFi code. Enter it and tap Connect to WiFi — or share the code.
           </p>
         </div>
 

@@ -12,6 +12,7 @@ import {
   processCaptiveMomoPaymentSuccess,
   saveCaptivePaymentPending,
   wifiCodeFromSale,
+  buildHotspotAuthorizeUrl,
 } from "../lib/captiveMomoPayment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { getAppSettings } from "../lib/appSettings.js"
@@ -45,11 +46,13 @@ export function createPortalRouter(deps) {
    * @param {Record<string, unknown>} [extra]
    */
   function captiveSalePayload(sale, extra = {}) {
+    const portal = normalizeCaptivePortalParams(sale?.portalParams)
     const voucherCode =
+      (typeof extra.voucherCode === "string" && extra.voucherCode.trim()) ||
       (typeof sale?.voucherCode === "string" && sale.voucherCode.trim()) ||
       (typeof sale?.radiusUsername === "string" && sale.radiusUsername.trim()) ||
       ""
-    return {
+    const payload = {
       success: true,
       packageName:
         typeof sale?.packageType === "string" && sale.packageType.trim()
@@ -58,8 +61,19 @@ export function createPortalRouter(deps) {
       voucherCode,
       smsSent: sale?.smsSent === true,
       hotspot: true,
+      login_url: portal.login_url,
+      ap_mac: portal.ap_mac,
+      client_mac: portal.client_mac,
+      orig_url: portal.orig_url,
+      ssid: portal.ssid,
       ...extra,
     }
+    payload.voucherCode = String(payload.voucherCode || "").trim()
+    payload.authorizeUrl =
+      buildHotspotAuthorizeUrl(payload.login_url, payload.voucherCode, {
+        orig_url: payload.orig_url,
+      }) || null
+    return payload
   }
 
   /**
@@ -474,13 +488,11 @@ export function createPortalRouter(deps) {
         paymentReference,
         voucherCode: payload.voucherCode,
         smsSent: payload.smsSent,
+        hasLoginUrl: Boolean(payload.login_url),
       })
       return res.json({
         ready: true,
-        packageName: payload.packageName,
-        voucherCode: payload.voucherCode,
-        smsSent: payload.smsSent,
-        hotspot: true,
+        ...payload,
       })
     } catch (err) {
       buyLog("status exception", errorForLog(err))
@@ -520,12 +532,28 @@ export function createPortalRouter(deps) {
           error: "Your WiFi code is not ready yet. Wait a moment or check the SMS we sent.",
         })
       }
-      buyLog("radius-authorize ok", { paymentReference, voucherCode: existingCode })
+      const portal = normalizeCaptivePortalParams({
+        ...(sale.portalParams && typeof sale.portalParams === "object" ? sale.portalParams : {}),
+        ...req.body,
+      })
+      const authorizeUrl =
+        buildHotspotAuthorizeUrl(portal.login_url, existingCode, { orig_url: portal.orig_url }) ||
+        null
+      buyLog("radius-authorize ok", {
+        paymentReference,
+        voucherCode: existingCode,
+        hasAuthorizeUrl: Boolean(authorizeUrl),
+      })
       return res.json({
         success: true,
         hotspot: true,
-        authorizeUrl: null,
+        authorizeUrl,
         voucherCode: existingCode,
+        login_url: portal.login_url,
+        ap_mac: portal.ap_mac,
+        client_mac: portal.client_mac,
+        orig_url: portal.orig_url,
+        ssid: portal.ssid,
         paymentReference,
         idempotent: true,
       })

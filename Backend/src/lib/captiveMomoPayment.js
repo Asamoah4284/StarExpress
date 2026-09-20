@@ -85,6 +85,24 @@ export function hasCaptivePortalAuthParams(params) {
 }
 
 /**
+ * Grandstream captive portal: GET login_url with username and password set to the same voucher code.
+ * @param {string} loginUrl
+ * @param {string} code
+ * @param {{ orig_url?: string }} [extra]
+ */
+export function buildHotspotAuthorizeUrl(loginUrl, code, extra = {}) {
+  const base = typeof loginUrl === "string" ? loginUrl.trim() : ""
+  const pin = typeof code === "string" ? code.trim() : ""
+  if (!base || !pin) return ""
+  const joiner = base.includes("?") ? "&" : "?"
+  const orig = typeof extra.orig_url === "string" ? extra.orig_url.trim() : ""
+  let url =
+    `${base}${joiner}username=${encodeURIComponent(pin)}` + `&password=${encodeURIComponent(pin)}`
+  if (orig) url += `&redirect=${encodeURIComponent(orig)}`
+  return url
+}
+
+/**
  * @param {import("mongodb").Document | null | undefined} saleOrPending
  */
 export function isHotspotCaptiveSale(saleOrPending) {

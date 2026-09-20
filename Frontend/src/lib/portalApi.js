@@ -178,6 +178,22 @@ export async function initializePortalPayment(body) {
 }
 
 /**
+ * @param {unknown} data
+ */
+function hotspotFromPayload(data) {
+  const src = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data) : {}
+  return {
+    login_url: String(src.login_url || ""),
+    ap_mac: String(src.ap_mac || ""),
+    client_mac: String(src.client_mac || ""),
+    orig_url: String(src.orig_url || ""),
+    ssid: String(src.ssid || ""),
+    authorizeUrl:
+      typeof src.authorizeUrl === "string" && src.authorizeUrl.trim() ? src.authorizeUrl.trim() : "",
+  }
+}
+
+/**
  * Lightweight poll: is the sale fulfilled yet? Used while the Moolre POS iframe is open.
  * @param {string} paymentReference
  */
@@ -189,14 +205,21 @@ export async function fetchPortalPaymentStatus(paymentReference) {
     buyLog("status not ok", { paymentReference, status: res.status, data })
     return { ok: false, ready: false }
   }
+  const hotspot = hotspotFromPayload(data)
   const result = {
     ok: true,
     ready: data?.ready === true,
     voucherCode: String(data?.voucherCode || ""),
     packageName: String(data?.packageName || "WiFi"),
     smsSent: data?.smsSent === true,
+    ...hotspot,
   }
-  buyLog("status result", { paymentReference, ...result })
+  buyLog("status result", {
+    paymentReference,
+    ready: result.ready,
+    voucherCode: result.voucherCode,
+    hasLoginUrl: Boolean(result.login_url),
+  })
   return result
 }
 
@@ -216,6 +239,7 @@ export async function completePortalPayment(paymentReference) {
       retryable: res.status === 409,
     }
   }
+  const hotspot = hotspotFromPayload(data)
   const result = {
     ok: true,
     voucherCode: String(data.voucherCode || ""),
@@ -223,8 +247,13 @@ export async function completePortalPayment(paymentReference) {
     smsSent: data.smsSent === true,
     paymentReference: String(data.paymentReference || paymentReference),
     hotspot: data.hotspot === true,
+    ...hotspot,
   }
-  buyLog("complete ok", result)
+  buyLog("complete ok", {
+    paymentReference: result.paymentReference,
+    voucherCode: result.voucherCode,
+    hasLoginUrl: Boolean(result.login_url),
+  })
   return result
 }
 

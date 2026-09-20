@@ -1,11 +1,13 @@
 import * as React from "react"
-import { Link } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { Loader2, Satellite } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { HotspotConnectForm } from "@/components/portal/HotspotConnectForm.jsx"
 import { getDefaultAppName } from "@/lib/env.js"
+import { resolvePortalParams } from "@/lib/captivePortalParams.js"
 import { retrievePortalVouchers } from "@/lib/portalApi.js"
 
 function isValidPhone(phone) {
@@ -16,6 +18,8 @@ function isValidPhone(phone) {
 
 export default function CaptiveRetrieveVoucher() {
   const appName = getDefaultAppName()
+  const [searchParams] = useSearchParams()
+  const portal = React.useMemo(() => resolvePortalParams(searchParams), [searchParams])
   const [phone, setPhone] = React.useState("")
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState(/** @type {string | null} */ (null))
@@ -65,7 +69,7 @@ export default function CaptiveRetrieveVoucher() {
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Find your WiFi code</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Enter the phone number you used when paying. Enter the code on the WiFi login page.
+            Enter the phone number you used when paying. Then enter the code and tap Connect to WiFi.
           </p>
         </div>
 
@@ -116,14 +120,19 @@ export default function CaptiveRetrieveVoucher() {
           <div className="mt-4 space-y-3">
             {vouchers.map((v, i) => (
               <Card key={`${v.voucherCode}-${i}`}>
-                <CardContent className="p-4">
-                  <p className="font-mono text-lg font-bold">{v.voucherCode}</p>
-                  <p className="text-muted-foreground text-sm">
-                    {v.packageName}
-                    {v.date ? ` · ${v.date}` : ""}
-                    {" · "}
-                    Enter this code on the WiFi login page.
-                  </p>
+                <CardHeader>
+                  <CardTitle className="text-lg">{v.packageName || "WiFi"}</CardTitle>
+                  <CardDescription>
+                    {v.date ? `${v.date} · ` : ""}
+                    Enter the code and tap Connect to WiFi.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <HotspotConnectForm
+                    defaultCode={v.voucherCode}
+                    loginUrl={portal.login_url}
+                    origUrl={portal.orig_url}
+                  />
                 </CardContent>
               </Card>
             ))}

@@ -84,6 +84,40 @@ export function hasPortalAuthParams(params) {
   return Boolean(params?.login_url?.trim() && params?.client_mac?.trim())
 }
 
+/**
+ * Grandstream captive portal: GET login_url with username and password set to the same voucher code.
+ * @param {string} loginUrl
+ * @param {string} code
+ * @param {{ orig_url?: string }} [extra]
+ */
+export function buildHotspotAuthorizeUrl(loginUrl, code, extra = {}) {
+  const base = typeof loginUrl === "string" ? loginUrl.trim() : ""
+  const pin = typeof code === "string" ? code.trim() : ""
+  if (!base || !pin) return ""
+  const joiner = base.includes("?") ? "&" : "?"
+  const orig = typeof extra.orig_url === "string" ? extra.orig_url.trim() : ""
+  let url =
+    `${base}${joiner}username=${encodeURIComponent(pin)}` + `&password=${encodeURIComponent(pin)}`
+  if (orig) url += `&redirect=${encodeURIComponent(orig)}`
+  return url
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {{ login_url: string, ap_mac: string, client_mac: string, orig_url: string, ssid: string }}
+ */
+export function portalParamsFromApi(raw) {
+  const src = raw && typeof raw === "object" ? /** @type {Record<string, unknown>} */ (raw) : {}
+  const pick = (key) => (typeof src[key] === "string" ? src[key].trim() : "")
+  return {
+    login_url: pick("login_url"),
+    ap_mac: pick("ap_mac"),
+    client_mac: pick("client_mac"),
+    orig_url: pick("orig_url"),
+    ssid: pick("ssid"),
+  }
+}
+
 export function clearPersistedPortalParams() {
   try {
     sessionStorage.removeItem(STORAGE_KEY)
