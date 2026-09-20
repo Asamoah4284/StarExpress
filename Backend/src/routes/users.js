@@ -1,6 +1,7 @@
 import express from "express"
 import { appendAuditLog } from "../lib/appendAuditLog.js"
-import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
+import { missingOrgError } from "../lib/organizations.js"
+import { createVerifyJwt, requireAdmin, requireOrg } from "../middleware/authJwt.js"
 
 /**
  * @param {{
@@ -12,10 +13,12 @@ import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
 export function createUsersRouter({ userStore, jwtSecret, auditLogs }) {
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
+  router.use(requireOrg)
 
-  router.get("/", async (_req, res) => {
+  router.get("/", async (req, res) => {
     try {
-      const users = await userStore.listPublicUsers()
+      const orgId = req.auth.orgId
+      const users = await userStore.listPublicUsers(orgId)
       res.json({ users })
     } catch (err) {
       console.error(err)
@@ -25,6 +28,8 @@ export function createUsersRouter({ userStore, jwtSecret, auditLogs }) {
 
   router.post("/", requireAdmin, async (req, res) => {
     try {
+      const orgErr = missingOrgError(req.auth)
+      if (orgErr) return res.status(403).json({ error: orgErr })
       const name = typeof req.body?.name === "string" ? req.body.name : ""
       const email = typeof req.body?.email === "string" ? req.body.email : ""
       const password = typeof req.body?.password === "string" ? req.body.password : ""
@@ -44,15 +49,18 @@ export function createUsersRouter({ userStore, jwtSecret, auditLogs }) {
       }
 
       const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS) || 10
-      const created = await userStore.createUser(name, email, password, roleRaw, saltRounds)
+      const created = await userStore.createUser(
+        name,
+        email,
+        password,
+        roleRaw,
+        saltRounds,
+        req.auth.orgId,
+      )
       if (created === "exists") {
         return res.status(409).json({ error: "An account with this email already exists." })
       }
-      await appendAuditLog(
-        auditLogs,
-        req.auth,
-        `Created user ${created.email} (${created.role})`,
-      )
+      await appendAuditLog(auditLogs, req.auth, `Created user ${created.email} (${created.role})`)
       res.status(201).json({ user: created })
     } catch (err) {
       console.error(err)
@@ -68,12 +76,21 @@ export function createUsersRouter({ userStore, jwtSecret, auditLogs }) {
       }
       const body = req.body
       const active =
-        typeof body?.active === "boolean" ? body.active : body?.active === "true" ? true : body?.active === "false" ? false : null
+        typeof body?.active === "boolean"
+          ? body.active
+          : body?.active === "true"
+            ? true
+            : body?.active === "false"
+              ? false
+              : null
       if (active === null) {
         return res.status(400).json({ error: "Body must include active as a boolean." })
       }
       const target = await userStore.getPublicUserById(id)
-      const ok = await userStore.setUserActive(id, active)
+      if (!target || target.orgId !== req.auth.orgId) {
+        return res.status(404).json({ error: "User not found." })
+      }
+      const ok = await userStore.setUserActive(id, active, req.auth.orgId)
       if (!ok) {
         return res.status(404).json({ error: "User not found." })
       }

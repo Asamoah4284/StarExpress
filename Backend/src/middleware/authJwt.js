@@ -21,6 +21,7 @@ export function createVerifyJwt(jwtSecret) {
         email: typeof decoded.email === "string" ? decoded.email : "",
         name: typeof decoded.name === "string" ? decoded.name : "",
         role: typeof decoded.role === "string" ? decoded.role : "",
+        orgId: typeof decoded.orgId === "string" ? decoded.orgId : "",
       }
       next()
     } catch {
@@ -33,6 +34,16 @@ export function createVerifyJwt(jwtSecret) {
 export function requireAdmin(req, res, next) {
   if (req.auth?.role !== "Admin") {
     return res.status(403).json({ error: "Admin access required." })
+  }
+  next()
+}
+
+/** @type {import("express").RequestHandler} */
+export function requireOrg(req, res, next) {
+  if (!req.auth?.orgId) {
+    return res.status(403).json({
+      error: "Your account is not linked to a WiFi group. Sign out and sign in again.",
+    })
   }
   next()
 }

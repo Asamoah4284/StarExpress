@@ -3,6 +3,8 @@ import { resolvePackageForLocation } from "./packageOverrides.js"
 import { markAgentPaymentPendingCompleted } from "./agentMomoPayment.js"
 import { notifyAdminPaidNoVoucher } from "./adminAlerts.js"
 import { applyPercentOff, normalizePercentOff, roundMoney } from "./promoDiscount.js"
+import { createShareableRadiusLogin, isRadiusConfigured } from "./radiusAuth.js"
+import { ensureSaleVoucherSmsSent } from "./saleVoucherSms.js"
 
 /**
  * @param {string} ref
@@ -85,7 +87,7 @@ export function hasCaptivePortalAuthParams(params) {
  */
 export function isHotspotCaptiveSale(saleOrPending) {
   if (!saleOrPending) return false
-  if (saleOrPending.fulfillmentMode === "radius") return true
+  if (saleOrPending.fulfillmentMode === "radius" || saleOrPending.fulfillmentMode === "radius_code") return true
   return hasCaptivePortalAuthParams(normalizeCaptivePortalParams(saleOrPending.portalParams || saleOrPending))
 }
 
@@ -97,6 +99,7 @@ export function isHotspotCaptiveSale(saleOrPending) {
  *   packageId: string
  *   locationId: string
  *   amount: number
+ *   orgId?: string
  *   basePrice?: number
  *   promoCode?: string | null
  *   promoPercentOff?: number
@@ -112,6 +115,7 @@ export function isHotspotCaptiveSale(saleOrPending) {
 export async function saveCaptivePaymentPending(pendingCol, data) {
   const promoPercentOff = normalizePercentOff(data.promoPercentOff)
   const portalParams = normalizeCaptivePortalParams(data.portalParams)
+  const orgId = typeof data.orgId === "string" ? data.orgId.trim() : ""
   const doc = {
     _id: data.paymentReference,
     paymentReference: data.paymentReference,
@@ -119,6 +123,7 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
     packageId: data.packageId,
     locationId: data.locationId,
     amount: data.amount,
+    ...(orgId ? { orgId } : {}),
     ...(typeof data.basePrice === "number" ? { basePrice: data.basePrice } : {}),
     ...(promoPercentOff > 0
       ? { promoCode: data.promoCode || null, promoPercentOff }
@@ -142,7 +147,8 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
 
 /**
  * Fulfill captive portal MoMo sale from webhook (or poll). Idempotent on paymentReference.
- * Captive portal is FreeRADIUS-only — no voucher codes or SMS.
+ * Writes shareable FreeRADIUS username/password, stores them on the sale, and SMS the code.
+ * Grandstream checks FreeRADIUS — not Mongo voucher CSVs. Does not auto-authorize the buyer’s device.
  * @param {{
  *   pending: import("mongodb").Collection
  *   packages: import("mongodb").Collection
@@ -163,18 +169,36 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     console.log(`[captive-momo] ${source} idempotent sale exists`, {
       paymentReference,
       saleId: existingSale._id,
-      fulfillmentMode: existingSale.fulfillmentMode || "radius",
+      fulfillmentMode: existingSale.fulfillmentMode || "radius_code",
     })
+    const sms = await ensureSaleVoucherSmsSent({
+      sale: existingSale,
+      packages,
+      sales,
+      source: `${source}-idempotent-sms`,
+    })
+    const smsSent = sms.smsSent === true
     await markAgentPaymentPendingCompleted(pending, paymentReference, {
       saleId: String(existingSale._id),
-      smsSent: true,
+      smsSent,
     })
+    const voucherCode = typeof existingSale.voucherCode === "string" ? existingSale.voucherCode.trim() : ""
+    const username =
+      typeof existingSale.radiusUsername === "string" && existingSale.radiusUsername.trim()
+        ? existingSale.radiusUsername.trim()
+        : voucherCode
+    const password =
+      typeof existingSale.radiusPassword === "string" && existingSale.radiusPassword.trim()
+        ? existingSale.radiusPassword.trim()
+        : username
     return {
       ok: true,
       status: "already_processed",
       saleId: existingSale._id,
-      smsSent: true,
-      voucherCode: "",
+      smsSent,
+      voucherCode,
+      username,
+      password,
       hotspot: true,
     }
   }
@@ -188,6 +212,7 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
   const customerPhone = String(pendingDoc.customerPhone || "").trim()
   const packageId = String(pendingDoc.packageId || "").trim()
   const locationId = String(pendingDoc.locationId || "").trim()
+  const orgId = typeof pendingDoc.orgId === "string" ? pendingDoc.orgId.trim() : ""
   const chargedAmount = typeof pendingDoc.amount === "number" ? pendingDoc.amount : undefined
   const promoPercentOff = normalizePercentOff(pendingDoc.promoPercentOff)
   const promoCode = typeof pendingDoc.promoCode === "string" ? pendingDoc.promoCode : null
@@ -202,20 +227,6 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
       reason: "incomplete order record",
     })
     return { ok: false, status: "invalid_pending" }
-  }
-
-  if (!hasCaptivePortalAuthParams(portalParams)) {
-    console.error(`[captive-momo] ${source} missing Grandstream portal params`, {
-      paymentReference,
-      portalParams,
-    })
-    await alertPaidNoVoucherOnce(pending, paymentReference, {
-      customerPhone,
-      locationId,
-      amount: chargedAmount,
-      reason: "missing login_url or client_mac",
-    })
-    return { ok: false, status: "missing_portal_params" }
   }
 
   const pkg = await packages.findOne({ _id: packageId })
@@ -244,6 +255,36 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     return { ok: false, status: "inactive_package" }
   }
 
+  if (!isRadiusConfigured()) {
+    console.error(`[captive-momo] ${source} RADIUS DB not configured`, { paymentReference })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      packageName: resolved.name?.trim() ? resolved.name.trim() : packageId,
+      locationId,
+      amount: chargedAmount ?? (typeof resolved.priceGHS === "number" ? resolved.priceGHS : undefined),
+      reason: "RADIUS database not configured",
+    })
+    return { ok: false, status: "radius_unavailable" }
+  }
+
+  let radiusLogin
+  try {
+    radiusLogin = await createShareableRadiusLogin(packageId, pkg)
+  } catch (err) {
+    console.error(`[captive-momo] ${source} RADIUS write failed`, {
+      paymentReference,
+      error: err instanceof Error ? err.message : err,
+    })
+    await alertPaidNoVoucherOnce(pending, paymentReference, {
+      customerPhone,
+      packageName: resolved.name?.trim() ? resolved.name.trim() : packageId,
+      locationId,
+      amount: chargedAmount ?? (typeof resolved.priceGHS === "number" ? resolved.priceGHS : undefined),
+      reason: err instanceof Error ? err.message : "RADIUS write failed",
+    })
+    return { ok: false, status: "radius_failed" }
+  }
+
   const priceGHS = resolved.priceGHS
   const finalAmount = promoPercentOff > 0 ? applyPercentOff(priceGHS, promoPercentOff) : priceGHS
   const packageType = resolved.name?.trim() ? resolved.name.trim() : packageId
@@ -269,45 +310,65 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
     packageId,
     amount: finalAmount,
     locationId,
+    ...(orgId ? { orgId } : {}),
     date,
     soldAt,
     status: "Completed",
-    voucherId: "",
-    voucherCode: "",
+    voucherId: radiusLogin.username,
+    voucherCode: radiusLogin.username,
+    radiusUsername: radiusLogin.username,
+    radiusPassword: radiusLogin.password,
     channel: "captive_portal",
-    fulfillmentMode: "radius",
+    fulfillmentMode: "radius_code",
     paymentReference,
-    smsSent: true,
+    smsSent: false,
     portalParams,
     ...promoFields,
   }
 
   await sales.insertOne(saleDoc)
-  await markAgentPaymentPendingCompleted(pending, paymentReference, { saleId, smsSent: true })
+
+  const sms = await ensureSaleVoucherSmsSent({
+    sale: saleDoc,
+    packages,
+    sales,
+    source,
+  })
+  const smsSent = sms.smsSent === true
+
+  await markAgentPaymentPendingCompleted(pending, paymentReference, {
+    saleId,
+    smsSent,
+    radiusUsername: radiusLogin.username,
+  })
 
   try {
     await auditLogs.insertOne({
       _id: `audit-${randomUUID().slice(0, 12)}`,
       actor: "captive-portal",
-      action: `Captive portal RADIUS sale ${saleId}: ${customerPhone} · ${packageType} · ${finalAmount} GHS · client ${portalParams.client_mac} · ref ${paymentReference} (${source})`,
+      ...(orgId ? { orgId } : {}),
+      action: `Captive portal RADIUS code sale ${saleId}: ${customerPhone} · ${packageType} · code ${radiusLogin.username} · ${finalAmount} GHS · ref ${paymentReference} (${source})`,
       at: new Date().toISOString(),
     })
   } catch (e) {
     console.error(`[captive-momo] ${source} audit log failed`, e)
   }
 
-  console.log(`[captive-momo] ${source} success (RADIUS, no voucher)`, {
+  console.log(`[captive-momo] ${source} success (RADIUS code)`, {
     paymentReference,
     saleId,
-    client_mac: portalParams.client_mac,
+    voucherCode: radiusLogin.username,
+    smsSent,
   })
 
   return {
     ok: true,
     status: "success",
     saleId,
-    voucherCode: "",
-    smsSent: true,
+    voucherCode: radiusLogin.username,
+    username: radiusLogin.username,
+    password: radiusLogin.password,
+    smsSent,
     hotspot: true,
   }
 }

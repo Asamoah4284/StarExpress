@@ -175,7 +175,9 @@ export async function fetchPortalPaymentStatus(paymentReference) {
   return {
     ok: true,
     ready: data?.ready === true,
-    voucherCode: String(data?.voucherCode || ""),
+    voucherCode: String(data?.voucherCode || data?.username || ""),
+    username: String(data?.username || data?.voucherCode || ""),
+    password: String(data?.password || data?.username || data?.voucherCode || ""),
     packageName: String(data?.packageName || "WiFi"),
     smsSent: data?.smsSent === true,
   }
@@ -198,7 +200,9 @@ export async function completePortalPayment(paymentReference) {
   }
   return {
     ok: true,
-    voucherCode: String(data.voucherCode || ""),
+    voucherCode: String(data.voucherCode || data.username || ""),
+    username: String(data.username || data.voucherCode || ""),
+    password: String(data.password || data.username || data.voucherCode || ""),
     packageName: String(data.packageName || "WiFi"),
     smsSent: data.smsSent === true,
     paymentReference: String(data.paymentReference || paymentReference),

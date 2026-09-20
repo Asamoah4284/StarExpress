@@ -20,7 +20,7 @@ import {
   fetchPortalPaymentStatus,
   initializePortalPayment,
 } from "@/lib/portalApi.js"
-import { hasPortalAuthParams, resolvePortalParams } from "@/lib/captivePortalParams.js"
+import { resolvePortalParams } from "@/lib/captivePortalParams.js"
 import { cn, formatCedis } from "@/lib/utils"
 
 function formatPackagePrice(priceGHS) {
@@ -259,13 +259,6 @@ export default function CaptiveBuy() {
       setError("Enter a valid phone number (at least 7 digits).")
       return
     }
-    if (!hasPortalAuthParams(portalParams)) {
-      setError(
-        "This page must be opened from the WiFi hotspot splash screen. Reconnect to WiFi and try again.",
-      )
-      setPaying(false)
-      return
-    }
     setError(null)
     setPaying(true)
     const result = await initializePortalPayment({
@@ -321,7 +314,9 @@ export default function CaptiveBuy() {
           </div>
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Buy WiFi access</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Select your location, choose a package, and pay with MoMo to get online.</p>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Pay with MoMo, then we text a WiFi code. Enter it on the login page — yours or someone else's.
+          </p>
         </div>
 
         <div className="mb-4 flex justify-center gap-2">
@@ -567,7 +562,9 @@ export default function CaptiveBuy() {
                     onChange={(e) => setPhone(e.target.value)}
                     required
                   />
-                  <p className="text-muted-foreground text-xs">Used for payment confirmation and support.</p>
+                  <p className="text-muted-foreground text-xs">
+                    We'll text the WiFi login code here. You can share it so someone else can connect.
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   <Button type="button" variant="outline" className="flex-1" onClick={() => setStep(2)}>

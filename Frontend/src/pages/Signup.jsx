@@ -26,6 +26,7 @@ export default function Signup() {
 
   const [step, setStep] = React.useState(/** @type {"form" | "verify"} */ ("form"))
   const [name, setName] = React.useState("")
+  const [organizationName, setOrganizationName] = React.useState("")
   const [email, setEmail] = React.useState("")
   const [phone, setPhone] = React.useState("")
   const [password, setPassword] = React.useState("")
@@ -89,7 +90,14 @@ export default function Signup() {
     }
     setSubmitting(true)
     try {
-      const result = await signup(name, email, phone.trim(), password, otp.trim())
+      const result = await signup(
+        name,
+        email,
+        phone.trim(),
+        password,
+        otp.trim(),
+        organizationName.trim() || undefined,
+      )
       if (result === "ok") {
         navigate(from === "/signup" || !from.startsWith("/") ? "/" : from, { replace: true })
       } else if (result === "exists") {
@@ -177,7 +185,7 @@ export default function Signup() {
             Create your workspace
           </h1>
           <p className="text-muted-foreground mx-auto mt-1 max-w-[340px] text-xs leading-snug dark:text-muted-foreground sm:mt-1.5 sm:text-sm sm:leading-snug">
-            First user becomes an administrator; add sales agents later from Users.
+            Create your WiFi group's private dashboard. You become the group admin; add sales agents later from Users.
           </p>
         </div>
 
@@ -195,7 +203,7 @@ export default function Signup() {
               <CardTitle className="font-heading text-base font-semibold tracking-tight sm:text-xl">Create account</CardTitle>
               <CardDescription className="text-muted-foreground text-[11px] leading-snug dark:text-muted-foreground sm:text-xs sm:leading-snug">
                 {step === "form"
-                  ? "Set up your administrator profile. We will text a verification code to your phone."
+                  ? "Set up your WiFi group and administrator profile. We will text a verification code to your phone."
                   : `Enter the 6-digit code sent to ${maskPhone(phone)}.`}
               </CardDescription>
             </div>
@@ -204,6 +212,24 @@ export default function Signup() {
           <CardContent className="px-4 pb-0 pt-0 sm:px-6 sm:pb-1">
             {step === "form" ? (
             <form onSubmit={handleSendCode} className="space-y-2.5 sm:space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="signup-org" className="text-foreground text-xs font-medium dark:text-foreground sm:text-sm">
+                  WiFi group name
+                </Label>
+                <Input
+                  id="signup-org"
+                  name="organizationName"
+                  type="text"
+                  autoComplete="organization"
+                  value={organizationName}
+                  onChange={(e) => setOrganizationName(e.target.value)}
+                  placeholder="e.g. EverGreen Hostels"
+                  className="border-border/80 bg-background/80 h-9 rounded-md text-sm shadow-none transition-shadow focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/25 dark:border-border dark:bg-background/50 dark:focus-visible:ring-primary/30 sm:h-10 sm:rounded-lg sm:text-sm"
+                />
+                <p className="text-muted-foreground text-[10px] leading-snug sm:text-xs">
+                  Your sales, locations, and finance stay private to this group. Packages are shared across groups.
+                </p>
+              </div>
               <div className="space-y-1.5">
                 <Label htmlFor="signup-name" className="text-foreground text-xs font-medium dark:text-foreground sm:text-sm">
                   Full name

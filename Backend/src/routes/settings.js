@@ -5,23 +5,27 @@ import {
   normalizeCommissionRate,
   patchAppSettings,
 } from "../lib/appSettings.js"
-import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
+import { getOrganization, renameOrganization } from "../lib/organizations.js"
+import { createVerifyJwt, requireAdmin, requireOrg } from "../middleware/authJwt.js"
 
 /**
  * @param {{
  *   appSettings: import("mongodb").Collection
  *   auditLogs: import("mongodb").Collection
+ *   organizations: import("mongodb").Collection
  *   jwtSecret: string
  * }} deps
  */
-export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
+export function createSettingsRouter({ appSettings, auditLogs, organizations, jwtSecret }) {
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
+  router.use(requireOrg)
 
-  router.get("/", async (_req, res) => {
+  router.get("/", async (req, res) => {
     try {
-      const settings = await getAppSettings(appSettings)
-      res.json(settings)
+      const settings = await getAppSettings(appSettings, req.auth.orgId)
+      const organization = await getOrganization(organizations, req.auth.orgId)
+      res.json({ ...settings, organization })
     } catch (err) {
       console.error(err)
       res.status(500).json({ error: "Server error." })
@@ -30,7 +34,7 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
 
   router.patch("/", requireAdmin, async (req, res) => {
     try {
-      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean }} */
+      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean, organizationName?: string }} */
       const patch = {}
 
       if (typeof req.body?.salesAgentCommissionRate === "number") {
@@ -72,6 +76,9 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
         patch.promosVisible = req.body.promosVisible
       }
 
+      const organizationName =
+        typeof req.body?.organizationName === "string" ? req.body.organizationName.trim() : ""
+
       if (
         patch.salesAgentCommissionRate == null &&
         patch.appName == null &&
@@ -79,11 +86,12 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
         patch.companyLogoUrl === undefined &&
         patch.alertPhone === undefined &&
         patch.purchaseAlertsEnabled === undefined &&
-        patch.promosVisible === undefined
+        patch.promosVisible === undefined &&
+        !organizationName
       ) {
         return res.status(400).json({
           error:
-            "Provide salesAgentCommissionRate/Percent, appName, companyName, companyLogoUrl, alertPhone, purchaseAlertsEnabled, and/or promosVisible to update.",
+            "Provide salesAgentCommissionRate/Percent, appName, companyName, organizationName, companyLogoUrl, alertPhone, purchaseAlertsEnabled, and/or promosVisible to update.",
         })
       }
 
@@ -93,7 +101,23 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
         })
       }
 
-      const saved = await patchAppSettings(appSettings, patch, req.auth)
+      let savedOrgName = null
+      if (organizationName) {
+        savedOrgName = await renameOrganization(organizations, req.auth.orgId, organizationName)
+      }
+
+      const hasSettingsPatch =
+        patch.salesAgentCommissionRate != null ||
+        patch.appName != null ||
+        patch.companyName != null ||
+        patch.companyLogoUrl !== undefined ||
+        patch.alertPhone !== undefined ||
+        patch.purchaseAlertsEnabled !== undefined ||
+        patch.promosVisible !== undefined
+
+      const saved = hasSettingsPatch
+        ? await patchAppSettings(appSettings, patch, req.auth)
+        : await getAppSettings(appSettings, req.auth.orgId)
 
       const auditParts = []
       if (patch.salesAgentCommissionRate != null) {
@@ -102,6 +126,7 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
       }
       if (patch.appName != null) auditParts.push(`app name to "${saved.appName}"`)
       if (patch.companyName != null) auditParts.push(`company name to "${saved.companyName}"`)
+      if (savedOrgName) auditParts.push(`WiFi group name to "${savedOrgName}"`)
       if (patch.companyLogoUrl !== undefined) {
         auditParts.push(saved.companyLogoUrl ? "company logo" : "cleared company logo")
       }
@@ -118,12 +143,16 @@ export function createSettingsRouter({ appSettings, auditLogs, jwtSecret }) {
         await appendAuditLog(auditLogs, req.auth, `Updated ${auditParts.join(", ")}`)
       }
 
-      res.json(saved)
+      const organization = await getOrganization(organizations, req.auth.orgId)
+      res.json({ ...saved, organization })
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : "Server error."
       const status =
-        message.includes("Logo") || message.includes("commission") || message.includes("Alert phone")
+        message.includes("Logo") ||
+        message.includes("commission") ||
+        message.includes("Alert phone") ||
+        message.includes("Organization")
           ? 400
           : 500
       res.status(status).json({ error: message })

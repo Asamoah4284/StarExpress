@@ -5,7 +5,7 @@ import {
 } from "./voucherSaleFulfillment.js"
 
 /**
- * All wifi locations (captive portal / FreeRADIUS — no voucher stock required).
+ * All wifi locations (captive portal sells RADIUS login codes — no CSV voucher stock required).
  * @param {import("mongodb").Collection} locationsCol
  * @param {{ maxLocations?: number }} [opts]
  * @returns {Promise<{ locationId: string, name: string }[]>}
@@ -27,7 +27,7 @@ export async function getPortalLocations(locationsCol, opts = {}) {
 }
 
 /**
- * Active packages at a wifi location (captive portal / FreeRADIUS — no voucher stock required).
+ * Active packages at a wifi location (captive portal sells RADIUS login codes — no CSV voucher stock required).
  * @param {import("mongodb").Collection} packagesCol
  * @param {string} locationId
  * @param {{ maxPackages?: number }} [opts]

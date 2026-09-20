@@ -1,5 +1,5 @@
 import { sendSms } from "../services/sms.js"
-import { buildSaleVoucherSmsMessage } from "./voucherSmsMessage.js"
+import { buildRadiusWifiSmsMessage, buildSaleVoucherSmsMessage } from "./voucherSmsMessage.js"
 import { resolvePackageForLocation } from "./packageOverrides.js"
 import { notifyAdminCustomerSmsFailed } from "./adminAlerts.js"
 
@@ -46,7 +46,10 @@ export async function ensureSaleVoucherSmsSent(opts) {
     }
   }
 
-  const smsMessage = buildSaleVoucherSmsMessage(packageType || "WiFi", packageDataLimit, voucherCode)
+  const smsMessage =
+    sale.fulfillmentMode === "radius_code"
+      ? buildRadiusWifiSmsMessage(packageType || "WiFi", packageDataLimit, voucherCode)
+      : buildSaleVoucherSmsMessage(packageType || "WiFi", packageDataLimit, voucherCode)
 
   try {
     const smsResult = await sendSms({ to: customerPhone, message: smsMessage })

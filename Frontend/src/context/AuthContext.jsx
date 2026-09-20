@@ -11,7 +11,7 @@ const STORAGE_KEY = "Starexpress-auth-session"
 
 /** @typedef {{ ok: true, user: AuthUser } | { ok: false }} LoginResult */
 
-/** @type {React.Context<{ user: AuthUser | null, token: string | null, isAuthenticated: boolean, authReady: boolean, login: (email: string, password: string) => Promise<LoginResult>, signup: (name: string, email: string, phone: string, password: string, otp: string) => Promise<SignupResult>, logout: () => void } | null>} */
+/** @type {React.Context<{ user: AuthUser | null, token: string | null, isAuthenticated: boolean, authReady: boolean, login: (email: string, password: string) => Promise<LoginResult>, signup: (name: string, email: string, phone: string, password: string, otp: string, organizationName?: string) => Promise<SignupResult>, logout: () => void } | null>} */
 const AuthContext = React.createContext(null)
 
 /** @param {unknown} u */
@@ -101,9 +101,9 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  const signup = React.useCallback(async (name, email, phone, password, otp) => {
+  const signup = React.useCallback(async (name, email, phone, password, otp, organizationName) => {
     try {
-      const result = await authSignup(name, email, phone, password, otp)
+      const result = await authSignup(name, email, phone, password, otp, organizationName)
       if (result.ok) {
         persistSession({ user: result.user, token: result.token })
         setUser(result.user)

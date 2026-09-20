@@ -23,6 +23,7 @@ export function isAgentPaymentReference(ref) {
  *   locationId: string
  *   agentUserId: string
  *   amount: number
+ *   orgId?: string
  * }} data
  */
 export async function saveAgentPaymentPending(pendingCol, data) {
@@ -36,6 +37,7 @@ export async function saveAgentPaymentPending(pendingCol, data) {
     amount: data.amount,
     createdAt: new Date().toISOString(),
     status: "pending",
+    ...(typeof data.orgId === "string" && data.orgId.trim() ? { orgId: data.orgId.trim() } : {}),
   }
   await pendingCol.updateOne({ _id: data.paymentReference }, { $set: doc }, { upsert: true })
   console.log("[agent-momo] pending saved", {
@@ -125,6 +127,7 @@ export async function processAgentMomoPaymentSuccess(opts) {
   const packageId = String(pendingDoc.packageId || "").trim()
   const locationId = String(pendingDoc.locationId || "").trim()
   const agentUserId = String(pendingDoc.agentUserId || "").trim()
+  const orgId = typeof pendingDoc.orgId === "string" ? pendingDoc.orgId.trim() : ""
 
   if (!customerPhone || !packageId || !locationId) {
     console.error(`[agent-momo] ${source} invalid pending`, { paymentReference, pendingDoc })
@@ -144,7 +147,10 @@ export async function processAgentMomoPaymentSuccess(opts) {
   }
 
   const priceGHS = resolved.priceGHS
-  const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
+  const availFilter = {
+    ...buildPackageAvailabilityFilter(packageId, locationId),
+    ...(orgId ? { orgId } : {}),
+  }
   const voucherToUse = await vouchers.findOne(availFilter)
   if (!voucherToUse) {
     console.error(`[agent-momo] ${source} no voucher stock`, { paymentReference, packageId, locationId })
@@ -160,6 +166,7 @@ export async function processAgentMomoPaymentSuccess(opts) {
 
   const saleDoc = {
     _id: saleId,
+    ...(orgId ? { orgId } : {}),
     customerName: customerPhone,
     customerPhone,
     paymentNumber: customerPhone,

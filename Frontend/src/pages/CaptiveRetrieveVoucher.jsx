@@ -25,7 +25,7 @@ export default function CaptiveRetrieveVoucher() {
   const [emptyMessage, setEmptyMessage] = React.useState("")
 
   React.useEffect(() => {
-    document.title = "Retrieve voucher"
+    document.title = "Find your WiFi code"
   }, [])
 
   const handleSubmit = async (e /** @type {React.FormEvent} */) => {
@@ -48,7 +48,7 @@ export default function CaptiveRetrieveVoucher() {
     if (result.vouchers.length === 0) {
       setEmptyMessage(
         result.message ||
-          "No vouchers found for this number. If you just paid, wait a moment and try again.",
+          "No WiFi codes found for this number. If you just paid, wait a moment and try again.",
       )
     }
   }
@@ -61,16 +61,16 @@ export default function CaptiveRetrieveVoucher() {
             <Satellite className="text-primary size-6" aria-hidden />
           </div>
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Retrieve voucher</h1>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Find your WiFi code</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Enter the phone number you used when paying to see your recent voucher codes.
+            Enter the phone number you used when paying. Type the code as username and password on the WiFi login page.
           </p>
         </div>
 
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Your phone number</CardTitle>
-            <CardDescription>We show up to your 3 most recent purchases.</CardDescription>
+            <CardDescription>We show up to your 3 most recent WiFi codes.</CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={(e) => void handleSubmit(e)}>
@@ -99,7 +99,7 @@ export default function CaptiveRetrieveVoucher() {
                     Looking up…
                   </>
                 ) : (
-                  "Find my vouchers"
+                  "Find my codes"
                 )}
               </Button>
             </form>
@@ -119,6 +119,8 @@ export default function CaptiveRetrieveVoucher() {
                   <p className="text-muted-foreground text-sm">
                     {v.packageName}
                     {v.date ? ` · ${v.date}` : ""}
+                    {" · "}
+                    Use as username and password on WiFi login.
                   </p>
                 </CardContent>
               </Card>

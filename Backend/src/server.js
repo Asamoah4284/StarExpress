@@ -4,6 +4,7 @@ import express from "express"
 import {
   connectMongo,
   getUsersCollection,
+  getOrganizationsCollection,
   getLocationsCollection,
   getPackagesCollection,
   getSalesCollection,
@@ -20,6 +21,8 @@ import {
 } from "./db/mongo.js"
 import { UserStore } from "./userStore.js"
 import { SignupOtpStore } from "./lib/signupOtpStore.js"
+import { migrateDefaultOrganization } from "./lib/migrateDefaultOrganization.js"
+import { DEFAULT_ORG_ID } from "./lib/organizations.js"
 import { createAuthRouter } from "./routes/auth.js"
 import { mountHealthRoutes } from "./routes/health.js"
 import { createUsersRouter } from "./routes/users.js"
@@ -130,6 +133,21 @@ async function main() {
   const userStore = new UserStore(getUsersCollection())
   const signupOtpStore = new SignupOtpStore(getSignupOtpsCollection())
 
+  await migrateDefaultOrganization({
+    organizations: getOrganizationsCollection(),
+    users: getUsersCollection(),
+    locations: getLocationsCollection(),
+    sales: getSalesCollection(),
+    vouchers: getVouchersCollection(),
+    disputes: getDisputesCollection(),
+    auditLogs: getAuditLogsCollection(),
+    expenses: getExpensesCollection(),
+    financeWeeklySnapshots: getFinanceWeeklySnapshotsCollection(),
+    customerProfiles: getCustomerProfilesCollection(),
+    agentPaymentPending: getAgentPaymentPendingCollection(),
+    appSettings: getAppSettingsCollection(),
+  })
+
   if (envTruthy("CATALOG_SEED_ON_STARTUP")) {
     await seedCatalogIfEmpty({
       locations: getLocationsCollection(),
@@ -146,7 +164,7 @@ async function main() {
   await ensureDefaultPackage(getPackagesCollection())
 
   if (ADMIN_EMAIL && ADMIN_PASSWORD) {
-    await userStore.seedAdmin(ADMIN_EMAIL, ADMIN_PASSWORD, "System Admin", BCRYPT_SALT_ROUNDS)
+    await userStore.seedAdmin(ADMIN_EMAIL, ADMIN_PASSWORD, "System Admin", BCRYPT_SALT_ROUNDS, DEFAULT_ORG_ID)
     console.log(`Seeded admin user for email: ${ADMIN_EMAIL}`)
   } else {
     console.warn("ADMIN_EMAIL / ADMIN_PASSWORD not set — only sign-up accounts can sign in.")
@@ -238,6 +256,7 @@ async function main() {
     createSettingsRouter({
       appSettings: getAppSettingsCollection(),
       auditLogs: getAuditLogsCollection(),
+      organizations: getOrganizationsCollection(),
       jwtSecret: JWT_SECRET,
     }),
   )
@@ -259,6 +278,7 @@ async function main() {
     signupOtpStore,
     jwtSecret: JWT_SECRET,
     jwtExpiresIn: JWT_EXPIRES_IN,
+    organizations: getOrganizationsCollection(),
   })
   app.use("/api/auth", authRouter)
 
@@ -273,6 +293,7 @@ async function main() {
   })
 
   startFinanceWeeklyCron({
+    organizations: getOrganizationsCollection(),
     locations: getLocationsCollection(),
     sales: getSalesCollection(),
     expenses: getExpensesCollection(),

@@ -1,14 +1,11 @@
 import * as React from "react"
 import { Link, useSearchParams } from "react-router-dom"
-import { Loader2, Satellite } from "lucide-react"
+import { Check, Copy, Loader2, Satellite } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { getDefaultAppName } from "@/lib/env.js"
-import {
-  clearPersistedPortalParams,
-  resolvePortalParams,
-} from "@/lib/captivePortalParams.js"
-import { authorizePortalRadiusWithRetry, completePortalPaymentWithRetry } from "@/lib/portalApi.js"
+import { clearPersistedPortalParams } from "@/lib/captivePortalParams.js"
+import { completePortalPaymentWithRetry } from "@/lib/portalApi.js"
 
 export default function PortalPaymentSuccess() {
   const appName = getDefaultAppName()
@@ -23,20 +20,22 @@ export default function PortalPaymentSuccess() {
 
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState(/** @type {string | null} */ (null))
-  const [redirecting, setRedirecting] = React.useState(false)
+  const [wifiCode, setWifiCode] = React.useState("")
+  const [packageName, setPackageName] = React.useState("WiFi")
+  const [smsSent, setSmsSent] = React.useState(false)
+  const [copied, setCopied] = React.useState(false)
 
   React.useEffect(() => {
-    document.title = "Connecting to WiFi"
+    document.title = "Your WiFi code"
   }, [])
 
   React.useEffect(() => {
     if (!paymentReference) {
       setLoading(false)
-      setError("Missing payment reference. Reconnect to the WiFi hotspot and try again from the splash page.")
+      setError("Missing payment reference. Open Buy WiFi again and complete payment.")
       return
     }
 
-    const portalParams = resolvePortalParams(searchParams)
     let cancelled = false
     ;(async () => {
       setLoading(true)
@@ -50,23 +49,19 @@ export default function PortalPaymentSuccess() {
         return
       }
 
-      console.log("[portal] requesting hotspot authorization")
-      const radius = await authorizePortalRadiusWithRetry(paymentReference, portalParams)
-      if (cancelled) return
-
-      if (radius.ok && radius.authorizeUrl) {
-        console.log("[portal] hotspot authorize success", radius.authorizeUrl)
-        console.log("[portal] redirecting to Grandstream authorizeUrl")
-        setRedirecting(true)
-        clearPersistedPortalParams()
-        window.location.href = radius.authorizeUrl
+      const code = (result.voucherCode || result.username || "").trim()
+      if (!code) {
+        setError(
+          "Payment succeeded but no WiFi code was issued. Contact support with the phone number you paid with.",
+        )
+        setLoading(false)
         return
       }
 
-      setError(
-        radius.error ||
-          "Payment succeeded but WiFi authorization failed. Please contact support with your payment phone number.",
-      )
+      clearPersistedPortalParams()
+      setWifiCode(code)
+      setPackageName(result.packageName || "WiFi")
+      setSmsSent(result.smsSent === true)
       setLoading(false)
     })()
 
@@ -75,6 +70,17 @@ export default function PortalPaymentSuccess() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- searchKey stabilizes URLSearchParams identity
   }, [paymentReference, searchKey])
+
+  const copyCode = async () => {
+    if (!wifiCode) return
+    try {
+      await navigator.clipboard.writeText(wifiCode)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard unavailable — code is still on screen */
+    }
+  }
 
   return (
     <div className="text-foreground relative flex min-h-svh flex-col items-center justify-center bg-canvas px-4 py-8 dark:bg-background">
@@ -86,27 +92,63 @@ export default function PortalPaymentSuccess() {
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
         </div>
 
-        {loading || redirecting ? (
+        {loading ? (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-12">
               <Loader2 className="text-primary size-10 animate-spin" aria-hidden />
-              <p className="text-sm font-medium">
-                {redirecting ? "Connecting you to WiFi…" : "Confirming your payment…"}
-              </p>
+              <p className="text-sm font-medium">Confirming your payment…</p>
               <p className="text-muted-foreground text-xs">This may take a few seconds.</p>
             </CardContent>
           </Card>
         ) : null}
 
-        {!loading && !redirecting && error ? (
+        {!loading && error ? (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Could not connect automatically</CardTitle>
+              <CardTitle className="text-lg">Could not load your WiFi code</CardTitle>
               <CardDescription>{error}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <Button asChild className="w-full">
                 <Link to="/buy">Try again</Link>
+              </Button>
+              <Button asChild variant="outline" className="w-full">
+                <Link to="/retrieve-voucher">Look up by phone</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {!loading && !error && wifiCode ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Your WiFi code</CardTitle>
+              <CardDescription>
+                {packageName}. Enter this as both username and password on the WiFi login page. You can
+                share it with someone else.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <button
+                type="button"
+                onClick={() => void copyCode()}
+                className="border-border bg-muted/40 hover:bg-muted/70 flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-4 text-left"
+                title="Tap to copy"
+              >
+                <span className="font-mono text-2xl font-bold tracking-[0.18em]">{wifiCode}</span>
+                {copied ? (
+                  <Check className="size-5 shrink-0 text-emerald-500" aria-hidden />
+                ) : (
+                  <Copy className="text-muted-foreground size-5 shrink-0" aria-hidden />
+                )}
+              </button>
+              <p className="text-muted-foreground text-sm">
+                {smsSent
+                  ? "We also texted this code to the phone number you paid with."
+                  : "Save this code. If SMS did not arrive, use Look up by phone with the number you paid with."}
+              </p>
+              <Button asChild className="w-full">
+                <Link to="/retrieve-voucher">Look up by phone</Link>
               </Button>
             </CardContent>
           </Card>

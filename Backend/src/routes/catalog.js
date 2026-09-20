@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto"
 import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { appendAuditLog } from "../lib/appendAuditLog.js"
 import { backfillSaleSoldAt } from "../lib/backfillSaleSoldAt.js"
-import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
+import { byOrg } from "../lib/organizations.js"
+import { createVerifyJwt, requireAdmin, requireOrg } from "../middleware/authJwt.js"
 import { sendSms } from "../services/sms.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import {
@@ -372,13 +373,24 @@ function parseMeterNumber(raw) {
 /**
  * @param {import("mongodb").Collection} users
  * @param {string} userId
+ * @param {string} [orgId]
  * @returns {Promise<{ ok: true, name: string } | { ok: false, error: string }>}
  */
-async function getActiveSalesAgentName(users, userId) {
-  const doc = await users.findOne({ _id: userId }, { projection: { name: 1, role: 1, active: 1 } })
+async function getActiveSalesAgentName(users, userId, orgId) {
+  const doc = await users.findOne(
+    { _id: userId },
+    { projection: { name: 1, role: 1, active: 1, orgId: 1 } },
+  )
   if (!doc) return { ok: false, error: "Sales agent not found." }
   if (doc.role !== ROLE_SALES_AGENT) return { ok: false, error: "Only a Sales Agent can be assigned to a location." }
   if (doc.active === false) return { ok: false, error: "That sales agent account is inactive." }
+  const requiredOrg = typeof orgId === "string" ? orgId.trim() : ""
+  if (requiredOrg) {
+    const userOrg = typeof doc.orgId === "string" ? doc.orgId.trim() : ""
+    if (userOrg !== requiredOrg) {
+      return { ok: false, error: "Sales agent belongs to a different WiFi group." }
+    }
+  }
   const name = typeof doc.name === "string" ? doc.name.trim() : ""
   if (!name) return { ok: false, error: "Sales agent has no display name." }
   return { ok: true, name }
@@ -408,14 +420,19 @@ async function tryResolveUniqueSalesAgentIdFromManagerName(users, managerName) {
  * @param {import("mongodb").Collection} users
  * @param {string} agentUserId
  * @param {string | undefined} excludeLocationId
+ * @param {string} [orgId]
  * @returns {Promise<import("mongodb").Document | null>}
  */
-async function findConflictingLocationForSalesAgent(locations, users, agentUserId, excludeLocationId) {
+async function findConflictingLocationForSalesAgent(locations, users, agentUserId, excludeLocationId, orgId) {
+  /** @type {Record<string, unknown>} */
   const filter = { managerUserId: agentUserId }
   if (excludeLocationId) filter._id = { $ne: excludeLocationId }
+  if (orgId) Object.assign(filter, byOrg(orgId))
   const byLink = await locations.findOne(filter)
   if (byLink) return byLink
+  /** @type {Record<string, unknown>} */
   const q = excludeLocationId ? { _id: { $ne: excludeLocationId } } : {}
+  if (orgId) Object.assign(q, byOrg(orgId))
   const locs = await locations.find(q).project({ _id: 1, name: 1, manager: 1, managerUserId: 1 }).toArray()
   for (const loc of locs) {
     if (loc.managerUserId) continue
@@ -433,23 +450,28 @@ const UNASSIGNED_MANAGER_LABEL = "—"
  * @param {import("mongodb").Collection} users
  * @param {string} agentUserId
  * @param {string | undefined} keepLocationId
+ * @param {string} [orgId]
  */
-async function clearSalesAgentFromOtherLocations(locations, users, agentUserId, keepLocationId) {
+async function clearSalesAgentFromOtherLocations(locations, users, agentUserId, keepLocationId, orgId) {
+  /** @type {Record<string, unknown>} */
   const byIdFilter = { managerUserId: agentUserId }
   if (keepLocationId) byIdFilter._id = { $ne: keepLocationId }
+  if (orgId) Object.assign(byIdFilter, byOrg(orgId))
   await locations.updateMany(byIdFilter, {
     $unset: { managerUserId: "" },
     $set: { manager: UNASSIGNED_MANAGER_LABEL },
   })
 
+  /** @type {Record<string, unknown>} */
   const q = keepLocationId ? { _id: { $ne: keepLocationId } } : {}
+  if (orgId) Object.assign(q, byOrg(orgId))
   const locs = await locations.find(q).project({ _id: 1, manager: 1, managerUserId: 1 }).toArray()
   for (const loc of locs) {
     if (loc.managerUserId) continue
     const resolved = await tryResolveUniqueSalesAgentIdFromManagerName(users, String(loc.manager || ""))
     if (resolved === agentUserId) {
       await locations.updateOne(
-        { _id: loc._id },
+        { _id: loc._id, ...(orgId ? byOrg(orgId) : {}) },
         { $unset: { managerUserId: "" }, $set: { manager: UNASSIGNED_MANAGER_LABEL } },
       )
     }
@@ -527,12 +549,13 @@ function buildVoucherSearchFilter(search) {
 }
 
 /**
- * @param {{ packageId?: string, locationId?: string, status?: string, search?: string }} q
+ * @param {{ packageId?: string, locationId?: string, status?: string, search?: string, orgId?: string }} q
  * @returns {import("mongodb").Document}
  */
 function buildVoucherMongoFilter(q) {
   /** @type {import("mongodb").Document[]} */
   const and = []
+  if (q.orgId) and.push(byOrg(q.orgId))
   if (q.packageId === "unassigned") {
     and.push({ $or: [{ packageId: { $exists: false } }, { packageId: null }, { packageId: "" }] })
   } else if (q.packageId) {
@@ -557,12 +580,14 @@ function buildVoucherMongoFilter(q) {
  * Unused vouchers for a package at a wifi location (sellable inventory).
  * @param {string} packageId
  * @param {string} locationId
+ * @param {string} [orgId]
  * @returns {import("mongodb").Document}
  */
-function buildPackageAvailabilityFilter(packageId, locationId) {
+function buildPackageAvailabilityFilter(packageId, locationId, orgId) {
   return {
     packageId,
     locationId,
+    ...(orgId ? byOrg(orgId) : {}),
     $nor: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }],
   }
 }
@@ -612,13 +637,15 @@ function clearVoucherUsedColumns(columns) {
 /**
  * When all sales are gone, vouchers marked Used no longer have backing sales — release them.
  * @param {import("mongodb").Collection} vouchersCol
+ * @param {string} [orgId]
  */
-async function releaseOrphanedUsedVouchers(vouchersCol) {
-  const used = await vouchersCol
-    .find({
-      $or: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }],
-    })
-    .toArray()
+async function releaseOrphanedUsedVouchers(vouchersCol, orgId) {
+  /** @type {import("mongodb").Document} */
+  const usedFilter = {
+    $or: [{ "columns.Status": /^used$/i }, { "columns.status": /^used$/i }],
+  }
+  if (orgId) Object.assign(usedFilter, byOrg(orgId))
+  const used = await vouchersCol.find(usedFilter).toArray()
   if (!used.length) return 0
   let released = 0
   for (const doc of used) {
@@ -635,9 +662,10 @@ async function releaseOrphanedUsedVouchers(vouchersCol) {
  * Set each package's stockUnits to unused voucher count (all wifi locations).
  * @param {import("mongodb").Collection} vouchersCol
  * @param {import("mongodb").Collection} packagesCol
+ * @param {string} [orgId]
  */
-async function syncPackageStockUnitsFromVouchers(vouchersCol, packagesCol) {
-  const inventory = await aggregatePackageVoucherInventory(vouchersCol, "")
+async function syncPackageStockUnitsFromVouchers(vouchersCol, packagesCol, orgId = "") {
+  const inventory = await aggregatePackageVoucherInventory(vouchersCol, "", orgId)
   const remainingByPackageId = new Map(inventory.map((row) => [row.id, row.remaining]))
   const pkgDocs = await packagesCol.find({}).project({ _id: 1, stockUnits: 1 }).toArray()
   const ops = []
@@ -656,10 +684,16 @@ async function syncPackageStockUnitsFromVouchers(vouchersCol, packagesCol) {
   if (ops.length > 0) await packagesCol.bulkWrite(ops)
 }
 
-async function aggregatePackageVoucherInventory(vouchersCol, locationId = "") {
+/**
+ * @param {import("mongodb").Collection} vouchersCol
+ * @param {string} [locationId]
+ * @param {string} [orgId]
+ */
+async function aggregatePackageVoucherInventory(vouchersCol, locationId = "", orgId = "") {
   /** @type {import("mongodb").Document} */
   const match = { packageId: { $exists: true, $ne: "" } }
   if (locationId) match.locationId = locationId
+  if (orgId) Object.assign(match, byOrg(orgId))
   const rows = await vouchersCol
     .aggregate([
       { $match: match },
@@ -722,6 +756,7 @@ export function createCatalogRouter(deps) {
   } = deps
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
+  router.use(requireOrg)
 
   /**
    * @param {import("express").Request} req
@@ -752,14 +787,15 @@ export function createCatalogRouter(deps) {
       .toArray()
     const phoneLocations = buildPhoneLocationMap(saleDocs)
     const aggregated = aggregateCustomers(saleDocs)
-    const profileIndex = await loadCustomerProfileIndex(customerProfiles)
+    const profileIndex = await loadCustomerProfileIndex(customerProfiles, req.auth.orgId)
     const customers = applyCustomerProfiles(aggregated, profileIndex, resolved.scope, phoneLocations)
     return { ...resolved, customers }
   }
 
-  router.get("/audit-logs", requireAdmin, async (_req, res) => {
+  router.get("/audit-logs", requireAdmin, async (req, res) => {
     try {
-      const auditDocs = await auditLogs.find({}).sort({ at: -1 }).limit(500).toArray()
+      const orgId = req.auth.orgId
+      const auditDocs = await auditLogs.find(byOrg(orgId)).sort({ at: -1 }).limit(500).toArray()
       res.json({ auditLogs: auditDocs.map(toAudit) })
     } catch (err) {
       console.error(err)
@@ -768,16 +804,19 @@ export function createCatalogRouter(deps) {
     }
   })
 
-  router.get("/vouchers/summary", requireAdmin, async (_req, res) => {
+  router.get("/vouchers/summary", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
+      const orgFilter = byOrg(orgId)
       const [totalCount, unassignedCount, packageGroups] = await Promise.all([
-        vouchers.countDocuments({}),
+        vouchers.countDocuments(orgFilter),
         vouchers.countDocuments({
+          ...orgFilter,
           $or: [{ packageId: { $exists: false } }, { packageId: null }, { packageId: "" }],
         }),
         vouchers
           .aggregate([
-            { $match: { packageId: { $exists: true, $ne: "" } } },
+            { $match: { ...orgFilter, packageId: { $exists: true, $ne: "" } } },
             { $group: { _id: "$packageId", name: { $first: "$packageName" }, count: { $sum: 1 } } },
             { $sort: { name: 1 } },
           ])
@@ -801,9 +840,16 @@ export function createCatalogRouter(deps) {
 
   router.get("/packages/voucher-inventory", requireSalesAgentOrAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       let locationId = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
       if (req.auth.role !== "Admin") {
-        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        const loc = await findConflictingLocationForSalesAgent(
+          locations,
+          users,
+          req.auth.userId,
+          undefined,
+          orgId,
+        )
         if (!loc) {
           return res.status(403).json({
             error: "No wifi location is assigned to your sales account. Ask an administrator to link you to a location.",
@@ -811,7 +857,7 @@ export function createCatalogRouter(deps) {
         }
         locationId = String(loc._id)
       }
-      const packageRows = await aggregatePackageVoucherInventory(vouchers, locationId)
+      const packageRows = await aggregatePackageVoucherInventory(vouchers, locationId, orgId)
       res.json({ locationId: locationId || null, packages: packageRows })
     } catch (err) {
       console.error(err)
@@ -822,6 +868,7 @@ export function createCatalogRouter(deps) {
 
   router.get("/packages/:packageId/stock", requireSalesAgentOrAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const packageId = typeof req.params?.packageId === "string" ? req.params.packageId.trim() : ""
       const locationId = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
@@ -831,16 +878,22 @@ export function createCatalogRouter(deps) {
       if (!pkg) return res.status(404).json({ error: "Unknown package." })
 
       if (req.auth.role !== "Admin") {
-        const agentLoc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        const agentLoc = await findConflictingLocationForSalesAgent(
+          locations,
+          users,
+          req.auth.userId,
+          undefined,
+          orgId,
+        )
         if (!agentLoc || String(agentLoc._id) !== locationId) {
           return res.status(403).json({ error: "You can only view stock for your assigned wifi location." })
         }
       } else {
-        const loc = await locations.findOne({ _id: locationId })
+        const loc = await locations.findOne({ _id: locationId, ...byOrg(orgId) })
         if (!loc) return res.status(404).json({ error: "Unknown location." })
       }
 
-      const filter = buildPackageAvailabilityFilter(packageId, locationId)
+      const filter = buildPackageAvailabilityFilter(packageId, locationId, orgId)
       const remaining = await vouchers.countDocuments(filter)
       res.json({ packageId, locationId, remaining })
     } catch (err) {
@@ -852,8 +905,9 @@ export function createCatalogRouter(deps) {
 
   router.get("/vouchers/stats", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const locationId = typeof req.query.locationId === "string" ? req.query.locationId.trim() : ""
-      const filter = buildVoucherMongoFilter({ locationId })
+      const filter = buildVoucherMongoFilter({ locationId, orgId })
       const [total, remaining] = await Promise.all([
         vouchers.countDocuments(filter),
         vouchers.countDocuments({
@@ -871,8 +925,9 @@ export function createCatalogRouter(deps) {
 
   router.get("/vouchers", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const q = parseVoucherListQuery(req)
-      const filter = buildVoucherMongoFilter(q)
+      const filter = buildVoucherMongoFilter({ ...q, orgId })
       const total = await vouchers.countDocuments(filter)
       const totalPages = Math.max(1, Math.ceil(total / q.limit))
       const page = Math.min(q.page, totalPages)
@@ -894,13 +949,14 @@ export function createCatalogRouter(deps) {
 
   router.post("/vouchers/batch", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const locationIdRaw = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
       if (!locationIdRaw) {
         return res.status(400).json({
           error: "locationId is required — pick a location to assign these vouchers.",
         })
       }
-      const locationDoc = await locations.findOne({ _id: locationIdRaw })
+      const locationDoc = await locations.findOne({ _id: locationIdRaw, ...byOrg(orgId) })
       if (!locationDoc) {
         return res.status(400).json({ error: "Unknown location — refresh the page and pick a valid location." })
       }
@@ -943,7 +999,7 @@ export function createCatalogRouter(deps) {
       const batchId = `vbatch-${randomUUID().slice(0, 12)}`
       const uploadedAt = new Date().toISOString()
 
-      /** @type {{ _id: string, batchId: string, sourceFileName: string, columns: Record<string, string>, uploadedBy: string, uploadedAt: string }[]} */
+      /** @type {{ _id: string, batchId: string, sourceFileName: string, columns: Record<string, string>, uploadedBy: string, uploadedAt: string, orgId: string }[]} */
       const docs = []
       let skippedNoId = 0
       let skippedDuplicateInFile = 0
@@ -988,6 +1044,7 @@ export function createCatalogRouter(deps) {
           locationName,
           packageId: packageIdRaw,
           packageName,
+          orgId,
           uploadedBy: req.auth.userId,
           uploadedAt,
         })
@@ -999,6 +1056,7 @@ export function createCatalogRouter(deps) {
         codesInBatch.length > 0
           ? await vouchers
               .find({
+                ...byOrg(orgId),
                 packageId: packageIdRaw,
                 $or: [
                   { voucherCode: { $in: codesInBatch } },
@@ -1024,7 +1082,7 @@ export function createCatalogRouter(deps) {
 
       const summary = `Imported voucher batch "${fileName}" (${batchId}) → ${locationName} · ${packageName}: ${inserted} new, ${skippedAlreadyInDb} already on this package, ${skippedDuplicateInFile} duplicate in file, ${skippedNoId} row(s) without id.`
       await appendAuditLog(auditLogs, req.auth, summary)
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
 
       res.status(201).json({
         batchId,
@@ -1043,6 +1101,7 @@ export function createCatalogRouter(deps) {
 
   router.delete("/vouchers", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const locParam = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
       const pkgParam = typeof req.query?.packageId === "string" ? req.query.packageId.trim() : ""
       /** @type {import("mongodb").Document | null} */
@@ -1050,9 +1109,9 @@ export function createCatalogRouter(deps) {
       /** @type {import("mongodb").Document | null} */
       let packageDoc = null
       /** @type {import("mongodb").Document} */
-      let filter = {}
+      let filter = { ...byOrg(orgId) }
       if (locParam) {
-        locationDoc = await locations.findOne({ _id: locParam })
+        locationDoc = await locations.findOne({ _id: locParam, ...byOrg(orgId) })
         if (!locationDoc) return res.status(400).json({ error: "Unknown location for bulk delete." })
         filter.locationId = locParam
       }
@@ -1077,7 +1136,7 @@ export function createCatalogRouter(deps) {
         req.auth,
         `Bulk deleted vouchers (${scopeLabel}): ${result.deletedCount} document(s) removed`,
       )
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
       res.json({ deleted: result.deletedCount })
     } catch (err) {
       console.error(err)
@@ -1088,6 +1147,7 @@ export function createCatalogRouter(deps) {
 
   router.delete("/vouchers/:voucherId", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const raw = typeof req.params?.voucherId === "string" ? req.params.voucherId : ""
       let voucherId = ""
       try {
@@ -1099,14 +1159,14 @@ export function createCatalogRouter(deps) {
         return res.status(400).json({ error: "Invalid voucher id." })
       }
 
-      const result = await vouchers.deleteOne({ _id: voucherId })
+      const result = await vouchers.deleteOne({ _id: voucherId, ...byOrg(orgId) })
       if (result.deletedCount === 0) {
         return res.status(404).json({ error: "Voucher not found." })
       }
 
       const label = voucherDisplayCode({ _id: voucherId })
       await appendAuditLog(auditLogs, req.auth, `Deleted voucher "${label}"`)
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
       res.status(204).end()
     } catch (err) {
       console.error(err)
@@ -1117,20 +1177,22 @@ export function createCatalogRouter(deps) {
 
   router.get("/", async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       await backfillSaleSoldAt(sales, auditLogs)
 
+      const orgFilter = byOrg(orgId)
       const [locDocs, saleDocs, disputeDocs, auditDocs, saleCount] = await Promise.all([
-        locations.find({}).sort({ name: 1 }).toArray(),
-        sales.find({}).sort({ soldAt: -1, date: -1, _id: -1 }).toArray(),
-        disputes.find({}).sort({ date: -1 }).toArray(),
-        auditLogs.find({}).sort({ at: -1 }).toArray(),
-        sales.countDocuments({}),
+        locations.find(orgFilter).sort({ name: 1 }).toArray(),
+        sales.find(orgFilter).sort({ soldAt: -1, date: -1, _id: -1 }).toArray(),
+        disputes.find(orgFilter).sort({ date: -1 }).toArray(),
+        auditLogs.find(orgFilter).sort({ at: -1 }).toArray(),
+        sales.countDocuments(orgFilter),
       ])
 
       if (saleCount === 0) {
-        await releaseOrphanedUsedVouchers(vouchers)
+        await releaseOrphanedUsedVouchers(vouchers, orgId)
       }
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
       const pkgDocs = await packages.find({}).sort({ name: 1 }).toArray()
 
       /** @type {Awaited<ReturnType<typeof aggregatePackageVoucherInventory>>} */
@@ -1144,11 +1206,16 @@ export function createCatalogRouter(deps) {
             users,
             req.auth.userId,
             undefined,
+            orgId,
           )
           inventoryLocationId = agentLoc ? String(agentLoc._id) : ""
         }
         if (role === "Admin" || inventoryLocationId) {
-          packageVoucherInventory = await aggregatePackageVoucherInventory(vouchers, inventoryLocationId)
+          packageVoucherInventory = await aggregatePackageVoucherInventory(
+            vouchers,
+            inventoryLocationId,
+            orgId,
+          )
         }
       }
 
@@ -1169,6 +1236,7 @@ export function createCatalogRouter(deps) {
 
   router.post("/sales/initialize-moolre-payment", requireSalesAgentOrAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
       const customerPhone = customerPhoneRaw.replace(/\s+/g, " ")
       const packageId = typeof req.body?.packageId === "string" ? req.body.packageId.trim() : ""
@@ -1192,10 +1260,16 @@ export function createCatalogRouter(deps) {
         if (!locationId) {
           return res.status(400).json({ error: "locationId is required when starting payment as administrator." })
         }
-        const loc = await locations.findOne({ _id: locationId })
+        const loc = await locations.findOne({ _id: locationId, ...byOrg(orgId) })
         if (!loc) return res.status(400).json({ error: "Unknown location." })
       } else {
-        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        const loc = await findConflictingLocationForSalesAgent(
+          locations,
+          users,
+          req.auth.userId,
+          undefined,
+          orgId,
+        )
         if (!loc) {
           return res.status(403).json({
             error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
@@ -1213,7 +1287,7 @@ export function createCatalogRouter(deps) {
         return res.status(400).json({ error: "Invalid package price." })
       }
 
-      const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
+      const availFilter = buildPackageAvailabilityFilter(packageId, locationId, orgId)
       const available = await vouchers.findOne(availFilter, { projection: { _id: 1 } })
       if (!available) {
         return res.status(400).json({ error: "No vouchers available for this package at this wifi location." })
@@ -1228,6 +1302,7 @@ export function createCatalogRouter(deps) {
           locationId,
           agentUserId: req.auth.userId,
           amount: priceGHS,
+          orgId,
         })
       }
 
@@ -1276,6 +1351,7 @@ export function createCatalogRouter(deps) {
 
   router.post("/sales", requireSalesAgentOrAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const customerNameRaw = typeof req.body?.customerName === "string" ? req.body.customerName.trim() : ""
       const customerPhoneRaw = typeof req.body?.customerPhone === "string" ? req.body.customerPhone.trim() : ""
       const paymentNumberRaw = typeof req.body?.paymentNumber === "string" ? req.body.paymentNumber.trim() : ""
@@ -1312,10 +1388,16 @@ export function createCatalogRouter(deps) {
         if (!locationId) {
           return res.status(400).json({ error: "locationId is required when recording a sale as administrator." })
         }
-        const loc = await locations.findOne({ _id: locationId })
+        const loc = await locations.findOne({ _id: locationId, ...byOrg(orgId) })
         if (!loc) return res.status(400).json({ error: "Unknown location." })
       } else {
-        const loc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        const loc = await findConflictingLocationForSalesAgent(
+          locations,
+          users,
+          req.auth.userId,
+          undefined,
+          orgId,
+        )
         if (!loc) {
           return res.status(403).json({
             error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
@@ -1335,7 +1417,7 @@ export function createCatalogRouter(deps) {
 
       let paymentReference = paymentReferenceRaw
       if (paymentReference) {
-        const existingPaid = await sales.findOne({ paymentReference })
+        const existingPaid = await sales.findOne({ paymentReference, ...byOrg(orgId) })
         if (existingPaid) {
           const sms = await ensureSaleVoucherSmsSent({
             sale: existingPaid,
@@ -1388,7 +1470,7 @@ export function createCatalogRouter(deps) {
         if (!paymentNumber) paymentNumber = customerPhone
       }
 
-      const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
+      const availFilter = buildPackageAvailabilityFilter(packageId, locationId, orgId)
       const voucherToUse = await vouchers.findOne(availFilter)
       if (!voucherToUse) {
         return res.status(400).json({
@@ -1405,6 +1487,7 @@ export function createCatalogRouter(deps) {
 
       const saleDoc = {
         _id: saleId,
+        orgId,
         customerName,
         customerPhone,
         paymentNumber,
@@ -1435,7 +1518,7 @@ export function createCatalogRouter(deps) {
         { $set: { columns } },
       )
       if (marked.modifiedCount === 0) {
-        await sales.deleteOne({ _id: saleId })
+        await sales.deleteOne({ _id: saleId, ...byOrg(orgId) })
         return res.status(409).json({
           error: "Could not reserve a voucher — inventory may have changed. Try again.",
         })
@@ -1451,7 +1534,7 @@ export function createCatalogRouter(deps) {
           )
         } else {
           smsSent = true
-          await sales.updateOne({ _id: saleId }, { $set: { smsSent: true } })
+          await sales.updateOne({ _id: saleId, ...byOrg(orgId) }, { $set: { smsSent: true } })
         }
       } catch (smsErr) {
         const restoredColumns = clearVoucherUsedColumns(
@@ -1460,15 +1543,15 @@ export function createCatalogRouter(deps) {
             : {},
         )
         await vouchers.updateOne({ _id: voucherToUse._id }, { $set: { columns: restoredColumns } })
-        await sales.deleteOne({ _id: saleId })
-        await syncPackageStockUnitsFromVouchers(vouchers, packages)
+        await sales.deleteOne({ _id: saleId, ...byOrg(orgId) })
+        await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
         const msg = smsErr instanceof Error ? smsErr.message : "Failed to send voucher SMS."
         return res.status(502).json({
           error: `Could not send voucher SMS to the customer. Sale was not completed. ${msg}`,
         })
       }
 
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
 
       if (paymentReference && agentPaymentPending) {
         await markAgentPaymentPendingCompleted(agentPaymentPending, paymentReference, {
@@ -1492,27 +1575,28 @@ export function createCatalogRouter(deps) {
 
   router.delete("/sales/:saleId", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const saleId = typeof req.params?.saleId === "string" ? req.params.saleId.trim() : ""
       if (!saleId) return res.status(400).json({ error: "Missing sale id." })
 
-      const sale = await sales.findOne({ _id: saleId })
+      const sale = await sales.findOne({ _id: saleId, ...byOrg(orgId) })
       if (!sale) return res.status(404).json({ error: "Sale not found." })
 
       const voucherId = typeof sale.voucherId === "string" ? sale.voucherId.trim() : ""
       if (voucherId) {
-        const voucher = await vouchers.findOne({ _id: voucherId })
+        const voucher = await vouchers.findOne({ _id: voucherId, ...byOrg(orgId) })
         if (voucher) {
           const columns = clearVoucherUsedColumns(
             voucher.columns && typeof voucher.columns === "object" && !Array.isArray(voucher.columns)
               ? voucher.columns
               : {},
           )
-          await vouchers.updateOne({ _id: voucherId }, { $set: { columns } })
+          await vouchers.updateOne({ _id: voucherId, ...byOrg(orgId) }, { $set: { columns } })
         }
       }
 
-      await sales.deleteOne({ _id: saleId })
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await sales.deleteOne({ _id: saleId, ...byOrg(orgId) })
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
 
       const label =
         typeof sale.customerPhone === "string" && sale.customerPhone.trim()
@@ -1529,6 +1613,7 @@ export function createCatalogRouter(deps) {
 
   router.post("/locations", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const name = typeof req.body?.name === "string" ? req.body.name.trim() : ""
       const address = typeof req.body?.address === "string" ? req.body.address.trim() : ""
       const managerUserId =
@@ -1553,11 +1638,12 @@ export function createCatalogRouter(deps) {
       /** @type {Record<string, unknown>} */
       let doc
       if (managerUserId) {
-        const agent = await getActiveSalesAgentName(users, managerUserId)
+        const agent = await getActiveSalesAgentName(users, managerUserId, orgId)
         if (!agent.ok) return res.status(400).json({ error: agent.error })
-        await clearSalesAgentFromOtherLocations(locations, users, managerUserId, undefined)
+        await clearSalesAgentFromOtherLocations(locations, users, managerUserId, undefined, orgId)
         doc = {
           _id: id,
+          orgId,
           name,
           address,
           manager: agent.name,
@@ -1571,11 +1657,12 @@ export function createCatalogRouter(deps) {
         const label = managerText || UNASSIGNED_MANAGER_LABEL
         const resolvedId = await tryResolveUniqueSalesAgentIdFromManagerName(users, label)
         if (resolvedId) {
-          const agent = await getActiveSalesAgentName(users, resolvedId)
+          const agent = await getActiveSalesAgentName(users, resolvedId, orgId)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
-          await clearSalesAgentFromOtherLocations(locations, users, resolvedId, undefined)
+          await clearSalesAgentFromOtherLocations(locations, users, resolvedId, undefined, orgId)
           doc = {
             _id: id,
+            orgId,
             name,
             address,
             manager: agent.name,
@@ -1588,6 +1675,7 @@ export function createCatalogRouter(deps) {
         } else {
           doc = {
             _id: id,
+            orgId,
             name,
             address,
             manager: label,
@@ -1610,6 +1698,7 @@ export function createCatalogRouter(deps) {
 
   router.patch("/locations/:id", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = req.params.id
       const body = req.body && typeof req.body === "object" ? req.body : {}
       const name = typeof body.name === "string" ? body.name.trim() : undefined
@@ -1640,9 +1729,9 @@ export function createCatalogRouter(deps) {
           $unset.managerUserId = ""
         } else if (typeof managerUserIdRaw === "string" && managerUserIdRaw.trim()) {
           const uid = managerUserIdRaw.trim()
-          const agent = await getActiveSalesAgentName(users, uid)
+          const agent = await getActiveSalesAgentName(users, uid, orgId)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
-          await clearSalesAgentFromOtherLocations(locations, users, uid, id)
+          await clearSalesAgentFromOtherLocations(locations, users, uid, id, orgId)
           $set.managerUserId = uid
           $set.manager = agent.name
         } else {
@@ -1652,9 +1741,9 @@ export function createCatalogRouter(deps) {
         if (!manager) return res.status(400).json({ error: "Manager is required." })
         const resolvedId = await tryResolveUniqueSalesAgentIdFromManagerName(users, manager)
         if (resolvedId) {
-          const agent = await getActiveSalesAgentName(users, resolvedId)
+          const agent = await getActiveSalesAgentName(users, resolvedId, orgId)
           if (!agent.ok) return res.status(400).json({ error: agent.error })
-          await clearSalesAgentFromOtherLocations(locations, users, resolvedId, id)
+          await clearSalesAgentFromOtherLocations(locations, users, resolvedId, id, orgId)
           $set.manager = agent.name
           $set.managerUserId = resolvedId
         } else {
@@ -1688,9 +1777,9 @@ export function createCatalogRouter(deps) {
       const update = {}
       if (Object.keys($set).length > 0) update.$set = $set
       if (Object.keys($unset).length > 0) update.$unset = $unset
-      const r = await locations.updateOne({ _id: id }, update)
+      const r = await locations.updateOne({ _id: id, ...byOrg(orgId) }, update)
       if (r.matchedCount === 0) return res.status(404).json({ error: "Location not found." })
-      const doc = await locations.findOne({ _id: id })
+      const doc = await locations.findOne({ _id: id, ...byOrg(orgId) })
       if (!doc) return res.status(404).json({ error: "Location not found." })
       await appendAuditLog(auditLogs, req.auth, `Updated location "${doc.name}" (${id})`)
       res.json({ location: toLocation(doc) })
@@ -1703,6 +1792,7 @@ export function createCatalogRouter(deps) {
 
   router.put("/locations/:id/promo", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = String(req.params.id || "").trim()
       const code = typeof req.body?.code === "string" ? req.body.code.trim().slice(0, 64) : ""
       const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 280) : ""
@@ -1721,13 +1811,13 @@ export function createCatalogRouter(deps) {
         return res.status(400).json({ error: "Enter a promo code before turning the promo on." })
       }
 
-      const loc = await locations.findOne({ _id: id })
+      const loc = await locations.findOne({ _id: id, ...byOrg(orgId) })
       if (!loc) return res.status(404).json({ error: "Location not found." })
 
       if (!code && !message) {
-        await locations.updateOne({ _id: id }, { $unset: { promo: "" } })
+        await locations.updateOne({ _id: id, ...byOrg(orgId) }, { $unset: { promo: "" } })
         await appendAuditLog(auditLogs, req.auth, `Cleared promo for location "${loc.name}" (${id})`)
-        const cleared = await locations.findOne({ _id: id })
+        const cleared = await locations.findOne({ _id: id, ...byOrg(orgId) })
         return res.json({ location: toLocation(cleared) })
       }
 
@@ -1739,13 +1829,13 @@ export function createCatalogRouter(deps) {
         updatedAt: new Date().toISOString(),
         updatedBy: req.auth?.userId ?? null,
       }
-      await locations.updateOne({ _id: id }, { $set: { promo } })
+      await locations.updateOne({ _id: id, ...byOrg(orgId) }, { $set: { promo } })
       await appendAuditLog(
         auditLogs,
         req.auth,
         `${active ? "Enabled" : "Saved"} promo for location "${loc.name}" (${id})${code ? ` — code ${code}` : ""}${percentOff > 0 ? ` (${percentOff}% off)` : ""}`,
       )
-      const doc = await locations.findOne({ _id: id })
+      const doc = await locations.findOne({ _id: id, ...byOrg(orgId) })
       res.json({ location: toLocation(doc) })
     } catch (err) {
       console.error(err)
@@ -1756,6 +1846,7 @@ export function createCatalogRouter(deps) {
 
   router.get("/locations/:locationId/customer-numbers", requireSalesAgentOrAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const locationId = String(req.params.locationId || "").trim()
       if (!locationId) return res.status(400).json({ error: "locationId is required." })
 
@@ -1765,6 +1856,7 @@ export function createCatalogRouter(deps) {
           users,
           req.auth.userId,
           undefined,
+          orgId,
         )
         if (!agentLoc) {
           return res.status(403).json({
@@ -1776,12 +1868,12 @@ export function createCatalogRouter(deps) {
         }
       }
 
-      const loc = await locations.findOne({ _id: locationId })
+      const loc = await locations.findOne({ _id: locationId, ...byOrg(orgId) })
       if (!loc) return res.status(404).json({ error: "Location not found." })
 
       const saleDocs = await sales
         .find(
-          { ...CUSTOMER_SALE_FILTER, locationId },
+          { ...CUSTOMER_SALE_FILTER, ...byOrg(orgId), locationId },
           {
             projection: {
               customerPhone: 1,
@@ -1797,7 +1889,7 @@ export function createCatalogRouter(deps) {
 
       const phoneLocations = buildPhoneLocationMap(saleDocs)
       const aggregated = aggregateCustomers(saleDocs)
-      const profileIndex = await loadCustomerProfileIndex(customerProfiles)
+      const profileIndex = await loadCustomerProfileIndex(customerProfiles, orgId)
       const customers = applyCustomerProfiles(aggregated, profileIndex, locationId, phoneLocations)
 
       res.json({
@@ -1871,10 +1963,11 @@ export function createCatalogRouter(deps) {
       const displayName = hasDisplayName ? normalizeDisplayNameInput(req.body.displayName) : undefined
       const excluded = hasExcluded ? Boolean(req.body.excluded) : undefined
 
-      const id = customerProfileId(resolved.scope, parsedPhone.phoneKey)
+      const id = customerProfileId(resolved.scope, parsedPhone.phoneKey, req.auth.orgId)
       const now = new Date().toISOString()
       /** @type {Record<string, unknown>} */
       const setFields = {
+        orgId: req.auth.orgId,
         scope: resolved.scope,
         phoneKey: parsedPhone.phoneKey,
         phone: parsedPhone.phone,
@@ -1934,6 +2027,7 @@ export function createCatalogRouter(deps) {
   // Send an SMS update to one customer, or broadcast to every customer in the current scope.
   router.post("/customers/sms", requireSalesAgentOrAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const message = typeof req.body?.message === "string" ? req.body.message.trim() : ""
       const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : ""
       const requested = String(req.body?.locationId || "").trim()
@@ -1945,11 +2039,17 @@ export function createCatalogRouter(deps) {
       }
 
       /** @type {Record<string, unknown>} */
-      const filter = { ...CUSTOMER_SALE_FILTER }
+      const filter = { ...CUSTOMER_SALE_FILTER, ...byOrg(orgId) }
       let scopeLabel = "All locations"
 
       if (req.auth.role !== "Admin") {
-        const agentLoc = await findConflictingLocationForSalesAgent(locations, users, req.auth.userId, undefined)
+        const agentLoc = await findConflictingLocationForSalesAgent(
+          locations,
+          users,
+          req.auth.userId,
+          undefined,
+          orgId,
+        )
         if (!agentLoc) {
           return res.status(403).json({
             error: "No location is assigned to your sales account. Ask an administrator to link you to a store.",
@@ -1958,7 +2058,7 @@ export function createCatalogRouter(deps) {
         filter.locationId = String(agentLoc._id)
         scopeLabel = typeof agentLoc.name === "string" ? agentLoc.name : String(agentLoc._id)
       } else if (requested && requested !== "all") {
-        const loc = await locations.findOne({ _id: requested })
+        const loc = await locations.findOne({ _id: requested, ...byOrg(orgId) })
         if (!loc) return res.status(404).json({ error: "Location not found." })
         filter.locationId = requested
         scopeLabel = typeof loc.name === "string" ? loc.name : requested
@@ -2032,16 +2132,17 @@ export function createCatalogRouter(deps) {
 
   router.delete("/locations/:id", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = req.params.id
-      const saleCount = await sales.countDocuments({ locationId: id })
+      const saleCount = await sales.countDocuments({ locationId: id, ...byOrg(orgId) })
       if (saleCount > 0) {
         return res.status(409).json({
           error: `This location cannot be deleted while ${saleCount} sale record(s) reference it.`,
         })
       }
-      const existing = await locations.findOne({ _id: id })
+      const existing = await locations.findOne({ _id: id, ...byOrg(orgId) })
       if (!existing) return res.status(404).json({ error: "Location not found." })
-      const r = await locations.deleteOne({ _id: id })
+      const r = await locations.deleteOne({ _id: id, ...byOrg(orgId) })
       if (r.deletedCount === 0) return res.status(404).json({ error: "Location not found." })
       await appendAuditLog(
         auditLogs,
@@ -2078,7 +2179,7 @@ export function createCatalogRouter(deps) {
         ...extras.fields,
       }
       await packages.insertOne(doc)
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, req.auth.orgId)
       const saved = await packages.findOne({ _id: id })
       await appendAuditLog(auditLogs, req.auth, `Created package "${name}" (${id})`)
       res.status(201).json({ package: toPackage(saved ?? doc) })
@@ -2091,6 +2192,7 @@ export function createCatalogRouter(deps) {
 
   router.patch("/packages/:id", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = req.params.id
       const locationIdQuery = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
       const locationIdBody = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
@@ -2128,15 +2230,17 @@ export function createCatalogRouter(deps) {
       // Scoped edit: only this hostel's view should change. Fork the package when it's actually
       // shared with other locations so the original keeps serving them unchanged.
       if (locationId) {
-        const loc = await locations.findOne({ _id: locationId })
+        const loc = await locations.findOne({ _id: locationId, ...byOrg(orgId) })
         if (!loc) return res.status(404).json({ error: "Unknown location." })
         const locName = typeof loc.name === "string" && loc.name.trim() ? loc.name.trim() : locationId
 
         const otherLocationVoucherCount = await vouchers.countDocuments({
+          ...byOrg(orgId),
           packageId: id,
           locationId: { $ne: locationId },
         })
         const otherLocationSaleCount = await sales.countDocuments({
+          ...byOrg(orgId),
           packageId: id,
           locationId: { $ne: locationId },
         })
@@ -2158,7 +2262,7 @@ export function createCatalogRouter(deps) {
           const voucherSet = { packageId: newId }
           if (typeof fields.name === "string") voucherSet.packageName = fields.name
           await vouchers.updateMany(
-            { packageId: id, locationId },
+            { ...byOrg(orgId), packageId: id, locationId },
             { $set: voucherSet },
           )
 
@@ -2166,11 +2270,11 @@ export function createCatalogRouter(deps) {
           const salesSet = { packageId: newId }
           if (typeof fields.name === "string") salesSet.packageType = fields.name
           await sales.updateMany(
-            { packageId: id, locationId },
+            { ...byOrg(orgId), packageId: id, locationId },
             { $set: salesSet },
           )
 
-          await syncPackageStockUnitsFromVouchers(vouchers, packages)
+          await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
           const saved = await packages.findOne({ _id: newId })
           if (!saved) return res.status(500).json({ error: "Failed to load forked package." })
 
@@ -2189,11 +2293,11 @@ export function createCatalogRouter(deps) {
 
       // Keep voucher/sales display fields in sync with the package they reference.
       if (typeof fields.name === "string") {
-        await vouchers.updateMany({ packageId: id }, { $set: { packageName: fields.name } })
-        await sales.updateMany({ packageId: id }, { $set: { packageType: fields.name } })
+        await vouchers.updateMany({ ...byOrg(orgId), packageId: id }, { $set: { packageName: fields.name } })
+        await sales.updateMany({ ...byOrg(orgId), packageId: id }, { $set: { packageType: fields.name } })
       }
 
-      await syncPackageStockUnitsFromVouchers(vouchers, packages)
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
       const doc = await packages.findOne({ _id: id })
       if (!doc) return res.status(404).json({ error: "Package not found." })
       await appendAuditLog(auditLogs, req.auth, `Updated package "${doc.name}" (${id})`)
@@ -2227,14 +2331,15 @@ export function createCatalogRouter(deps) {
 
   router.patch("/disputes/:id", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = req.params.id
       const status = typeof req.body?.status === "string" ? req.body.status.trim() : ""
       if (status !== "Resolved") {
         return res.status(400).json({ error: "Only status Resolved is supported." })
       }
-      const r = await disputes.updateOne({ _id: id }, { $set: { status: "Resolved" } })
+      const r = await disputes.updateOne({ _id: id, ...byOrg(orgId) }, { $set: { status: "Resolved" } })
       if (r.matchedCount === 0) return res.status(404).json({ error: "Dispute not found." })
-      const doc = await disputes.findOne({ _id: id })
+      const doc = await disputes.findOne({ _id: id, ...byOrg(orgId) })
       if (!doc) return res.status(404).json({ error: "Dispute not found." })
       await appendAuditLog(
         auditLogs,

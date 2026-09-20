@@ -3,10 +3,16 @@ import express from "express"
 import { appendAuditLog } from "../lib/appendAuditLog.js"
 import { buildWeeklyFinanceSummary, EXPENSE_CATEGORIES } from "../lib/financeCalculations.js"
 import { resolveFinancePeriod } from "../lib/financeWeek.js"
-import { hostelCommissionRateFromDoc, lightBillAmountFromDoc, normalizeHostelCommissionRate, normalizeLightBillAmount } from "../lib/locationCommission.js"
+import {
+  hostelCommissionRateFromDoc,
+  lightBillAmountFromDoc,
+  normalizeHostelCommissionRate,
+  normalizeLightBillAmount,
+} from "../lib/locationCommission.js"
+import { byOrg } from "../lib/organizations.js"
 import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { roundMoney } from "../lib/promoDiscount.js"
-import { createVerifyJwt, requireAdmin } from "../middleware/authJwt.js"
+import { createVerifyJwt, requireAdmin, requireOrg } from "../middleware/authJwt.js"
 
 /**
  * @param {import("mongodb").Document} d
@@ -58,9 +64,11 @@ export function createFinanceRouter(deps) {
   const router = express.Router()
   router.use(createVerifyJwt(jwtSecret))
   router.use(requireAdmin)
+  router.use(requireOrg)
 
   router.get("/summary", async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const dateParam = typeof req.query?.date === "string" ? req.query.date.trim().slice(0, 10) : ""
       const fromParam = typeof req.query?.from === "string" ? req.query.from.trim().slice(0, 10) : ""
       const toParam = typeof req.query?.to === "string" ? req.query.to.trim().slice(0, 10) : ""
@@ -77,9 +85,11 @@ export function createFinanceRouter(deps) {
         weekStart,
         weekEnd,
         lightBillWeeks,
+        orgId,
       )
-      const snapshot =
-        isFinanceWeek ? await financeWeeklySnapshots.findOne({ weekStart }) : null
+      const snapshot = isFinanceWeek
+        ? await financeWeeklySnapshots.findOne({ orgId, weekStart })
+        : null
       res.json({
         ...summary,
         isFinanceWeek,
@@ -101,6 +111,7 @@ export function createFinanceRouter(deps) {
 
   router.post("/expenses", async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const title = typeof req.body?.title === "string" ? req.body.title.trim() : ""
       const category = typeof req.body?.category === "string" ? req.body.category.trim() : ""
       const amount = Number(req.body?.amount)
@@ -122,7 +133,7 @@ export function createFinanceRouter(deps) {
       let locationId = null
       if (locationIdRaw != null && locationIdRaw !== "" && locationIdRaw !== "general") {
         locationId = String(locationIdRaw).trim()
-        const loc = await locations.findOne({ _id: locationId })
+        const loc = await locations.findOne({ _id: locationId, ...byOrg(orgId) })
         if (!loc) return res.status(404).json({ error: "Location not found." })
       }
 
@@ -130,6 +141,7 @@ export function createFinanceRouter(deps) {
       const id = `exp-${randomUUID().slice(0, 12)}`
       const doc = {
         _id: id,
+        orgId,
         title,
         category,
         amount: roundMoney(amount),
@@ -156,8 +168,9 @@ export function createFinanceRouter(deps) {
 
   router.get("/expenses", async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       /** @type {Record<string, unknown>} */
-      const filter = {}
+      const filter = { ...byOrg(orgId) }
       const locationId = typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
       const from = typeof req.query?.from === "string" ? req.query.from.trim().slice(0, 10) : ""
       const to = typeof req.query?.to === "string" ? req.query.to.trim().slice(0, 10) : ""
@@ -184,11 +197,12 @@ export function createFinanceRouter(deps) {
 
   router.delete("/expenses/:id", async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = String(req.params.id || "").trim()
       if (!id) return res.status(400).json({ error: "Expense id is required." })
-      const existing = await expenses.findOne({ _id: id })
+      const existing = await expenses.findOne({ _id: id, ...byOrg(orgId) })
       if (!existing) return res.status(404).json({ error: "Expense not found." })
-      await expenses.deleteOne({ _id: id })
+      await expenses.deleteOne({ _id: id, ...byOrg(orgId) })
       await appendAuditLog(auditLogs, req.auth, `Deleted expense "${existing.title}" (${id})`)
       res.json({ ok: true })
     } catch (err) {
@@ -198,9 +212,9 @@ export function createFinanceRouter(deps) {
     }
   })
 
-  router.get("/locations", async (_req, res) => {
+  router.get("/locations", async (req, res) => {
     try {
-      const docs = await locations.find({}).sort({ name: 1 }).toArray()
+      const docs = await locations.find(byOrg(req.auth.orgId)).sort({ name: 1 }).toArray()
       res.json({ locations: docs.map(toFinanceLocation) })
     } catch (err) {
       console.error(err)
@@ -211,6 +225,7 @@ export function createFinanceRouter(deps) {
 
   router.put("/locations/:id", async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = String(req.params.id || "").trim()
       const body = req.body && typeof req.body === "object" ? req.body : {}
       /** @type {Record<string, unknown>} */
@@ -236,9 +251,9 @@ export function createFinanceRouter(deps) {
         return res.status(400).json({ error: "No valid fields to update." })
       }
 
-      const r = await locations.updateOne({ _id: id }, { $set })
+      const r = await locations.updateOne({ _id: id, ...byOrg(orgId) }, { $set })
       if (r.matchedCount === 0) return res.status(404).json({ error: "Location not found." })
-      const result = await locations.findOne({ _id: id })
+      const result = await locations.findOne({ _id: id, ...byOrg(orgId) })
       if (!result) return res.status(404).json({ error: "Location not found." })
 
       if ($set.commissionRate != null) {
@@ -252,7 +267,7 @@ export function createFinanceRouter(deps) {
         await appendAuditLog(
           auditLogs,
           req.auth,
-          `Updated light bill for "${result.name}" to GH₵${$set.lightBillAmount}`,
+          `Updated light bill for "${result.name}" to GH₵ ${$set.lightBillAmount}`,
         )
       }
 

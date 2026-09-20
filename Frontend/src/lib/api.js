@@ -13,6 +13,13 @@ function parseAppSettingsPayload(data) {
     typeof data.companyLogoUrl === "string" && data.companyLogoUrl.trim()
       ? data.companyLogoUrl.trim()
       : null
+  const organization =
+    data.organization && typeof data.organization === "object"
+      ? {
+          id: typeof data.organization.id === "string" ? data.organization.id : "",
+          name: typeof data.organization.name === "string" ? data.organization.name : "",
+        }
+      : null
 
   return {
     salesAgentCommissionRate: data.salesAgentCommissionRate,
@@ -25,6 +32,7 @@ function parseAppSettingsPayload(data) {
     alertPhone: typeof data.alertPhone === "string" ? data.alertPhone.trim() : "",
     purchaseAlertsEnabled: typeof data.purchaseAlertsEnabled === "boolean" ? data.purchaseAlertsEnabled : true,
     promosVisible: typeof data.promosVisible === "boolean" ? data.promosVisible : true,
+    organization,
   }
 }
 
@@ -302,11 +310,21 @@ export async function authSendSignupOtp(phone) {
  * @param {string} phone
  * @param {string} password
  * @param {string} otp
+ * @param {string} [organizationName]
  */
-export async function authSignup(name, email, phone, password, otp) {
+export async function authSignup(name, email, phone, password, otp, organizationName) {
   const { res, data } = await parseJsonResponse("/api/auth/signup", {
     method: "POST",
-    body: JSON.stringify({ name, email, phone, password, otp }),
+    body: JSON.stringify({
+      name,
+      email,
+      phone,
+      password,
+      otp,
+      ...(organizationName && organizationName.trim()
+        ? { organizationName: organizationName.trim() }
+        : {}),
+    }),
   })
   if (res.status === 409) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : "Account already exists."
@@ -1159,9 +1177,11 @@ export async function fetchAppSettings(token) {
  *   salesAgentCommissionPercent?: number
  *   appName?: string
  *   companyName?: string
+ *   organizationName?: string
  *   companyLogoUrl?: string | null
  *   alertPhone?: string | null
  *   purchaseAlertsEnabled?: boolean
+ *   promosVisible?: boolean
  * }} body
  */
 export async function updateAppSettings(token, body) {

@@ -5,6 +5,7 @@
  * @property {string} email
  * @property {string} [phone]
  * @property {string} role
+ * @property {string} [orgId]
  */
 
 /**

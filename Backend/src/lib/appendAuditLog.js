@@ -15,8 +15,13 @@ export async function appendAuditLog(auditLogs, auth, action) {
   const at = new Date().toISOString()
   const text = String(action).trim().slice(0, 500)
   if (!text) return
+  /** @type {Record<string, unknown>} */
+  const doc = { _id: id, actor, action: text, at }
+  if (auth && typeof auth.orgId === "string" && auth.orgId.trim()) {
+    doc.orgId = auth.orgId.trim()
+  }
   try {
-    await auditLogs.insertOne({ _id: id, actor, action: text, at })
+    await auditLogs.insertOne(doc)
   } catch (err) {
     console.error("[appendAuditLog]", err)
   }

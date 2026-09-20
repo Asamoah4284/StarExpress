@@ -22,8 +22,9 @@ import { formatPhoneNumber } from "../lib/ussdHelpers.js"
 import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
 
 /**
- * Captive portal (/buy) — FreeRADIUS automatic authentication only.
- * No voucher codes, voucher SMS, or voucher UI for this channel.
+ * Captive portal (/buy) — FreeRADIUS shareable login codes.
+ * After MoMo, credentials are written to RADIUS and sent by SMS. The buyer (or
+ * someone else) types the code on the Grandstream WiFi login page.
  *
  * @param {{
  *   locations: import("mongodb").Collection
@@ -40,6 +41,35 @@ export function createPortalRouter(deps) {
   const router = express.Router()
 
   /**
+   * @param {import("mongodb").Document | null | undefined} sale
+   * @param {Record<string, unknown>} [extra]
+   */
+  function captiveSalePayload(sale, extra = {}) {
+    const voucherCode = typeof sale?.voucherCode === "string" ? sale.voucherCode.trim() : ""
+    const username =
+      typeof sale?.radiusUsername === "string" && sale.radiusUsername.trim()
+        ? sale.radiusUsername.trim()
+        : voucherCode
+    const password =
+      typeof sale?.radiusPassword === "string" && sale.radiusPassword.trim()
+        ? sale.radiusPassword.trim()
+        : username
+    return {
+      success: true,
+      packageName:
+        typeof sale?.packageType === "string" && sale.packageType.trim()
+          ? sale.packageType.trim()
+          : "WiFi",
+      voucherCode,
+      username,
+      password,
+      smsSent: sale?.smsSent === true,
+      hotspot: true,
+      ...extra,
+    }
+  }
+
+  /**
    * @param {import("mongodb").Document} loc
    */
   async function getVisiblePromoForLocation(loc) {
@@ -48,7 +78,8 @@ export function createPortalRouter(deps) {
     const code = typeof promo.code === "string" ? promo.code.trim() : ""
     if (!code) return null
     try {
-      const settings = await getAppSettings(appSettings)
+      const orgId = typeof loc?.orgId === "string" ? loc.orgId : undefined
+      const settings = await getAppSettings(appSettings, orgId)
       if (!settings.promosVisible) return null
     } catch {
       return null
@@ -72,7 +103,8 @@ export function createPortalRouter(deps) {
     const code = typeof promo.code === "string" ? promo.code.trim() : ""
     if (!code || code.toLowerCase() !== submitted.toLowerCase()) return null
     try {
-      const settings = await getAppSettings(appSettings)
+      const orgId = typeof loc?.orgId === "string" ? loc.orgId : undefined
+      const settings = await getAppSettings(appSettings, orgId)
       if (!settings.promosVisible) return null
     } catch {
       return null
@@ -129,10 +161,10 @@ export function createPortalRouter(deps) {
         ssid: portalParams.ssid,
       })
 
-      if (!hasCaptivePortalAuthParams(portalParams)) {
-        return res.status(400).json({
+      if (!isRadiusConfigured()) {
+        return res.status(503).json({
           error:
-            "Missing captive portal session (login_url / client_mac). Connect through the WiFi hotspot splash page to buy access.",
+            "WiFi login codes are temporarily unavailable (RADIUS database not configured). Please try again later.",
         })
       }
 
@@ -151,6 +183,7 @@ export function createPortalRouter(deps) {
 
       const loc = await locations.findOne({ _id: locationId })
       if (!loc) return res.status(400).json({ error: "Unknown location." })
+      const locOrgId = typeof loc.orgId === "string" ? loc.orgId.trim() : ""
 
       const pkg = await packages.findOne({ _id: packageId })
       if (!pkg) return res.status(400).json({ error: "Unknown package." })
@@ -186,6 +219,7 @@ export function createPortalRouter(deps) {
         customerPhone,
         packageId,
         locationId,
+        ...(locOrgId ? { orgId: locOrgId } : {}),
         amount,
         basePrice: priceGHS,
         promoCode: appliedPromo?.code ?? null,
@@ -254,16 +288,12 @@ export function createPortalRouter(deps) {
 
       let existingSale = await sales.findOne({ paymentReference })
       if (existingSale) {
-        return res.json({
-          success: true,
-          packageName:
-            typeof existingSale.packageType === "string" && existingSale.packageType.trim()
-              ? existingSale.packageType.trim()
-              : "WiFi",
-          paymentReference,
-          hotspot: true,
-          idempotent: true,
-        })
+        return res.json(
+          captiveSalePayload(existingSale, {
+            paymentReference,
+            idempotent: true,
+          }),
+        )
       }
 
       const verified = await verifyMoolrePaymentWithRetry(paymentReference)
@@ -285,29 +315,29 @@ export function createPortalRouter(deps) {
         const msg =
           outcome.status === "no_pending"
             ? "Payment is still processing. Please wait and try again."
-            : outcome.status === "missing_portal_params"
-              ? "Missing captive portal session data. Reconnect to WiFi and try again from the hotspot splash page."
+            : outcome.status === "radius_unavailable" || outcome.status === "radius_failed"
+              ? "Payment was received but WiFi login could not be created. Please contact support with your payment phone number."
               : "Could not complete your purchase. Please contact support."
         return res.status(retryable ? 409 : 400).json({ error: msg })
       }
 
       existingSale = await sales.findOne({ paymentReference })
-      res.json({
-        success: true,
-        packageName:
-          typeof existingSale?.packageType === "string" && existingSale.packageType.trim()
-            ? existingSale.packageType.trim()
-            : "WiFi",
-        paymentReference,
-        hotspot: true,
-      })
+      res.json(
+        captiveSalePayload(existingSale, {
+          paymentReference,
+          voucherCode: outcome.voucherCode || existingSale?.voucherCode || "",
+          username: outcome.username || "",
+          password: outcome.password || "",
+          smsSent: outcome.smsSent === true,
+        }),
+      )
     } catch (err) {
       console.error("[portal] POST /payments/complete", err)
       res.status(500).json({ error: "Failed to complete payment." })
     }
   })
 
-  // Poll while the Moolre POS iframe is open — ready once the RADIUS sale record exists.
+  // Poll while the Moolre POS iframe is open — ready once the RADIUS login code exists.
   router.get("/payments/status", async (req, res) => {
     try {
       const paymentReference =
@@ -337,12 +367,14 @@ export function createPortalRouter(deps) {
         return res.json({ ready: false })
       }
 
+      const payload = captiveSalePayload(sale)
       return res.json({
         ready: true,
-        packageName:
-          typeof sale.packageType === "string" && sale.packageType.trim()
-            ? sale.packageType.trim()
-            : "WiFi",
+        packageName: payload.packageName,
+        voucherCode: payload.voucherCode,
+        username: payload.username,
+        password: payload.password,
+        smsSent: payload.smsSent,
         hotspot: true,
       })
     } catch (err) {
@@ -352,8 +384,9 @@ export function createPortalRouter(deps) {
   })
 
   /**
-   * After MoMo success: write FreeRADIUS credentials and return Grandstream authorizeUrl.
-   * This is the only successful outcome for captive purchases — never falls back to vouchers.
+   * Legacy: write extra RADIUS creds and return Grandstream authorizeUrl.
+   * Captive /buy no longer auto-redirects here — codes are created at payment fulfillment.
+   * If the sale already has a shareable code, return it without writing a second RADIUS user.
    */
   router.post("/payments/radius-authorize", async (req, res) => {
     try {
@@ -369,6 +402,27 @@ export function createPortalRouter(deps) {
       const sale = await sales.findOne({ paymentReference })
       if (!sale) {
         return res.status(409).json({ error: "Payment is not complete yet. Wait a moment and try again." })
+      }
+
+      const existingCode =
+        (typeof sale.radiusUsername === "string" && sale.radiusUsername.trim()) ||
+        (typeof sale.voucherCode === "string" && sale.voucherCode.trim()) ||
+        ""
+      if (existingCode) {
+        const password =
+          typeof sale.radiusPassword === "string" && sale.radiusPassword.trim()
+            ? sale.radiusPassword.trim()
+            : existingCode
+        return res.json({
+          success: true,
+          hotspot: true,
+          authorizeUrl: null,
+          username: existingCode,
+          password,
+          voucherCode: existingCode,
+          paymentReference,
+          idempotent: true,
+        })
       }
 
       const pendingDoc = await agentPaymentPending.findOne({ _id: paymentReference })
@@ -500,7 +554,7 @@ export function createPortalRouter(deps) {
   })
 
   /**
-   * Legacy / agent-sold voucher lookup (not used by FreeRADIUS captive purchases).
+   * Lookup recent WiFi codes sold to this phone (captive RADIUS codes, agent, USSD).
    */
   router.post("/vouchers/retrieve", async (req, res) => {
     try {
@@ -517,7 +571,7 @@ export function createPortalRouter(deps) {
         return res.json({
           vouchers: [],
           message:
-            "No vouchers found for this number. If you bought WiFi on this hotspot, access is granted automatically after payment — reconnect to the network.",
+            "No WiFi codes found for this number. If you just paid, wait a moment and try again, or check the SMS we sent.",
         })
       }
 

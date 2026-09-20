@@ -32,6 +32,7 @@ function settingsFromResponse(r) {
     alertPhone: r.alertPhone ?? "",
     purchaseAlertsEnabled: r.purchaseAlertsEnabled ?? true,
     promosVisible: r.promosVisible ?? true,
+    organization: r.organization ?? null,
   }
 }
 
@@ -43,6 +44,7 @@ export default function Settings() {
 
   const [appName, setAppName] = React.useState(getDefaultAppName())
   const [companyName, setCompanyName] = React.useState(getDefaultCompanyName())
+  const [organizationName, setOrganizationName] = React.useState("")
   const [companyLogoUrl, setCompanyLogoUrl] = React.useState(/** @type {string | null} */ (null))
   const [logoError, setLogoError] = React.useState(/** @type {string | null} */ (null))
   const [commissionPercent, setCommissionPercent] = React.useState(() =>
@@ -97,6 +99,7 @@ export default function Settings() {
   const loadedRate = settingsQuery.data?.salesAgentCommissionRate
   const loadedAppName = settingsQuery.data?.appName
   const loadedCompanyName = settingsQuery.data?.companyName
+  const loadedOrganizationName = settingsQuery.data?.organization?.name
   const loadedCompanyLogoUrl = settingsQuery.data?.companyLogoUrl
   const loadedAlertPhone = settingsQuery.data?.alertPhone
   const loadedPurchaseAlertsEnabled = settingsQuery.data?.purchaseAlertsEnabled
@@ -119,6 +122,12 @@ export default function Settings() {
       setCompanyName(loadedCompanyName.trim())
     }
   }, [loadedCompanyName])
+
+  React.useEffect(() => {
+    if (typeof loadedOrganizationName === "string" && loadedOrganizationName.trim()) {
+      setOrganizationName(loadedOrganizationName.trim())
+    }
+  }, [loadedOrganizationName])
 
   React.useEffect(() => {
     if (typeof loadedCompanyLogoUrl === "string" && loadedCompanyLogoUrl.trim()) {
@@ -189,11 +198,14 @@ export default function Settings() {
       if (!token) throw new Error("Not signed in")
       const name = appName.trim()
       const company = companyName.trim()
+      const orgName = organizationName.trim()
       if (!name) throw new Error("App name cannot be empty.")
       if (!company) throw new Error("Company name cannot be empty.")
+      if (!orgName) throw new Error("WiFi group name cannot be empty.")
       const r = await updateAppSettings(token, {
         appName: name,
         companyName: company,
+        organizationName: orgName,
         companyLogoUrl,
       })
       if (!r.ok) throw new Error(r.error || "Failed to save company profile")
@@ -204,6 +216,7 @@ export default function Settings() {
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
       setAppName(settings.appName)
       setCompanyName(settings.companyName)
+      setOrganizationName(settings.organization?.name ?? organizationName.trim())
       setCompanyLogoUrl(settings.companyLogoUrl ?? null)
       setProfileMessage({ type: "ok", text: "Profile saved. Logo appears in the sidebar." })
     },
@@ -302,7 +315,7 @@ export default function Settings() {
     <div className="space-y-6">
       <PageHeader
         title="Settings"
-        description="Company profile, sales agent commission, and appearance."
+        description="WiFi group, company profile, sales agent commission, and appearance."
       />
 
       <Card className="border-border/80 shadow-sm">
@@ -509,11 +522,24 @@ export default function Settings() {
         <CardHeader>
           <CardTitle className="text-base">Company</CardTitle>
           <CardDescription>
-            App name and logo appear in the sidebar profile area; company name is used in exports.
+            Rename your WiFi group, set the app label and logo for the sidebar, and the company name used in exports.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSaveProfile} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="organization-name">WiFi group name</Label>
+              <Input
+                id="organization-name"
+                value={organizationName}
+                onChange={(e) => setOrganizationName(e.target.value)}
+                disabled={settingsQuery.isLoading || saveProfileMutation.isPending}
+                placeholder="Your WiFi group"
+              />
+              <p className="text-muted-foreground text-xs">
+                Private dashboard for this group’s locations, sales, finance, and agents.
+              </p>
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="app-name">App name</Label>
               <Input

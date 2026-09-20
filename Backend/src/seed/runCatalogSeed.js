@@ -4,6 +4,7 @@ import {
   SEED_PACKAGES,
   buildSeedSales,
 } from "./initialCatalog.js"
+import { DEFAULT_ORG_ID } from "../lib/organizations.js"
 
 /** Legacy demo audit rows shipped with early seeds (ids `a1` … `a15`). Removed on startup. */
 const LEGACY_DEMO_AUDIT_IDS = Array.from({ length: 15 }, (_, i) => `a${i + 1}`)
@@ -29,6 +30,7 @@ export async function seedCatalogIfEmpty(cols) {
     await locations.insertMany(
       SEED_LOCATIONS.map(({ id, name, address, manager, totalSales }) => ({
         _id: id,
+        orgId: DEFAULT_ORG_ID,
         name,
         address,
         manager,
@@ -57,6 +59,7 @@ export async function seedCatalogIfEmpty(cols) {
     await sales.insertMany(
       built.map(({ id, customerName, packageType, amount, locationId, date, status }) => ({
         _id: id,
+        orgId: DEFAULT_ORG_ID,
         customerName,
         packageType,
         amount,
@@ -72,6 +75,7 @@ export async function seedCatalogIfEmpty(cols) {
     await disputes.insertMany(
       SEED_DISPUTES.map(({ id, customer, issue, date, status }) => ({
         _id: id,
+        orgId: DEFAULT_ORG_ID,
         customer,
         issue,
         date,

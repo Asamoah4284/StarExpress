@@ -21,6 +21,7 @@ export function useAppSettings() {
         alertPhone: typeof r.alertPhone === "string" ? r.alertPhone : "",
         purchaseAlertsEnabled: typeof r.purchaseAlertsEnabled === "boolean" ? r.purchaseAlertsEnabled : true,
         promosVisible: typeof r.promosVisible === "boolean" ? r.promosVisible : true,
+        organization: r.organization ?? null,
       }
     },
     enabled: authReady && Boolean(token),

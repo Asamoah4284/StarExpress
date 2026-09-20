@@ -1,12 +1,12 @@
 /**
  * RADIUS side of Grandstream's External Captive Portal API.
  *
- * After a payment succeeds, call generateRadiusSession() to:
- *   1. Generate a temporary username/password for this client
- *   2. Write it into the RADIUS database (radcheck/radreply) with the
- *      package's time/data limit
- *   3. Return the authorize URL the browser must be sent to — hitting that
- *      URL makes the Grandstream AP submit the login to RADIUS and grant access.
+ * After payment, createShareableRadiusLogin() writes username/password into
+ * FreeRADIUS (radcheck/radreply). Grandstream checks those credentials when
+ * someone types them on the WiFi login page — Mongo voucher CSVs are not used.
+ *
+ * generateRadiusSession() still builds an authorizeUrl for optional auto-login;
+ * captive /buy no longer redirects there so codes can be shared.
  *
  * Reference: https://documentation.grandstream.com/knowledge-base/external-captive-portal-api-guide/
  */
@@ -71,6 +71,45 @@ function generateCredentials(clientMac) {
   const username = `gs-${safeMac || "unknown"}-${Date.now().toString(36)}`
   const password = crypto.randomBytes(12).toString("hex")
   return { username, password }
+}
+
+/** Avoid 0/O, 1/I/L so codes are easier to type on a phone. */
+const SHAREABLE_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+
+/**
+ * @param {number} [length]
+ */
+export function generateShareableWifiCode(length = 8) {
+  const n = Number.isFinite(length) && length > 0 ? Math.min(32, Math.floor(length)) : 8
+  const bytes = crypto.randomBytes(n)
+  let code = ""
+  for (let i = 0; i < n; i++) {
+    code += SHAREABLE_CODE_ALPHABET[bytes[i] % SHAREABLE_CODE_ALPHABET.length]
+  }
+  return code
+}
+
+/**
+ * Write FreeRADIUS credentials a person can type on the Grandstream login page.
+ * Username and password are the same code so SMS and the success screen stay simple.
+ *
+ * @param {string} packageId
+ * @param {{ name?: string, dataLimit?: string, radiusSessionTimeout?: unknown, radiusMaxOctets?: unknown } | null} [pkg]
+ * @returns {Promise<{ username: string, password: string, sessionTimeout: number | null, maxOctets: number | null }>}
+ */
+export async function createShareableRadiusLogin(packageId, pkg = null) {
+  const limits = resolveRadiusPackageLimits(packageId, pkg)
+  const sessionTimeout = limits.sessionTimeout || (limits.maxOctets ? null : 86400)
+  const maxOctets = limits.maxOctets
+  const code = generateShareableWifiCode(8)
+  await writeRadiusSession({
+    username: code,
+    password: code,
+    sessionTimeout,
+    maxOctets,
+  })
+  console.log("[portal] shareable radius login created", code)
+  return { username: code, password: code, sessionTimeout, maxOctets }
 }
 
 /**

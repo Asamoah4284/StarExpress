@@ -13,26 +13,37 @@ const MAX_DISPLAY_NAME_LENGTH = 80
 /**
  * @param {string} scope
  * @param {string} phoneKey
+ * @param {string} [orgId]
  */
-export function customerProfileId(scope, phoneKey) {
+export function customerProfileId(scope, phoneKey, orgId) {
+  const org = typeof orgId === "string" ? orgId.trim() : ""
+  if (org) return `${org}:${scope}:${phoneKey}`
   return `${scope}:${phoneKey}`
 }
 
 /**
  * Resolve list scope + sale filter for customer endpoints.
  * @param {{
- *   auth: { role: string, userId: string },
+ *   auth: { role: string, userId: string, orgId?: string },
  *   requestedLocationId: string,
  *   locations: import("mongodb").Collection,
  *   users: import("mongodb").Collection,
- *   findAgentLocation: typeof import("../routes/catalog.js").findConflictingLocationForSalesAgent,
+ *   findAgentLocation: (
+ *     locations: import("mongodb").Collection,
+ *     users: import("mongodb").Collection,
+ *     agentUserId: string,
+ *     excludeLocationId: string | undefined,
+ *     orgId?: string,
+ *   ) => Promise<import("mongodb").Document | null>,
  *   customerSaleFilter: Record<string, unknown>,
  * }} ctx
  */
 export async function resolveCustomerScope(ctx) {
   const requested = String(ctx.requestedLocationId || "").trim()
+  const orgId = typeof ctx.auth.orgId === "string" ? ctx.auth.orgId.trim() : ""
   /** @type {Record<string, unknown>} */
   const filter = { ...ctx.customerSaleFilter }
+  if (orgId) filter.orgId = orgId
   let scope = "all"
   let scopeLabel = "All locations"
 
@@ -42,6 +53,7 @@ export async function resolveCustomerScope(ctx) {
       ctx.users,
       ctx.auth.userId,
       undefined,
+      orgId || undefined,
     )
     if (!agentLoc) {
       return { error: "No location is assigned to your sales account. Ask an administrator to link you to a store.", status: 403 }
@@ -53,7 +65,8 @@ export async function resolveCustomerScope(ctx) {
   }
 
   if (requested && requested !== "all") {
-    const loc = await ctx.locations.findOne({ _id: requested })
+    const locFilter = orgId ? { _id: requested, orgId } : { _id: requested }
+    const loc = await ctx.locations.findOne(locFilter)
     if (!loc) return { error: "Location not found.", status: 404 }
     filter.locationId = requested
     scope = requested
@@ -65,10 +78,12 @@ export async function resolveCustomerScope(ctx) {
 
 /**
  * @param {import("mongodb").Collection} customerProfiles
+ * @param {string} [orgId]
  * @returns {Promise<CustomerProfileIndex>}
  */
-export async function loadCustomerProfileIndex(customerProfiles) {
-  const docs = await customerProfiles.find({}).toArray()
+export async function loadCustomerProfileIndex(customerProfiles, orgId) {
+  const org = typeof orgId === "string" ? orgId.trim() : ""
+  const docs = await customerProfiles.find(org ? { orgId: org } : {}).toArray()
   /** @type {CustomerProfileIndex} */
   const index = new Map()
   for (const doc of docs) {

@@ -77,11 +77,22 @@ async function syncPackageStockForLocation(packagesCol, vouchersCol, packageId, 
  *   customerPhone: string
  *   packageId: string
  *   locationId: string
+ *   orgId?: string
  * }} opts
  */
 export async function fulfillUssdVoucherSale(opts) {
-  const { packages, vouchers, sales, auditLogs, paymentReference, customerPhone, packageId, locationId } =
-    opts
+  const {
+    packages,
+    vouchers,
+    sales,
+    auditLogs,
+    paymentReference,
+    customerPhone,
+    packageId,
+    locationId,
+    orgId: orgIdOpt,
+  } = opts
+  const orgId = typeof orgIdOpt === "string" ? orgIdOpt.trim() : ""
 
   const existing = await sales.findOne({ paymentReference })
   if (existing) {
@@ -101,7 +112,10 @@ export async function fulfillUssdVoucherSale(opts) {
     return { ok: false, error: "Invalid package price." }
   }
 
-  const availFilter = buildPackageAvailabilityFilter(packageId, locationId)
+  const availFilter = {
+    ...buildPackageAvailabilityFilter(packageId, locationId),
+    ...(orgId ? { orgId } : {}),
+  }
   const voucherToUse = await vouchers.findOne(availFilter)
   if (!voucherToUse) {
     return { ok: false, error: "No vouchers in stock for this package." }
@@ -123,6 +137,7 @@ export async function fulfillUssdVoucherSale(opts) {
     packageId,
     amount: priceGHS,
     locationId,
+    ...(orgId ? { orgId } : {}),
     date,
     soldAt,
     status: "Completed",
@@ -171,6 +186,7 @@ export async function fulfillUssdVoucherSale(opts) {
     await auditLogs.insertOne({
       _id: `audit-${randomUUID().slice(0, 12)}`,
       actor: "USSD",
+      ...(orgId ? { orgId } : {}),
       action: `USSD sale ${saleId}: ${customerPhone} · ${packageType} · voucher ${voucherCode} · ${priceGHS} GHS · ref ${paymentReference}`,
       at: new Date().toISOString(),
     })

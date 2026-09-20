@@ -6,6 +6,12 @@ const MAX_ALERT_PHONE_LENGTH = 200
 const LOGO_DATA_URL_RE = /^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i
 const ALERT_PHONE_RE = /^[0-9+\-(),\s]+$/
 
+/** @param {string | undefined} orgId */
+function settingsDocId(orgId) {
+  const id = typeof orgId === "string" ? orgId.trim() : ""
+  return id || GLOBAL_SETTINGS_ID
+}
+
 /** @returns {string} */
 export function defaultAppName() {
   const raw = process.env.APP_NAME
@@ -91,9 +97,14 @@ export function normalizeCommissionRate(value) {
 
 /**
  * @param {import("mongodb").Collection} appSettings
+ * @param {string} [orgId]
  */
-export async function getSalesAgentCommissionRate(appSettings) {
-  const doc = await appSettings.findOne({ _id: GLOBAL_SETTINGS_ID })
+export async function getSalesAgentCommissionRate(appSettings, orgId) {
+  const docId = settingsDocId(orgId)
+  let doc = await appSettings.findOne({ _id: docId })
+  if (!doc && docId !== GLOBAL_SETTINGS_ID) {
+    doc = await appSettings.findOne({ _id: GLOBAL_SETTINGS_ID })
+  }
   const stored = doc && typeof doc.salesAgentCommissionRate === "number" ? doc.salesAgentCommissionRate : null
   const normalized = stored != null ? normalizeCommissionRate(stored) : null
   return normalized ?? defaultSalesAgentCommissionRate()
@@ -102,17 +113,19 @@ export async function getSalesAgentCommissionRate(appSettings) {
 /**
  * @param {import("mongodb").Collection} appSettings
  * @param {number} rate 0–1
- * @param {{ userId?: string } | undefined} auth
+ * @param {{ userId?: string, orgId?: string } | undefined} auth
  */
 export async function setSalesAgentCommissionRate(appSettings, rate, auth) {
   const normalized = normalizeCommissionRate(rate)
   if (normalized == null) {
     throw new Error("Invalid commission rate.")
   }
+  const docId = settingsDocId(auth?.orgId)
   await appSettings.updateOne(
-    { _id: GLOBAL_SETTINGS_ID },
+    { _id: docId },
     {
       $set: {
+        orgId: docId === GLOBAL_SETTINGS_ID ? undefined : docId,
         salesAgentCommissionRate: normalized,
         updatedAt: new Date().toISOString(),
         updatedBy: auth?.userId ?? null,
@@ -125,10 +138,15 @@ export async function setSalesAgentCommissionRate(appSettings, rate, auth) {
 
 /**
  * @param {import("mongodb").Collection} appSettings
+ * @param {string} [orgId]
  */
-export async function getAppSettings(appSettings) {
-  const doc = await appSettings.findOne({ _id: GLOBAL_SETTINGS_ID })
-  const salesAgentCommissionRate = await getSalesAgentCommissionRate(appSettings)
+export async function getAppSettings(appSettings, orgId) {
+  const docId = settingsDocId(orgId)
+  let doc = await appSettings.findOne({ _id: docId })
+  if (!doc && docId !== GLOBAL_SETTINGS_ID) {
+    doc = await appSettings.findOne({ _id: GLOBAL_SETTINGS_ID })
+  }
+  const salesAgentCommissionRate = await getSalesAgentCommissionRate(appSettings, orgId)
   const appName = normalizeLabel(doc?.appName, defaultAppName())
   const companyName = normalizeLabel(doc?.companyName, defaultCompanyName())
   const companyLogoUrl =
@@ -156,7 +174,7 @@ export async function getAppSettings(appSettings) {
 /**
  * @param {import("mongodb").Collection} appSettings
  * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean }} patch
- * @param {{ userId?: string } | undefined} auth
+ * @param {{ userId?: string, orgId?: string } | undefined} auth
  */
 export async function patchAppSettings(appSettings, patch, auth) {
   /** @type {Record<string, unknown>} */
@@ -164,6 +182,8 @@ export async function patchAppSettings(appSettings, patch, auth) {
     updatedAt: new Date().toISOString(),
     updatedBy: auth?.userId ?? null,
   }
+  const docId = settingsDocId(auth?.orgId)
+  if (docId !== GLOBAL_SETTINGS_ID) $set.orgId = docId
   let savedRate = null
 
   if (patch.salesAgentCommissionRate != null) {
@@ -201,9 +221,9 @@ export async function patchAppSettings(appSettings, patch, auth) {
     $set.promosVisible = patch.promosVisible
   }
 
-  await appSettings.updateOne({ _id: GLOBAL_SETTINGS_ID }, { $set }, { upsert: true })
+  await appSettings.updateOne({ _id: docId }, { $set }, { upsert: true })
 
-  const current = await getAppSettings(appSettings)
+  const current = await getAppSettings(appSettings, auth?.orgId)
   if (savedRate != null) current.salesAgentCommissionRate = savedRate
   return current
 }

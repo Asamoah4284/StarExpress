@@ -4,19 +4,32 @@ import jwt from "jsonwebtoken"
 import bcrypt from "bcryptjs"
 import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { normalizeGhanaPhone } from "../lib/ghanaPhone.js"
+import { createOrganization } from "../lib/organizations.js"
 import { OTP_RESEND_COOLDOWN_MS, OTP_TTL_MS, SignupOtpStore } from "../lib/signupOtpStore.js"
 import { sendSms } from "../services/sms.js"
 import { UserStore } from "../userStore.js"
 
 /**
- * @param {{ userStore: UserStore, signupOtpStore: SignupOtpStore, jwtSecret: string, jwtExpiresIn: string }} deps
+ * @param {{
+ *   userStore: UserStore
+ *   signupOtpStore: SignupOtpStore
+ *   jwtSecret: string
+ *   jwtExpiresIn: string
+ *   organizations: import("mongodb").Collection
+ * }} deps
  */
-export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpiresIn }) {
+export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpiresIn, organizations }) {
   const router = express.Router()
 
   function signToken(user) {
     return jwt.sign(
-      { sub: user.id, email: user.email, name: user.name, role: user.role },
+      {
+        sub: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        ...(user.orgId ? { orgId: user.orgId } : {}),
+      },
       jwtSecret,
       { expiresIn: jwtExpiresIn },
     )
@@ -29,6 +42,7 @@ export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpi
       email: user.email,
       role: user.role,
       ...(user.phone ? { phone: user.phone } : {}),
+      ...(user.orgId ? { orgId: user.orgId } : {}),
     }
   }
 
@@ -42,8 +56,16 @@ export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpi
       const password = typeof req.body?.password === "string" ? req.body.password : ""
       console.info("[auth] POST /api/auth/login", { email: email.trim() })
       const user = await userStore.verifyLogin(email, password)
+      if (user === "inactive") {
+        return res.status(403).json({ error: "This account is deactivated." })
+      }
       if (!user) {
         return res.status(401).json({ error: "Invalid email or password." })
+      }
+      if (!user.orgId) {
+        return res.status(403).json({
+          error: "Your account is not linked to a WiFi group. Contact support or sign up again.",
+        })
       }
       const publicUser = toPublicUser(user)
       return res.json({ token: signToken(user), user: publicUser })
@@ -113,6 +135,7 @@ export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpi
       const email = typeof req.body?.email === "string" ? req.body.email : ""
       const password = typeof req.body?.password === "string" ? req.body.password : ""
       const phoneRaw = typeof req.body?.phone === "string" ? req.body.phone : ""
+      const orgNameRaw = typeof req.body?.organizationName === "string" ? req.body.organizationName : ""
       const otpRaw = req.body?.otp
       const phone = normalizeGhanaPhone(phoneRaw)
       const otp = otpRaw != null ? String(otpRaw).trim() : ""
@@ -143,17 +166,27 @@ export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpi
         return res.status(401).json({ error: "Invalid verification code." })
       }
 
+      const orgName = orgNameRaw.trim() || `${name.trim()}'s WiFi`
+      const org = await createOrganization(organizations, { name: orgName, createdByUserId: null })
+
       const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS) || 10
-      const created = await userStore.register(name, email, password, saltRounds, phone)
-      if (created === "exists") {
-        return res.status(409).json({ error: "An account with this email already exists." })
-      }
-      if (created === "phone_exists") {
+      const created = await userStore.register(name, email, password, saltRounds, phone, org.id)
+      if (created === "exists" || created === "phone_exists") {
+        await organizations.deleteOne({ _id: org.id })
+        if (created === "exists") {
+          return res.status(409).json({ error: "An account with this email already exists." })
+        }
         return res.status(409).json({ error: "An account with this phone already exists." })
       }
 
+      await organizations.updateOne({ _id: org.id }, { $set: { createdByUserId: created.id } })
+
       const publicUser = toPublicUser(created)
-      return res.status(201).json({ token: signToken(created), user: publicUser })
+      return res.status(201).json({
+        token: signToken(created),
+        user: publicUser,
+        organization: { id: org.id, name: org.name },
+      })
     } catch (err) {
       console.error(err)
       const { status, error } = mongoHttpError(err)
@@ -174,7 +207,18 @@ export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpi
       }
       const user = await userStore.getPublicUserById(decoded.sub)
       if (!user) return res.status(401).json({ error: "User not found." })
-      return res.json({ user })
+      if (user.active === false) return res.status(403).json({ error: "This account is deactivated." })
+      let organization = null
+      if (user.orgId) {
+        const orgDoc = await organizations.findOne({ _id: user.orgId })
+        if (orgDoc) {
+          organization = {
+            id: String(orgDoc._id),
+            name: typeof orgDoc.name === "string" ? orgDoc.name : String(orgDoc._id),
+          }
+        }
+      }
+      return res.json({ user, ...(organization ? { organization } : {}) })
     } catch (err) {
       const name =
         err !== null && typeof err === "object" && "name" in err && typeof err.name === "string"

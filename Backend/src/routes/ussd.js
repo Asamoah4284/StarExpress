@@ -114,6 +114,9 @@ export function createUssdRouter(deps) {
       return { ok: false, status: "invalid_session" }
     }
 
+    const locDoc = await locations.findOne({ _id: String(locationId) }, { projection: { orgId: 1 } })
+    const orgId = typeof locDoc?.orgId === "string" ? locDoc.orgId.trim() : ""
+
     const result = await fulfillUssdVoucherSale({
       packages,
       vouchers,
@@ -123,6 +126,7 @@ export function createUssdRouter(deps) {
       customerPhone: String(customerPhone),
       packageId: String(packageId),
       locationId: String(locationId),
+      ...(orgId ? { orgId } : {}),
     })
 
     await sessions.updateSession(String(ussdSession._id), { step: "completed" })

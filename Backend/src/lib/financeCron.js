@@ -4,6 +4,7 @@ import { FINANCE_TIMEZONE } from "./financeWeek.js"
 
 /**
  * @param {{
+ *   organizations: import("mongodb").Collection,
  *   locations: import("mongodb").Collection,
  *   sales: import("mongodb").Collection,
  *   expenses: import("mongodb").Collection,

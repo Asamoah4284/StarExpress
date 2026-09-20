@@ -79,17 +79,19 @@ export function calcNetProfit(grossRevenue, tithe, lightBill, hostelPayout, expe
  * @param {import("mongodb").Collection} sales
  * @param {string} weekStart
  * @param {string} weekEnd
+ * @param {string} [orgId]
  */
-export async function aggregateGrossRevenueByLocation(sales, weekStart, weekEnd) {
+export async function aggregateGrossRevenueByLocation(sales, weekStart, weekEnd, orgId) {
+  /** @type {Record<string, unknown>} */
+  const match = {
+    status: "Completed",
+    date: { $gte: weekStart, $lte: weekEnd },
+    locationId: { $exists: true, $nin: [null, ""] },
+  }
+  if (orgId) match.orgId = orgId
   const rows = await sales
     .aggregate([
-      {
-        $match: {
-          status: "Completed",
-          date: { $gte: weekStart, $lte: weekEnd },
-          locationId: { $exists: true, $nin: [null, ""] },
-        },
-      },
+      { $match: match },
       { $group: { _id: "$locationId", grossRevenue: { $sum: "$amount" } } },
     ])
     .toArray()
@@ -108,11 +110,15 @@ export async function aggregateGrossRevenueByLocation(sales, weekStart, weekEnd)
  * @param {import("mongodb").Collection} expenses
  * @param {string} weekStart
  * @param {string} weekEnd
+ * @param {string} [orgId]
  */
-export async function aggregateExpensesByLocation(expenses, weekStart, weekEnd) {
+export async function aggregateExpensesByLocation(expenses, weekStart, weekEnd, orgId) {
+  /** @type {Record<string, unknown>} */
+  const match = { date: { $gte: weekStart, $lte: weekEnd } }
+  if (orgId) match.orgId = orgId
   const rows = await expenses
     .aggregate([
-      { $match: { date: { $gte: weekStart, $lte: weekEnd } } },
+      { $match: match },
       {
         $group: {
           _id: { $ifNull: ["$locationId", null] },
@@ -138,6 +144,7 @@ export async function aggregateExpensesByLocation(expenses, weekStart, weekEnd) 
  * @param {string} weekStart period start YYYY-MM-DD
  * @param {string} weekEnd period end YYYY-MM-DD
  * @param {number} [lightBillWeeks] overlapping finance weeks (for light bill)
+ * @param {string} [orgId]
  */
 export async function buildWeeklyFinanceSummary(
   locations,
@@ -146,11 +153,13 @@ export async function buildWeeklyFinanceSummary(
   weekStart,
   weekEnd,
   lightBillWeeks = 1,
+  orgId = "",
 ) {
+  const locFilter = orgId ? { orgId } : {}
   const [locationDocs, revenueByLoc, expenseByLoc] = await Promise.all([
-    locations.find({}).sort({ name: 1 }).toArray(),
-    aggregateGrossRevenueByLocation(sales, weekStart, weekEnd),
-    aggregateExpensesByLocation(expenses, weekStart, weekEnd),
+    locations.find(locFilter).sort({ name: 1 }).toArray(),
+    aggregateGrossRevenueByLocation(sales, weekStart, weekEnd, orgId || undefined),
+    aggregateExpensesByLocation(expenses, weekStart, weekEnd, orgId || undefined),
   ])
 
   /** @type {Array<{

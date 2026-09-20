@@ -6,6 +6,8 @@ let client = null
 /** @type {import("mongodb").Collection | null} */
 let usersCollection = null
 /** @type {import("mongodb").Collection | null} */
+let organizationsCollection = null
+/** @type {import("mongodb").Collection | null} */
 let locationsCollection = null
 /** @type {import("mongodb").Collection | null} */
 let packagesCollection = null
@@ -92,6 +94,7 @@ export async function connectMongo(uri) {
   await client.connect()
   const db = client.db(dbName)
   usersCollection = db.collection("users")
+  organizationsCollection = db.collection("organizations")
   locationsCollection = db.collection("locations")
   packagesCollection = db.collection("packages")
   salesCollection = db.collection("sales")
@@ -105,7 +108,9 @@ export async function connectMongo(uri) {
   customerProfilesCollection = db.collection("customer_profiles")
   expensesCollection = db.collection("expenses")
   financeWeeklySnapshotsCollection = db.collection("finance_weekly_snapshots")
+
   await usersCollection.createIndex({ email_normalized: 1 }, { unique: true })
+  await usersCollection.createIndex({ orgId: 1 })
   try {
     await usersCollection.createIndex({ phone_normalized: 1 }, { unique: true, sparse: true })
   } catch (e) {
@@ -116,16 +121,39 @@ export async function connectMongo(uri) {
   await ussdSessionsCollection.createIndex({ paymentReference: 1 }, { sparse: true })
   await ussdSessionsCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
   await agentPaymentPendingCollection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 7 })
-  await customerProfilesCollection.createIndex({ scope: 1, phoneKey: 1 }, { unique: true })
+  await agentPaymentPendingCollection.createIndex({ orgId: 1 })
   try {
-    await locationsCollection.createIndex({ managerUserId: 1 }, { unique: true, sparse: true })
-  } catch (e) {
-    console.warn("MongoDB: could not create unique sparse index on locations.managerUserId (fix duplicates and restart).", e)
+    await customerProfilesCollection.dropIndex("scope_1_phoneKey_1")
+  } catch {
+    /* index may not exist yet */
   }
-  await salesCollection.createIndex({ locationId: 1, date: 1, status: 1 })
-  await expensesCollection.createIndex({ date: 1 })
-  await expensesCollection.createIndex({ locationId: 1, date: 1 })
-  await financeWeeklySnapshotsCollection.createIndex({ weekStart: 1 }, { unique: true })
+  await customerProfilesCollection.createIndex({ orgId: 1, scope: 1, phoneKey: 1 }, { unique: true })
+  try {
+    await locationsCollection.dropIndex("managerUserId_1")
+  } catch {
+    /* may not exist */
+  }
+  try {
+    await locationsCollection.createIndex(
+      { orgId: 1, managerUserId: 1 },
+      { unique: true, sparse: true },
+    )
+  } catch (e) {
+    console.warn("MongoDB: could not create unique sparse index on locations.orgId+managerUserId.", e)
+  }
+  await locationsCollection.createIndex({ orgId: 1, name: 1 })
+  await salesCollection.createIndex({ orgId: 1, locationId: 1, date: 1, status: 1 })
+  await vouchersCollection.createIndex({ orgId: 1, locationId: 1 })
+  await disputesCollection.createIndex({ orgId: 1 })
+  await auditLogsCollection.createIndex({ orgId: 1, at: -1 })
+  await expensesCollection.createIndex({ orgId: 1, date: 1 })
+  await expensesCollection.createIndex({ orgId: 1, locationId: 1, date: 1 })
+  try {
+    await financeWeeklySnapshotsCollection.dropIndex("weekStart_1")
+  } catch {
+    /* may not exist */
+  }
+  await financeWeeklySnapshotsCollection.createIndex({ orgId: 1, weekStart: 1 }, { unique: true })
   console.log(`MongoDB connected (database: ${dbName})`)
   return { client, db }
 }
@@ -135,6 +163,11 @@ export function getUsersCollection() {
     throw new Error("MongoDB not connected. Call connectMongo first.")
   }
   return usersCollection
+}
+
+export function getOrganizationsCollection() {
+  if (!organizationsCollection) throw new Error("MongoDB not connected. Call connectMongo first.")
+  return organizationsCollection
 }
 
 export function getLocationsCollection() {
@@ -207,19 +240,20 @@ export async function closeMongo() {
     await client.close()
     client = null
     usersCollection = null
+    organizationsCollection = null
     locationsCollection = null
     packagesCollection = null
     salesCollection = null
-  disputesCollection = null
-  auditLogsCollection = null
-  vouchersCollection = null
-  appSettingsCollection = null
-  signupOtpsCollection = null
-  ussdSessionsCollection = null
-  agentPaymentPendingCollection = null
-  customerProfilesCollection = null
-  expensesCollection = null
-  financeWeeklySnapshotsCollection = null
+    disputesCollection = null
+    auditLogsCollection = null
+    vouchersCollection = null
+    appSettingsCollection = null
+    signupOtpsCollection = null
+    ussdSessionsCollection = null
+    agentPaymentPendingCollection = null
+    customerProfilesCollection = null
+    expensesCollection = null
+    financeWeeklySnapshotsCollection = null
   }
 }
 
