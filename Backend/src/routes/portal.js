@@ -4,11 +4,13 @@ import {
   initializeMoolreEmbedLink,
   verifyMoolrePaymentWithRetry,
 } from "../lib/moolreEmbedPayment.js"
+import { checkMoolrePaymentStatus } from "../lib/moolrePaymentStatus.js"
 import {
   generateCaptivePaymentReference,
   hasCaptivePortalAuthParams,
   isCaptivePaymentReference,
   normalizeCaptivePortalParams,
+  processCaptiveMomoPaymentSuccess,
   saveCaptivePaymentPending,
   wifiCodeFromSale,
 } from "../lib/captiveMomoPayment.js"
@@ -300,18 +302,37 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: verified.error || "Payment not verified." })
       }
 
-      const saleAfterPay = await sales.findOne({ paymentReference })
-      if (saleAfterPay && wifiCodeFromSale(saleAfterPay)) {
-        return res.json(
-          captiveSalePayload(saleAfterPay, {
-            paymentReference,
-          }),
-        )
+      const outcome = await processCaptiveMomoPaymentSuccess({
+        pending: agentPaymentPending,
+        packages,
+        sales,
+        auditLogs,
+        paymentReference,
+        source: "portal-complete",
+      })
+
+      if (!outcome.ok || !(outcome.voucherCode || outcome.username)) {
+        const retryable =
+          outcome.status === "no_pending" ||
+          outcome.status === "radius_unavailable" ||
+          outcome.status === "radius_failed"
+        return res.status(retryable ? 409 : 400).json({
+          error: retryable
+            ? "Payment was received. Sending your WiFi username and password…"
+            : "Could not create your WiFi login. Please contact support with the phone number you paid with.",
+        })
       }
 
-      return res.status(409).json({
-        error: "Payment was received. Sending your WiFi username and password…",
-      })
+      const sale = await sales.findOne({ paymentReference })
+      return res.json(
+        captiveSalePayload(sale, {
+          paymentReference,
+          voucherCode: outcome.voucherCode,
+          username: outcome.username,
+          password: outcome.password,
+          smsSent: outcome.smsSent === true,
+        }),
+      )
     } catch (err) {
       console.error("[portal] POST /payments/complete", err)
       res.status(500).json({ error: "Failed to complete payment." })
@@ -327,7 +348,22 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "Valid paymentReference is required." })
       }
 
-      const sale = await sales.findOne({ paymentReference })
+      let sale = await sales.findOne({ paymentReference })
+      if (!wifiCodeFromSale(sale)) {
+        const paid = await checkMoolrePaymentStatus(paymentReference)
+        if (paid.ok && paid.isPaid) {
+          await processCaptiveMomoPaymentSuccess({
+            pending: agentPaymentPending,
+            packages,
+            sales,
+            auditLogs,
+            paymentReference,
+            source: "portal-status",
+          })
+          sale = await sales.findOne({ paymentReference })
+        }
+      }
+
       const code = wifiCodeFromSale(sale)
       if (!sale || !code) {
         return res.json({ ready: false })

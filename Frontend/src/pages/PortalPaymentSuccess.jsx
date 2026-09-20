@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { getDefaultAppName } from "@/lib/env.js"
 import { clearPersistedPortalParams } from "@/lib/captivePortalParams.js"
-import { fetchPortalPaymentStatus } from "@/lib/portalApi.js"
+import { fetchPortalPaymentStatus, completePortalPayment } from "@/lib/portalApi.js"
 
 /**
  * @param {{ label: string, value: string }} props
@@ -72,7 +72,7 @@ export default function PortalPaymentSuccess() {
 
     let cancelled = false
     const started = Date.now()
-    const maxMs = 20_000
+    const maxMs = 45_000
     /** @type {ReturnType<typeof setInterval> | null} */
     let intervalId = null
 
@@ -100,7 +100,7 @@ export default function PortalPaymentSuccess() {
       if (Date.now() - started >= maxMs) {
         if (intervalId) clearInterval(intervalId)
         setError(
-          "Payment was received. If an SMS has not arrived, use Look up by phone with the number you paid with.",
+          "Payment was received but the WiFi login was not created yet. Tap Try again. If it still fails, the server could not reach FreeRADIUS MySQL.",
         )
         setLoading(false)
       }
@@ -108,8 +108,13 @@ export default function PortalPaymentSuccess() {
 
     setLoading(true)
     setError(null)
-    void tick()
-    intervalId = setInterval(() => void tick(), 1000)
+    void (async () => {
+      const complete = await completePortalPayment(paymentReference)
+      if (cancelled) return
+      if (complete.ok && applyReady(complete)) return
+      void tick()
+      intervalId = setInterval(() => void tick(), 1000)
+    })()
 
     return () => {
       cancelled = true

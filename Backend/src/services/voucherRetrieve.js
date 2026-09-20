@@ -40,13 +40,16 @@ export async function findRecentVouchersForPhone(salesCol, formattedPhone) {
   const docs = await salesCol
     .find({
       customerPhone: { $regex: regex },
-      voucherCode: { $exists: true, $nin: [null, ""] },
+      $or: [
+        { voucherCode: { $exists: true, $nin: [null, ""] } },
+        { radiusUsername: { $exists: true, $nin: [null, ""] } },
+      ],
     })
     .sort({ date: -1, _id: -1 })
     .limit(RETRIEVE_VOUCHER_LIMIT)
     .toArray()
   return docs.map((d) => ({
-    voucherCode: String(d.voucherCode || "").trim(),
+    voucherCode: String(d.voucherCode || d.radiusUsername || "").trim(),
     packageName: typeof d.packageType === "string" && d.packageType.trim() ? d.packageType.trim() : "WiFi",
     date: formatVoucherDateLabel(d.date),
   }))
