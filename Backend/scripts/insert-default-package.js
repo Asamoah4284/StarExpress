@@ -18,7 +18,7 @@ if (!uri) {
 await connectMongo(uri)
 try {
   const packages = getPackagesCollection()
-  const result = await ensureDefaultPackage(packages)
+  const result = await ensureDefaultPackage(packages, { fillMissing: true })
   console.log(
     `[packages] Done. created=${result.created} skipped=${result.skipped} totalDefaults=${DEFAULT_PACKAGES.length}`,
   )

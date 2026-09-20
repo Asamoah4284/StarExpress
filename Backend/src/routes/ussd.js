@@ -20,6 +20,7 @@ import { isAgentPaymentReference, processAgentMomoPaymentSuccess } from "../lib/
 import { isCaptivePaymentReference, processCaptiveMomoPaymentSuccess } from "../lib/captiveMomoPayment.js"
 import { getLocationsWithStock, getPackagesForLocation } from "../services/portalCatalog.js"
 import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
+import { buyLog, buyError, errorForLog } from "../lib/buyLog.js"
 
 // Upper cap on how many active packages we fetch per location. USSD sessions are short-lived
 // so this only bounds the DB result size — the actual menu is paginated below.
@@ -86,6 +87,7 @@ export function createUssdRouter(deps) {
     }
 
     if (isCaptivePaymentReference(paymentReference)) {
+      buyLog("webhook routing captive", { paymentReference, source })
       console.log(`[ussd-pay] ${source} routing captive MoMo ref`, paymentReference)
       return processCaptiveMomoPaymentSuccess({
         pending: agentPaymentPending,
@@ -649,6 +651,17 @@ export function createUssdRouter(deps) {
         bodyKeys: Object.keys(payload || {}),
         payloadPreview: JSON.stringify(payload).slice(0, 1500),
       })
+      if (event.reference && isCaptivePaymentReference(event.reference)) {
+        buyLog("webhook received", {
+          reference: event.reference,
+          txStatusNum: event.txStatusNum,
+          isSuccess: event.isSuccess,
+          isFailed: event.isFailed,
+          isPending: event.isPending,
+          code: event.code,
+          payload,
+        })
+      }
 
       if (!verifyMoolreWebhook(payload, req.headers)) {
         console.error("[moolre-webhook] invalid secret")
@@ -676,9 +689,13 @@ export function createUssdRouter(deps) {
 
       const outcome = await processUssdPaymentSuccess(event.reference, "webhook")
       console.log("[moolre-webhook] outcome", { reference: event.reference, outcome })
+      if (isCaptivePaymentReference(event.reference)) {
+        buyLog("webhook outcome", { reference: event.reference, outcome })
+      }
       return res.status(200).json({ received: true, ...outcome })
     } catch (err) {
       console.error("[moolre-webhook] error", err)
+      buyError("webhook exception", errorForLog(err))
       return res.status(200).json({
         received: true,
         error: err instanceof Error ? err.message : "Webhook processing failed",

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { sendUssdVoucherSms } from "./ussdVoucherSms.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
+import { applyPurchaseRadiusWindow } from "../lib/radiusAuth.js"
+import { buyLog, buyError } from "../lib/buyLog.js"
 
 /**
  * @param {import("mongodb").Document} d
@@ -55,12 +57,81 @@ export function clearVoucherUsedColumns(columns) {
 export { buildSaleVoucherSmsMessage } from "../lib/voucherSmsMessage.js"
 
 /**
+ * @param {unknown} columns
+ */
+function columnsWithUsedStatus(columns) {
+  /** @type {Record<string, unknown>} */
+  const next =
+    columns && typeof columns === "object" && !Array.isArray(columns)
+      ? { .../** @type {Record<string, unknown>} */ (columns) }
+      : {}
+  const statusKey =
+    "Status" in next
+      ? "Status"
+      : "status" in next
+        ? "status"
+        : (Object.keys(next).find((k) => /^status$/i.test(k)) ?? "Status")
+  next[statusKey] = "Used"
+  return next
+}
+
+/**
+ * Reserve one unused uploaded voucher (daloRADIUS / CSV stock) for a package at a location.
+ * @param {import("mongodb").Collection} vouchersCol
+ * @param {{ packageId: string, locationId: string, orgId?: string }} opts
+ * @returns {Promise<{ ok: true, voucherId: string, voucherCode: string } | { ok: false, error: string, status: "out_of_stock" | "voucher_failed" }>}
+ */
+export async function claimUnusedVoucher(vouchersCol, opts) {
+  const packageId = typeof opts.packageId === "string" ? opts.packageId.trim() : ""
+  const locationId = typeof opts.locationId === "string" ? opts.locationId.trim() : ""
+  const orgId = typeof opts.orgId === "string" ? opts.orgId.trim() : ""
+  buyLog("claim voucher start", { packageId, locationId, orgId: orgId || null })
+  if (!packageId || !locationId) {
+    buyError("claim voucher abort", { reason: "package or location missing", packageId, locationId })
+    return { ok: false, status: "out_of_stock", error: "Package or location missing." }
+  }
+
+  const availFilter = {
+    ...buildPackageAvailabilityFilter(packageId, locationId),
+    ...(orgId ? { orgId } : {}),
+  }
+  const voucher = await vouchersCol.findOne(availFilter)
+  if (!voucher) {
+    buyError("claim voucher out of stock", { packageId, locationId })
+    return {
+      ok: false,
+      status: "out_of_stock",
+      error: "No vouchers in stock for this package at this location.",
+    }
+  }
+
+  const columns = columnsWithUsedStatus(voucher.columns)
+  const marked = await vouchersCol.updateOne({ _id: voucher._id, ...availFilter }, { $set: { columns } })
+  if (marked.modifiedCount === 0) {
+    buyError("claim voucher race", { packageId, locationId, voucherId: voucher._id })
+    return {
+      ok: false,
+      status: "voucher_failed",
+      error: "Could not reserve voucher — inventory changed.",
+    }
+  }
+
+  const voucherCode = voucherDisplayCode(voucher)
+  buyLog("claim voucher ok", { packageId, locationId, voucherId: String(voucher._id), voucherCode })
+  return {
+    ok: true,
+    voucherId: String(voucher._id),
+    voucherCode,
+  }
+}
+
+/**
  * @param {import("mongodb").Collection} packagesCol
  * @param {import("mongodb").Collection} vouchersCol
  * @param {string} packageId
  * @param {string} locationId
  */
-async function syncPackageStockForLocation(packagesCol, vouchersCol, packageId, locationId) {
+export async function syncPackageStockForLocation(packagesCol, vouchersCol, packageId, locationId) {
   const remaining = await vouchersCol.countDocuments(buildPackageAvailabilityFilter(packageId, locationId))
   await packagesCol.updateOne({ _id: packageId }, { $set: { stockUnits: remaining } })
   return remaining
@@ -127,6 +198,12 @@ export async function fulfillUssdVoucherSale(opts) {
   const soldAt = new Date().toISOString()
   const date = soldAt.slice(0, 10)
   const saleId = `sale-ussd-${randomUUID().slice(0, 12)}`
+  const radiusFields = await applyPurchaseRadiusWindow({
+    username: voucherCode,
+    packageId,
+    pkg,
+    soldAt,
+  })
 
   const saleDoc = {
     _id: saleId,
@@ -146,6 +223,7 @@ export async function fulfillUssdVoucherSale(opts) {
     paymentReference,
     channel: "ussd",
     smsSent: false,
+    ...radiusFields,
   }
 
   await sales.insertOne(saleDoc)
@@ -174,6 +252,7 @@ export async function fulfillUssdVoucherSale(opts) {
     packageName: packageType,
     dataLimit: packageDataLimit,
     voucherCode,
+    validSeconds: radiusFields.radiusSessionTimeout,
   })
 
   await syncPackageStockForLocation(packages, vouchers, packageId, locationId)

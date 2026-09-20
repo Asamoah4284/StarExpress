@@ -68,15 +68,8 @@ export function MoolrePayment({
   paymentReference,
   onCancel,
   onSuccess,
-  // mode kept for call-site clarity; both flows render the same way.
   mode = "agent",
 }) {
-  const iframeRef = React.useRef(/** @type {HTMLIFrameElement | null} */ (null))
-  const successFiredRef = React.useRef(false)
-  const [confirming, setConfirming] = React.useState(false)
-  const viewport = useViewport()
-  const isMobile = viewport.width <= MOBILE_MAX_WIDTH
-  void mode
 
   React.useEffect(() => {
     if (!open) {
@@ -143,9 +136,10 @@ export function MoolrePayment({
       successFiredRef.current = true
       const ref = extractRef(url)
       setConfirming(true)
+      console.log("[buy] moolre iframe success detected", { url, ref, mode })
       onSuccess({ reference: ref, externalref: ref })
     },
-    [extractRef, onSuccess],
+    [extractRef, onSuccess, mode],
   )
 
   const handleIframeLoad = React.useCallback(() => {

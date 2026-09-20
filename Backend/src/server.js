@@ -35,6 +35,7 @@ import { createUssdRouter } from "./routes/ussd.js"
 import { createPortalRouter } from "./routes/portal.js"
 import { createMoolrePaymentSuccessHandler } from "./lib/moolrePaymentSuccessPage.js"
 import { startCaptivePendingSweep } from "./lib/captivePendingSweep.js"
+import { startRadiusExpirySweep } from "./lib/radiusExpirySweep.js"
 import { startFinanceWeeklyCron } from "./lib/financeCron.js"
 
 /** @param {string} key */
@@ -290,6 +291,10 @@ async function main() {
     vouchers: getVouchersCollection(),
     sales: getSalesCollection(),
     auditLogs: getAuditLogsCollection(),
+  })
+
+  startRadiusExpirySweep({
+    sales: getSalesCollection(),
   })
 
   startFinanceWeeklyCron({

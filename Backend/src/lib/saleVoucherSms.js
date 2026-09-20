@@ -2,6 +2,7 @@ import { sendSms } from "../services/sms.js"
 import { buildRadiusWifiSmsMessage, buildSaleVoucherSmsMessage } from "./voucherSmsMessage.js"
 import { resolvePackageForLocation } from "./packageOverrides.js"
 import { notifyAdminCustomerSmsFailed } from "./adminAlerts.js"
+import { buyLog, buyError, maskPhoneForLog, errorForLog } from "./buyLog.js"
 
 /**
  * Send voucher SMS for a completed sale if not already sent (idempotent).
@@ -18,13 +19,14 @@ export async function ensureSaleVoucherSmsSent(opts) {
   const paymentReference = typeof sale.paymentReference === "string" ? sale.paymentReference : ""
 
   if (sale.smsSent === true) {
+    buyLog("sms already sent", { source, saleId, paymentReference })
     return { smsSent: true, sent: false, sale }
   }
 
   const customerPhone = typeof sale.customerPhone === "string" ? sale.customerPhone.trim() : ""
   const voucherCode = typeof sale.voucherCode === "string" ? sale.voucherCode.trim() : ""
   if (!customerPhone || !voucherCode) {
-    console.warn(`[sale-sms] ${source} missing phone or voucher`, { saleId, paymentReference })
+    buyError("sms missing phone or code", { source, saleId, paymentReference, hasPhone: Boolean(customerPhone), hasCode: Boolean(voucherCode) })
     return { smsSent: false, sent: false, sale }
   }
 
@@ -46,23 +48,45 @@ export async function ensureSaleVoucherSmsSent(opts) {
     }
   }
 
+  const validSeconds =
+    typeof sale.radiusSessionTimeout === "number" && sale.radiusSessionTimeout > 0
+      ? sale.radiusSessionTimeout
+      : undefined
+
   const smsMessage =
-    sale.fulfillmentMode === "radius_code"
-      ? buildRadiusWifiSmsMessage(packageType || "WiFi", packageDataLimit, voucherCode)
-      : buildSaleVoucherSmsMessage(packageType || "WiFi", packageDataLimit, voucherCode)
+    sale.channel === "captive_portal" || sale.fulfillmentMode === "radius_code" || sale.fulfillmentMode === "voucher"
+      ? buildRadiusWifiSmsMessage(packageType || "WiFi", packageDataLimit, voucherCode, validSeconds)
+      : buildSaleVoucherSmsMessage(packageType || "WiFi", packageDataLimit, voucherCode, validSeconds)
+
+  buyLog("sms sending", {
+    source,
+    saleId,
+    paymentReference,
+    to: maskPhoneForLog(customerPhone),
+    voucherCode,
+    message: smsMessage,
+  })
 
   try {
     const smsResult = await sendSms({ to: customerPhone, message: smsMessage })
+    buyLog("sms gateway result", {
+      source,
+      saleId,
+      paymentReference,
+      ok: smsResult.ok,
+      skipped: smsResult.skipped === true,
+      raw: smsResult.raw,
+    })
     if (smsResult.skipped) {
-      console.warn(`[sale-sms] ${source} skipped (no API key)`, { saleId, paymentReference })
+      buyError("sms skipped (no API key)", { source, saleId, paymentReference })
       return { smsSent: false, sent: false, sale }
     }
     await sales.updateOne({ _id: sale._id }, { $set: { smsSent: true } })
-    console.log(`[sale-sms] ${source} sent`, { saleId, paymentReference, to: maskPhone(customerPhone) })
+    buyLog("sms sent", { source, saleId, paymentReference, to: maskPhoneForLog(customerPhone) })
     return { smsSent: true, sent: true, sale: { ...sale, smsSent: true } }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "SMS failed"
-    console.error(`[sale-sms] ${source} failed`, { saleId, paymentReference, error: msg })
+    buyError("sms failed", { source, saleId, paymentReference, ...errorForLog(err), raw: err && typeof err === "object" && "raw" in err ? err.raw : undefined })
     await alertCaptiveSmsFailedOnce(sales, sale, {
       customerPhone,
       packageName: packageType || "WiFi",
@@ -97,18 +121,10 @@ async function alertCaptiveSmsFailedOnce(sales, sale, info) {
       { $set: { adminAlertedSmsFailed: true } },
     )
     if (claim.modifiedCount === 1) {
+      buyLog("admin alert sms failed", { saleId: sale._id, ...info, customerPhone: maskPhoneForLog(info.customerPhone) })
       notifyAdminCustomerSmsFailed(info)
     }
   } catch (err) {
-    console.error("[sale-sms] alertCaptiveSmsFailedOnce failed", err instanceof Error ? err.message : err)
+    buyError("alertCaptiveSmsFailedOnce failed", errorForLog(err))
   }
-}
-
-/**
- * @param {string} phone
- */
-function maskPhone(phone) {
-  const digits = String(phone).replace(/\D/g, "")
-  if (digits.length <= 4) return "****"
-  return `***${digits.slice(-4)}`
 }

@@ -38,8 +38,10 @@ export default function CaptiveRetrieveVoucher() {
     setEmptyMessage("")
     setVouchers([])
     setLoading(true)
+    console.log("[buy] retrieve lookup", { phone: phone.trim() })
     const result = await retrievePortalVouchers(phone.trim())
     setLoading(false)
+    console.log("[buy] retrieve result", result)
     if (!result.ok) {
       setError(result.error)
       return
@@ -63,7 +65,7 @@ export default function CaptiveRetrieveVoucher() {
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Find your WiFi code</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Enter the phone number you used when paying. Type the code as username and password on the WiFi login page.
+            Enter the phone number you used when paying. Enter the code on the WiFi login page.
           </p>
         </div>
 
@@ -120,7 +122,7 @@ export default function CaptiveRetrieveVoucher() {
                     {v.packageName}
                     {v.date ? ` · ${v.date}` : ""}
                     {" · "}
-                    Use as username and password on WiFi login.
+                    Enter this code on the WiFi login page.
                   </p>
                 </CardContent>
               </Card>

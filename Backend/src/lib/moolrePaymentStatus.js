@@ -1,4 +1,5 @@
 import { getMoolrePaymentAuthHeaders } from "./ussdHelpers.js"
+import { buyLog, buyError } from "./buyLog.js"
 
 const MOOLRE_ACCOUNT_NUMBER = process.env.MOOLRE_ACCOUNT_NUMBER
 const MOOLRE_USERNAME = process.env.MOOLRE_USERNAME
@@ -28,6 +29,7 @@ async function queryMoolrePaymentStatus(id, idtype) {
   try {
     data = text ? JSON.parse(text) : null
   } catch {
+    buyError("moolre status invalid JSON", { id, idtype, httpStatus: response.status, bodyPreview: text?.slice(0, 400) })
     return { ok: false, error: "Invalid status response", raw: text?.slice(0, 200) }
   }
 
@@ -35,6 +37,17 @@ async function queryMoolrePaymentStatus(id, idtype) {
   const txStatusNum = txstatus == null ? null : Number(txstatus)
   const apiOk = Number(data?.status) === 1 || Number(data?.status) === 200
   const code = String(data?.code || "").toUpperCase()
+
+  buyLog("moolre status query", {
+    id,
+    idtype,
+    httpStatus: response.status,
+    apiOk,
+    txStatusNum,
+    code,
+    message: data?.message,
+    body: data,
+  })
 
   return {
     ok: apiOk,

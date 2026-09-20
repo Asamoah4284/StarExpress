@@ -1,6 +1,6 @@
 /**
  * Default captive-portal packages (FreeRADIUS limits via radiusSessionTimeout / radiusMaxOctets).
- * Idempotent: each package is inserted only if its _id is missing.
+ * Startup seed is empty-collection only so admin deletes are not undone on restart.
  */
 
 const GB = 1024 ** 3
@@ -85,12 +85,22 @@ export const DEFAULT_PACKAGES = [
 ]
 
 /**
- * Ensure all default packages exist. Never duplicates by _id.
+ * Seed the default catalog only when the collection is empty, so an admin delete
+ * is not undone the next time the API starts. Pass `{ fillMissing: true }` from
+ * the CLI to restore any missing default `_id`s on purpose.
  *
  * @param {import("mongodb").Collection} packagesCol
+ * @param {{ fillMissing?: boolean }} [opts]
  * @returns {Promise<{ created: number, skipped: number }>}
  */
-export async function ensureDefaultPackage(packagesCol) {
+export async function ensureDefaultPackage(packagesCol, opts = {}) {
+  const fillMissing = opts.fillMissing === true
+  const existingCount = await packagesCol.countDocuments()
+  if (!fillMissing && existingCount > 0) {
+    console.log("[packages] Packages already exist")
+    return { created: 0, skipped: existingCount }
+  }
+
   let created = 0
   let skipped = 0
 

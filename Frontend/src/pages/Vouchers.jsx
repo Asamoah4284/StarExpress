@@ -403,7 +403,7 @@ export default function Vouchers() {
     <div className="space-y-8">
       <PageHeader
         title="Upload vouchers"
-        description="Choose a location and an active package, then add one voucher by ID or import a CSV in bulk (admin). PDF and images are not sent to the server yet."
+        description="Import daloRADIUS codes (CSV or a single ID) for a location and package. Agent, USSD, and hotspot /buy all sell from this stock — generate the codes in daloRADIUS, then upload them here."
       />
 
       <Card className="border-border bg-card shadow-none ring-1 ring-border">

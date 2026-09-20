@@ -54,21 +54,23 @@ export default function PortalPaymentSuccess() {
 
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState(/** @type {string | null} */ (null))
-  const [username, setUsername] = React.useState("")
-  const [password, setPassword] = React.useState("")
+  const [voucherCode, setVoucherCode] = React.useState("")
   const [packageName, setPackageName] = React.useState("WiFi")
   const [smsSent, setSmsSent] = React.useState(false)
 
   React.useEffect(() => {
-    document.title = "Your WiFi login"
+    document.title = "Your WiFi code"
   }, [])
 
   React.useEffect(() => {
     if (!paymentReference) {
+      console.error("[buy] success page missing payment reference")
       setLoading(false)
       setError("Missing payment reference. Open Buy WiFi again and complete payment.")
       return
     }
+
+    console.log("[buy] success page start", { paymentReference })
 
     let cancelled = false
     const started = Date.now()
@@ -77,12 +79,11 @@ export default function PortalPaymentSuccess() {
     let intervalId = null
 
     const applyReady = (status) => {
-      const user = (status.username || status.voucherCode || "").trim()
-      const pass = (status.password || user).trim()
-      if (!user) return false
+      const code = (status.voucherCode || "").trim()
+      console.log("[buy] success applyReady", { paymentReference, code, smsSent: status.smsSent, packageName: status.packageName })
+      if (!code) return false
       clearPersistedPortalParams()
-      setUsername(user)
-      setPassword(pass)
+      setVoucherCode(code)
       setPackageName(status.packageName || "WiFi")
       setSmsSent(status.smsSent === true)
       setError(null)
@@ -91,16 +92,19 @@ export default function PortalPaymentSuccess() {
     }
 
     const tick = async () => {
+      console.log("[buy] success poll status", { paymentReference })
       const status = await fetchPortalPaymentStatus(paymentReference)
       if (cancelled) return
+      console.log("[buy] success poll result", status)
       if (status.ok && status.ready && applyReady(status)) {
         if (intervalId) clearInterval(intervalId)
         return
       }
       if (Date.now() - started >= maxMs) {
         if (intervalId) clearInterval(intervalId)
+        console.error("[buy] success timed out waiting for code", { paymentReference, status })
         setError(
-          "Payment was received but the WiFi login was not created yet. Tap Try again. If it still fails, the server could not reach FreeRADIUS MySQL.",
+          "Payment was received but the WiFi code is not ready yet. Tap Try again. If it still fails, contact support with the phone number you paid with.",
         )
         setLoading(false)
       }
@@ -109,7 +113,9 @@ export default function PortalPaymentSuccess() {
     setLoading(true)
     setError(null)
     void (async () => {
+      console.log("[buy] success complete payment", { paymentReference })
       const complete = await completePortalPayment(paymentReference)
+      console.log("[buy] success complete result", complete)
       if (cancelled) return
       if (complete.ok && applyReady(complete)) return
       void tick()
@@ -136,7 +142,7 @@ export default function PortalPaymentSuccess() {
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-12">
               <Loader2 className="text-primary size-10 animate-spin" aria-hidden />
-              <p className="text-sm font-medium">Sending your WiFi username and password…</p>
+              <p className="text-sm font-medium">Sending your WiFi code…</p>
               <p className="text-muted-foreground text-xs">This usually takes a few seconds.</p>
             </CardContent>
           </Card>
@@ -145,7 +151,7 @@ export default function PortalPaymentSuccess() {
         {!loading && error ? (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">WiFi login is on the way</CardTitle>
+              <CardTitle className="text-lg">WiFi code is on the way</CardTitle>
               <CardDescription>{error}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -154,8 +160,7 @@ export default function PortalPaymentSuccess() {
                 onClick={() => {
                   setError(null)
                   setLoading(true)
-                  setUsername("")
-                  setPassword("")
+                  setVoucherCode("")
                   window.location.reload()
                 }}
               >
@@ -168,21 +173,20 @@ export default function PortalPaymentSuccess() {
           </Card>
         ) : null}
 
-        {!loading && !error && username ? (
+        {!loading && !error && voucherCode ? (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Your WiFi login</CardTitle>
+              <CardTitle className="text-lg">Your WiFi code</CardTitle>
               <CardDescription>
-                {packageName}. Enter these on the WiFi login page. You can share them with someone else.
+                {packageName}. Enter this code on the WiFi login page. You can share it with someone else.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <CredentialRow label="Username" value={username} />
-              <CredentialRow label="Password" value={password || username} />
+              <CredentialRow label="Code" value={voucherCode} />
               <p className="text-muted-foreground text-sm">
                 {smsSent
-                  ? "We also texted username and password to the phone number you paid with."
-                  : "Save these. If SMS did not arrive, use Look up by phone with the number you paid with."}
+                  ? "We also texted this code to the phone number you paid with."
+                  : "Save this code. If SMS did not arrive, use Look up by phone with the number you paid with."}
               </p>
               <Button asChild className="w-full">
                 <Link to="/retrieve-voucher">Look up by phone</Link>

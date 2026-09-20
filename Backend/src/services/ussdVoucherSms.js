@@ -5,11 +5,11 @@ import { buildSaleVoucherSmsMessage } from "../lib/voucherSmsMessage.js"
  * Send voucher SMS after USSD payment (same Moolre SMS as signup/agent sales).
  * Does not throw — returns { success, message } like As-market ticket SMS.
  *
- * @param {{ to: string, packageName: string, dataLimit?: string, voucherCode: string }} opts
+ * @param {{ to: string, packageName: string, dataLimit?: string, voucherCode: string, validSeconds?: number }} opts
  */
 export async function sendUssdVoucherSms(opts) {
-  const { to, packageName, dataLimit = "", voucherCode } = opts
-  const message = buildSaleVoucherSmsMessage(packageName, dataLimit, voucherCode)
+  const { to, packageName, dataLimit = "", voucherCode, validSeconds } = opts
+  const message = buildSaleVoucherSmsMessage(packageName, dataLimit, voucherCode, validSeconds)
 
   console.log("[ussd-sms] Sending voucher SMS to", to, "voucher", voucherCode)
 

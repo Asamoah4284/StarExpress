@@ -9,6 +9,8 @@
  * Optional: MOOLRE_SMS_URL if Moolre changes the path.
  */
 
+import { buyLog, buyError } from "../lib/buyLog.js"
+
 const DEFAULT_SMS_URL = "https://api.moolre.com/open/sms/send"
 
 /** @returns {string | undefined} */
@@ -71,7 +73,7 @@ export async function sendSms({ to, message }) {
     if (process.env.NODE_ENV === "production") {
       throw new Error("SMS is not configured. Set MOOLRE_API_KEY in environment.")
     }
-    console.warn("[sms] MOOLRE_API_KEY missing — would send to", to, "→", message)
+    buyError("sms MOOLRE_API_KEY missing — skipped", { to, message })
     return { ok: true, skipped: true }
   }
 
@@ -84,6 +86,8 @@ export async function sendSms({ to, message }) {
     messages: [{ recipient, message }],
   }
 
+  buyLog("sms moolre request", { url, senderId, recipient, message })
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -94,6 +98,11 @@ export async function sendSms({ to, message }) {
   })
 
   const responseData = await parseResponseBody(response)
+  buyLog("sms moolre response", {
+    httpStatus: response.status,
+    ok: response.ok,
+    body: responseData,
+  })
 
   const apiStatus = Number(
     responseData && typeof responseData === "object" ? responseData.status : NaN,

@@ -6,6 +6,7 @@ import {
   clearVoucherUsedColumns,
   voucherDisplayCode,
 } from "../services/voucherSaleFulfillment.js"
+import { applyPurchaseRadiusWindow } from "./radiusAuth.js"
 
 /**
  * @param {string} ref
@@ -163,6 +164,12 @@ export async function processAgentMomoPaymentSuccess(opts) {
   const soldAt = new Date().toISOString()
   const date = soldAt.slice(0, 10)
   const saleId = `sale-${randomUUID().slice(0, 12)}`
+  const radiusFields = await applyPurchaseRadiusWindow({
+    username: voucherCode,
+    packageId,
+    pkg,
+    soldAt,
+  })
 
   const saleDoc = {
     _id: saleId,
@@ -183,6 +190,7 @@ export async function processAgentMomoPaymentSuccess(opts) {
     soldByUserId: agentUserId || undefined,
     paymentReference,
     smsSent: false,
+    ...radiusFields,
   }
 
   await sales.insertOne(saleDoc)

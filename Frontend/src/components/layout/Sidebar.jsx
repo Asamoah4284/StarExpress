@@ -14,6 +14,7 @@ import {
   Satellite,
   ScrollText,
   Settings,
+  Ticket,
   Users,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -26,6 +27,7 @@ import { roleMayAccessNavPath } from "@/lib/roles.js"
 const items = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/packages", label: "Packages", icon: Package },
+  { to: "/vouchers", label: "Upload vouchers", icon: Ticket },
   { to: "/sales-history", label: "Sales History", icon: History },
   { to: "/location-customers", label: "Customers", icon: Phone },
   { to: "/reports", label: "Reports", icon: BarChart3 },

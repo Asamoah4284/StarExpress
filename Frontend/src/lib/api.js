@@ -50,7 +50,8 @@ function apiErrorMessage(res, data) {
       err.includes("<!DOCTYPE") ||
       err.includes("Cannot GET") ||
       err.includes("Cannot POST") ||
-      err.includes("Cannot PATCH")
+      err.includes("Cannot PATCH") ||
+      err.includes("Cannot DELETE")
     ) {
       if (res.status === 404) {
         return "This feature is not available on the server yet. Restart or redeploy the backend API, then try again."
@@ -1037,8 +1038,7 @@ export async function deleteCatalogPackage(token, id) {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {
-    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
-    return { ok: false, error: msg }
+    return { ok: false, error: apiErrorMessage(res, data) || "Delete failed" }
   }
   return { ok: true }
 }

@@ -5,6 +5,8 @@ import { appendAuditLog } from "../lib/appendAuditLog.js"
 import { backfillSaleSoldAt } from "../lib/backfillSaleSoldAt.js"
 import { byOrg } from "../lib/organizations.js"
 import { createVerifyJwt, requireAdmin, requireOrg } from "../middleware/authJwt.js"
+import { applyPurchaseRadiusWindow } from "../lib/radiusAuth.js"
+import { buildSaleVoucherSmsMessage } from "../lib/voucherSmsMessage.js"
 import { sendSms } from "../services/sms.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import {
@@ -176,7 +178,7 @@ const CUSTOMER_SALE_FILTER = {
  */
 function toPackage(d) {
   return {
-    id: d._id,
+    id: String(d._id),
     name: d.name,
     description: typeof d.description === "string" ? d.description : "",
     priceGHS: d.priceGHS,
@@ -295,19 +297,6 @@ function toSale(d) {
       ? { soldByUserId: d.soldByUserId.trim() }
       : {}),
   }
-}
-
-/**
- * @param {string} packageName
- * @param {string} dataLimit
- * @param {string} voucherCode
- */
-function buildSaleVoucherSmsMessage(packageName, dataLimit, voucherCode) {
-  const limit = typeof dataLimit === "string" ? dataLimit.trim() : ""
-  const packageLine = limit
-    ? ` Package: ${packageName} (${limit})`
-    : ` Package: ${packageName}`
-  return `Your wifi access is ready!\n${packageLine}\n Voucher ID: ${voucherCode}`
 }
 
 /**
@@ -1484,6 +1473,12 @@ export function createCatalogRouter(deps) {
       const soldAt = new Date().toISOString()
       const date = soldAt.slice(0, 10)
       const saleId = `sale-${randomUUID().slice(0, 12)}`
+      const radiusFields = await applyPurchaseRadiusWindow({
+        username: voucherCode,
+        packageId,
+        pkg,
+        soldAt,
+      })
 
       const saleDoc = {
         _id: saleId,
@@ -1503,6 +1498,7 @@ export function createCatalogRouter(deps) {
         channel: paymentReference ? "agent_momo" : "agent",
         soldByUserId: req.auth.userId,
         ...(paymentReference ? { paymentReference, smsSent: false } : {}),
+        ...radiusFields,
       }
 
       await sales.insertOne(saleDoc)
@@ -1524,7 +1520,12 @@ export function createCatalogRouter(deps) {
         })
       }
 
-      const smsMessage = buildSaleVoucherSmsMessage(packageType, packageDataLimit, voucherCode)
+      const smsMessage = buildSaleVoucherSmsMessage(
+        packageType,
+        packageDataLimit,
+        voucherCode,
+        radiusFields.radiusSessionTimeout,
+      )
       let smsSent = false
       try {
         const smsResult = await sendSms({ to: customerPhone, message: smsMessage })
@@ -2311,7 +2312,8 @@ export function createCatalogRouter(deps) {
 
   router.delete("/packages/:id", requireAdmin, async (req, res) => {
     try {
-      const id = req.params.id
+      const id = decodeURIComponent(String(req.params.id || "")).trim()
+      if (!id) return res.status(400).json({ error: "Package id is required." })
       const existing = await packages.findOne({ _id: id })
       if (!existing) return res.status(404).json({ error: "Package not found." })
       const r = await packages.deleteOne({ _id: id })

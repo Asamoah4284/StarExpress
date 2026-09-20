@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { checkMoolrePaymentStatus } from "./moolrePaymentStatus.js"
 import { resolveMoolreRedirectUrl, resolveMoolreWebhookUrl } from "./moolrePaymentUrls.js"
 import { getMoolrePaymentAuthHeaders } from "./ussdHelpers.js"
+import { buyLog, buyError } from "./buyLog.js"
 
 const MOOLRE_ACCOUNT_NUMBER = process.env.MOOLRE_ACCOUNT_NUMBER
 const MOOLRE_EMBED_URL = "https://api.moolre.com/embed/link"
@@ -55,6 +56,14 @@ export async function initializeMoolreEmbedLink(opts) {
     redirectUrl,
     metadataKeys: Object.keys(metadata),
   })
+  buyLog("moolre embed request", {
+    externalref,
+    amount,
+    email: maskEmail(email),
+    webhookUrl,
+    redirectUrl,
+    metadata,
+  })
 
   const payload = {
     type: 1,
@@ -89,6 +98,11 @@ export async function initializeMoolreEmbedLink(opts) {
       httpStatus: response.status,
       bodyPreview: text.slice(0, 400),
     })
+    buyError("moolre embed invalid JSON", {
+      externalref,
+      httpStatus: response.status,
+      bodyPreview: text.slice(0, 400),
+    })
     return { ok: false, error: "Invalid response from payment gateway." }
   }
 
@@ -100,6 +114,12 @@ export async function initializeMoolreEmbedLink(opts) {
     message: data?.message,
     hasAuthUrl: Boolean(data?.data && typeof data.data === "object"),
   })
+  buyLog("moolre embed response", {
+    externalref,
+    httpStatus: response.status,
+    moolreStatus: status,
+    body: data,
+  })
 
   if (!response.ok || (status !== 1 && status !== 200)) {
     const msg =
@@ -107,6 +127,7 @@ export async function initializeMoolreEmbedLink(opts) {
         ? String(data.message)
         : "Payment initialization failed"
     console.error("[moolre-init] failed", { externalref, httpStatus: response.status, msg })
+    buyError("moolre embed failed", { externalref, httpStatus: response.status, msg, body: data })
     return { ok: false, error: msg }
   }
 
@@ -131,6 +152,7 @@ export async function verifyMoolrePaymentWithRetry(paymentReference) {
   let lastMessage = "Payment verification failed"
 
   console.log("[moolre-verify] start", { paymentReference, attempts: delays.length })
+  buyLog("moolre verify start", { paymentReference, attempts: delays.length })
 
   for (let attempt = 0; attempt < delays.length; attempt++) {
     if (delays[attempt] > 0) {
@@ -146,6 +168,16 @@ export async function verifyMoolrePaymentWithRetry(paymentReference) {
       txStatusNum: status.txStatusNum,
       message: status.message || status.error,
     })
+    buyLog("moolre verify poll", {
+      paymentReference,
+      attempt: attempt + 1,
+      ok: status.ok,
+      isPaid: status.isPaid,
+      txStatusNum: status.txStatusNum,
+      code: status.code,
+      message: status.message || status.error,
+      data: status.data,
+    })
 
     if (!status.ok) {
       lastMessage = status.error || status.message || lastMessage
@@ -155,11 +187,13 @@ export async function verifyMoolrePaymentWithRetry(paymentReference) {
     if (status.isPaid) {
       const amountPaid = Number(status.data?.amount ?? status.data?.Amount ?? 0)
       console.log("[moolre-verify] paid", { paymentReference, amountPaid })
+      buyLog("moolre verify paid", { paymentReference, amountPaid, data: status.data })
       return { ok: true, amountPaid, data: status.data }
     }
 
     if (status.txStatusNum === 2) {
       console.warn("[moolre-verify] failed/cancelled", { paymentReference })
+      buyError("moolre verify failed or cancelled", { paymentReference, data: status.data })
       return { ok: false, error: "Payment failed or was cancelled." }
     }
 
@@ -167,6 +201,7 @@ export async function verifyMoolrePaymentWithRetry(paymentReference) {
   }
 
   console.warn("[moolre-verify] exhausted retries", { paymentReference, lastMessage })
+  buyError("moolre verify exhausted", { paymentReference, lastMessage })
   return { ok: false, error: lastMessage }
 }
 

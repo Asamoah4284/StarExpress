@@ -1,5 +1,14 @@
 import { getApiBaseUrl } from "@/lib/env.js"
 
+/**
+ * @param {string} step
+ * @param {unknown} [details]
+ */
+function buyLog(step, details) {
+  if (details === undefined) console.log(`[buy] ${step}`)
+  else console.log(`[buy] ${step}`, details)
+}
+
 function url(path) {
   const base = getApiBaseUrl().replace(/\/$/, "")
   const p = path.startsWith("/") ? path : `/${path}`
@@ -17,8 +26,10 @@ async function parseJsonResponse(path, init = {}) {
   }
   let res
   try {
+    buyLog("api request", { path, method: init.method || "GET", body: init.body })
     res = await fetch(url(path), { ...init, headers })
-  } catch {
+  } catch (err) {
+    buyLog("api network error", { path, error: err instanceof Error ? err.message : String(err) })
     return {
       res: new Response(null, {
         status: 503,
@@ -35,6 +46,7 @@ async function parseJsonResponse(path, init = {}) {
   } catch {
     data = null
   }
+  buyLog("api response", { path, status: res.status, ok: res.ok, data })
   return { res, data }
 }
 
@@ -141,6 +153,7 @@ export async function initializePortalPayment(body) {
     body: JSON.stringify(payloadBody),
   })
   if (!res.ok || !data || data.success !== true) {
+    buyLog("initialize failed", { status: res.status, data })
     return {
       ok: false,
       error: data?.error || res.statusText || "Failed to initialize payment.",
@@ -148,9 +161,10 @@ export async function initializePortalPayment(body) {
   }
   const payload = data.data
   if (!payload?.authorization_url) {
+    buyLog("initialize missing authorization_url", { data })
     return { ok: false, error: "Payment gateway did not return a payment URL." }
   }
-  return {
+  const result = {
     ok: true,
     authorizationUrl: String(payload.authorization_url),
     paymentReference: String(payload.reference || ""),
@@ -159,6 +173,8 @@ export async function initializePortalPayment(body) {
     originalAmount: Number(payload.originalAmount ?? payload.amount),
     promoPercentOff: Number(payload.promoPercentOff ?? 0),
   }
+  buyLog("initialize ok", result)
+  return result
 }
 
 /**
@@ -170,17 +186,18 @@ export async function fetchPortalPaymentStatus(paymentReference) {
     `/api/portal/payments/status?paymentReference=${encodeURIComponent(paymentReference)}`,
   )
   if (!res.ok) {
+    buyLog("status not ok", { paymentReference, status: res.status, data })
     return { ok: false, ready: false }
   }
-  return {
+  const result = {
     ok: true,
     ready: data?.ready === true,
-    voucherCode: String(data?.voucherCode || data?.username || ""),
-    username: String(data?.username || data?.voucherCode || ""),
-    password: String(data?.password || data?.username || data?.voucherCode || ""),
+    voucherCode: String(data?.voucherCode || ""),
     packageName: String(data?.packageName || "WiFi"),
     smsSent: data?.smsSent === true,
   }
+  buyLog("status result", { paymentReference, ...result })
+  return result
 }
 
 /**
@@ -192,22 +209,23 @@ export async function completePortalPayment(paymentReference) {
     body: JSON.stringify({ paymentReference }),
   })
   if (!res.ok || !data || data.success !== true) {
+    buyLog("complete failed", { paymentReference, status: res.status, data })
     return {
       ok: false,
       error: data?.error || res.statusText || "Failed to complete payment.",
       retryable: res.status === 409,
     }
   }
-  return {
+  const result = {
     ok: true,
-    voucherCode: String(data.voucherCode || data.username || ""),
-    username: String(data.username || data.voucherCode || ""),
-    password: String(data.password || data.username || data.voucherCode || ""),
+    voucherCode: String(data.voucherCode || ""),
     packageName: String(data.packageName || "WiFi"),
     smsSent: data.smsSent === true,
     paymentReference: String(data.paymentReference || paymentReference),
     hotspot: data.hotspot === true,
   }
+  buyLog("complete ok", result)
+  return result
 }
 
 /**
@@ -255,11 +273,13 @@ export async function authorizePortalRadius(paymentReference, portalParams = {})
   }
   const authorizeUrl =
     typeof data.authorizeUrl === "string" && data.authorizeUrl.trim() ? data.authorizeUrl.trim() : null
+  const voucherCode = typeof data.voucherCode === "string" ? data.voucherCode : ""
+  buyLog("radius-authorize ok", { paymentReference, hotspot: data.hotspot === true, voucherCode, authorizeUrl })
   return {
     ok: true,
     hotspot: data.hotspot === true,
     authorizeUrl,
-    username: typeof data.username === "string" ? data.username : "",
+    voucherCode,
   }
 }
 
@@ -301,11 +321,14 @@ export async function retrievePortalVouchers(phone) {
     body: JSON.stringify({ phone }),
   })
   if (!res.ok) {
+    buyLog("retrieve failed", { phone, status: res.status, data })
     return { ok: false, error: data?.error || res.statusText || "Failed to retrieve vouchers." }
   }
-  return {
+  const result = {
     ok: true,
     vouchers: Array.isArray(data?.vouchers) ? data.vouchers : [],
     message: typeof data?.message === "string" ? data.message : "",
   }
+  buyLog("retrieve ok", { count: result.vouchers.length, vouchers: result.vouchers })
+  return result
 }

@@ -181,6 +181,21 @@ export default function Packages() {
       if (!token) throw new Error("Not signed in")
       const r = await deleteCatalogPackage(token, id)
       if (!r.ok) throw new Error(r.error || "Delete failed")
+      return id
+    },
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ["catalog"] })
+      const snapshots = queryClient.getQueriesData({ queryKey: ["catalog"] })
+      queryClient.setQueriesData({ queryKey: ["catalog"] }, (old) => {
+        if (!old || !Array.isArray(old.packages)) return old
+        return { ...old, packages: old.packages.filter((p) => p.id !== id) }
+      })
+      return { snapshots }
+    },
+    onError: (_err, _id, ctx) => {
+      for (const [key, data] of ctx?.snapshots ?? []) {
+        queryClient.setQueryData(key, data)
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["catalog"] })
@@ -403,8 +418,10 @@ export default function Packages() {
 
   const remove = React.useCallback(
     (id) => {
-      if (!window.confirm("Delete this package?")) return
-      deleteMutation.mutate(id)
+      const packageId = typeof id === "string" ? id.trim() : String(id ?? "").trim()
+      if (!packageId) return
+      if (!window.confirm("Delete this package? It will be removed from the catalog and WiFi buy page.")) return
+      deleteMutation.mutate(packageId)
     },
     [deleteMutation],
   )
@@ -622,7 +639,11 @@ export default function Packages() {
                     variant="destructive"
                     className="size-8 shrink-0"
                     disabled={deleteMutation.isPending}
-                    onClick={() => remove(pkg.id)}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      remove(pkg.id)
+                    }}
                     aria-label="Delete package"
                     title="Delete package"
                   >

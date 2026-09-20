@@ -1,19 +1,15 @@
 /**
- * RADIUS side of Grandstream's External Captive Portal API.
+ * FreeRADIUS / daloRADIUS SQL helpers.
  *
- * After payment, createShareableRadiusLogin() writes username/password into
- * FreeRADIUS (radcheck/radreply). Grandstream checks those credentials when
- * someone types them on the WiFi login page — Mongo voucher CSVs are not used.
- *
- * generateRadiusSession() still builds an authorizeUrl for optional auto-login;
- * captive /buy no longer redirects there so codes can be shared.
- *
- * Reference: https://documentation.grandstream.com/knowledge-base/external-captive-portal-api-guide/
+ * Vouchers are created in daloRADIUS and uploaded to this app. On purchase we
+ * SMS the existing username and set Expiration + Session-Timeout from the
+ * package duration. When that window ends we delete the RADIUS user.
  */
 
 import crypto from "node:crypto"
 import mysql from "mysql2/promise"
 import { resolveFrontendBaseUrl } from "./frontendUrl.js"
+import { buyLog, buyError, errorForLog } from "./buyLog.js"
 
 /**
  * Optional explicit limits keyed by packageId.
@@ -211,6 +207,222 @@ async function writeRadiusSession({ username, password, sessionTimeout = null, m
   } finally {
     conn.release()
   }
+}
+
+const RADIUS_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+/**
+ * FreeRADIUS / daloRADIUS Expiration check-item, e.g. `20 Sep 2026 15:21:00`.
+ * @param {Date} date
+ */
+function formatRadiusExpiration(date) {
+  const d = date.getUTCDate()
+  const mon = RADIUS_MONTHS[date.getUTCMonth()]
+  const y = date.getUTCFullYear()
+  const hh = String(date.getUTCHours()).padStart(2, "0")
+  const mm = String(date.getUTCMinutes()).padStart(2, "0")
+  const ss = String(date.getUTCSeconds()).padStart(2, "0")
+  return `${d} ${mon} ${y} ${hh}:${mm}:${ss}`
+}
+
+/**
+ * @param {Date} date
+ */
+function formatMysqlDatetime(date) {
+  return date.toISOString().slice(0, 19).replace("T", " ")
+}
+
+/**
+ * @param {number} seconds
+ */
+export function formatDurationLabel(seconds) {
+  const sec = Number(seconds)
+  if (!Number.isFinite(sec) || sec <= 0) return ""
+  if (sec % 86400 === 0) {
+    const d = sec / 86400
+    return d === 1 ? "1 day" : `${d} days`
+  }
+  if (sec % 3600 === 0) {
+    const h = sec / 3600
+    return h === 1 ? "1 hour" : `${h} hours`
+  }
+  if (sec % 60 === 0) {
+    const m = sec / 60
+    return m === 1 ? "1 minute" : `${m} minutes`
+  }
+  return `${Math.round(sec)} seconds`
+}
+
+/**
+ * @param {import("mysql2/promise").PoolConnection} conn
+ * @param {string} sql
+ * @param {unknown[]} params
+ */
+async function tryRadiusQuery(conn, sql, params) {
+  try {
+    await conn.query(sql, params)
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : ""
+    if (code === "ER_NO_SUCH_TABLE" || code === "ER_BAD_FIELD_ERROR") return
+    throw err
+  }
+}
+
+/**
+ * @param {import("mysql2/promise").PoolConnection} conn
+ * @param {"radcheck" | "radreply"} table
+ * @param {string} username
+ * @param {string} attribute
+ * @param {string} op
+ * @param {string} value
+ */
+async function upsertRadiusAttribute(conn, table, username, attribute, op, value) {
+  await conn.query(`DELETE FROM ${table} WHERE username = ? AND attribute = ?`, [username, attribute])
+  await conn.query(`INSERT INTO ${table} (username, attribute, op, value) VALUES (?, ?, ?, ?)`, [
+    username,
+    attribute,
+    op,
+    value,
+  ])
+}
+
+/**
+ * Clock starts at purchase: set daloRADIUS/FreeRADIUS Expiration + Session-Timeout
+ * on the already-created username (do not create a new login).
+ *
+ * @param {{
+ *   username: string
+ *   sessionTimeout: number
+ *   maxOctets?: number | null
+ *   expiresAt: Date
+ * }} opts
+ */
+export async function activateSoldRadiusVoucher(opts) {
+  const username = String(opts.username || "").trim()
+  if (!username) throw new Error("RADIUS username is required.")
+  const sessionTimeout = Math.round(Number(opts.sessionTimeout))
+  const expiresAt = opts.expiresAt instanceof Date ? opts.expiresAt : new Date(opts.expiresAt)
+  const pool = getRadiusPool()
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+
+    const [passwordRows] = await conn.query(
+      "SELECT id FROM radcheck WHERE username = ? AND attribute IN ('Cleartext-Password','User-Password','MD5-Password','SHA-Password','NT-Password','Crypt-Password') LIMIT 1",
+      [username],
+    )
+    if (!Array.isArray(passwordRows) || passwordRows.length === 0) {
+      buyError("radius sold code missing radcheck password row", { username })
+    }
+
+    await tryRadiusQuery(
+      conn,
+      "DELETE FROM radcheck WHERE username = ? AND attribute = 'Auth-Type' AND UPPER(value) = 'REJECT'",
+      [username],
+    )
+
+    if (Number.isFinite(sessionTimeout) && sessionTimeout > 0) {
+      await upsertRadiusAttribute(conn, "radcheck", username, "Expiration", ":=", formatRadiusExpiration(expiresAt))
+      await upsertRadiusAttribute(conn, "radreply", username, "Session-Timeout", ":=", String(sessionTimeout))
+    }
+    if (opts.maxOctets != null && Number(opts.maxOctets) > 0) {
+      await upsertRadiusAttribute(conn, "radreply", username, "Mikrotik-Total-Limit", ":=", String(Math.round(Number(opts.maxOctets))))
+    }
+
+    const mysqlExpires = formatMysqlDatetime(expiresAt)
+    await tryRadiusQuery(conn, "UPDATE userinfo SET updatedate = NOW() WHERE username = ?", [username])
+    await tryRadiusQuery(conn, "UPDATE userbillinfo SET expirationdate = ? WHERE username = ?", [mysqlExpires, username])
+
+    await conn.commit()
+    buyLog("radius purchase window set", {
+      username,
+      sessionTimeout,
+      expiresAt: expiresAt.toISOString(),
+    })
+  } catch (err) {
+    await conn.rollback()
+    buyError("radius purchase window write failed", { username, ...errorForLog(err) })
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+/**
+ * Disable the hotspot login after the paid window (same username daloRADIUS created).
+ * @param {string} username
+ */
+export async function removeRadiusUser(username) {
+  const name = String(username || "").trim()
+  if (!name) return
+  const pool = getRadiusPool()
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    await tryRadiusQuery(conn, "DELETE FROM radcheck WHERE username = ?", [name])
+    await tryRadiusQuery(conn, "DELETE FROM radreply WHERE username = ?", [name])
+    await tryRadiusQuery(conn, "DELETE FROM radusergroup WHERE username = ?", [name])
+    await tryRadiusQuery(conn, "DELETE FROM userinfo WHERE username = ?", [name])
+    await tryRadiusQuery(conn, "DELETE FROM userbillinfo WHERE username = ?", [name])
+    await conn.commit()
+    console.log("[radius] removed expired user", { username: name })
+  } catch (err) {
+    await conn.rollback()
+    throw err
+  } finally {
+    conn.release()
+  }
+}
+
+/**
+ * Bind a sold uploaded voucher to the package duration. SMS still goes out if RADIUS is down.
+ *
+ * @param {{
+ *   username: string
+ *   packageId?: string
+ *   pkg?: { name?: string, dataLimit?: string, radiusSessionTimeout?: unknown, radiusMaxOctets?: unknown } | null
+ *   soldAt?: string
+ * }} opts
+ * @returns {Promise<{ radiusExpiresAt: string, radiusSessionTimeout: number, radiusBoundAt?: string }>}
+ */
+export async function applyPurchaseRadiusWindow(opts) {
+  const username = String(opts.username || "").trim()
+  const limits = resolveRadiusPackageLimits(opts.packageId || "", opts.pkg || null)
+  const sessionTimeout =
+    limits.sessionTimeout && limits.sessionTimeout > 0 ? Math.round(limits.sessionTimeout) : 86400
+  const startMs = Date.parse(String(opts.soldAt || ""))
+  const start = Number.isFinite(startMs) ? startMs : Date.now()
+  const expiresAt = new Date(start + sessionTimeout * 1000)
+  /** @type {{ radiusExpiresAt: string, radiusSessionTimeout: number, radiusBoundAt?: string }} */
+  const fields = {
+    radiusExpiresAt: expiresAt.toISOString(),
+    radiusSessionTimeout: sessionTimeout,
+  }
+  if (!username) {
+    buyError("radius window skipped — empty code")
+    return fields
+  }
+  if (!isRadiusConfigured()) {
+    buyError("radius window skipped — RADIUS_DB_* not set", { username, sessionTimeout, expiresAt: fields.radiusExpiresAt })
+    return fields
+  }
+  try {
+    buyLog("radius window applying", { username, sessionTimeout, expiresAt: fields.radiusExpiresAt, maxOctets: limits.maxOctets })
+    await activateSoldRadiusVoucher({
+      username,
+      sessionTimeout,
+      maxOctets: limits.maxOctets,
+      expiresAt,
+    })
+    fields.radiusBoundAt = new Date().toISOString()
+    buyLog("radius window applied", { username, ...fields })
+  } catch (err) {
+    buyError("radius apply purchase window failed", {
+      username,
+      ...errorForLog(err),
+    })
+  }
+  return fields
 }
 
 /**

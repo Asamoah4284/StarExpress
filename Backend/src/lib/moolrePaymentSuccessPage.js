@@ -8,6 +8,7 @@ import {
   processCaptiveMomoPaymentSuccess,
 } from "./captiveMomoPayment.js"
 import { checkMoolrePaymentStatus } from "./moolrePaymentStatus.js"
+import { buyLog, buyError, errorForLog } from "./buyLog.js"
 
 /**
  * @param {{
@@ -41,7 +42,9 @@ export function createMoolrePaymentSuccessHandler(deps) {
     }
 
     if (reference && isCaptivePaymentReference(reference)) {
+      buyLog("moolre redirect captive", { reference, query: q })
       void reconcileCaptivePaymentOnRedirect(reference, deps).catch((err) => {
+        buyError("moolre redirect captive failed", { reference, ...errorForLog(err) })
         console.error("[moolre-redirect] captive reconcile failed", reference, err)
       })
     }
@@ -144,6 +147,7 @@ async function reconcileAgentPaymentOnRedirect(paymentReference, deps) {
 async function reconcileCaptivePaymentOnRedirect(paymentReference, deps) {
   const existing = await deps.sales.findOne({ paymentReference })
   if (existing) {
+    buyLog("redirect captive sale already exists", { paymentReference, saleId: existing._id, smsSent: existing.smsSent === true })
     console.log("[moolre-redirect] captive sale already exists", { paymentReference, saleId: existing._id })
     await markAgentPaymentPendingCompleted(deps.agentPaymentPending, paymentReference, {
       saleId: String(existing._id),
@@ -153,6 +157,14 @@ async function reconcileCaptivePaymentOnRedirect(paymentReference, deps) {
   }
 
   const status = await checkMoolrePaymentStatus(paymentReference)
+  buyLog("redirect captive payment status", {
+    paymentReference,
+    ok: status.ok,
+    isPaid: status.isPaid,
+    txStatusNum: status.txStatusNum,
+    code: status.code,
+    data: status.data,
+  })
   console.log("[moolre-redirect] captive payment status", {
     paymentReference,
     ok: status.ok,
@@ -172,6 +184,7 @@ async function reconcileCaptivePaymentOnRedirect(paymentReference, deps) {
     paymentReference,
     source: "redirect",
   })
+  buyLog("redirect captive reconcile outcome", { paymentReference, outcome })
   console.log("[moolre-redirect] captive reconcile outcome", { paymentReference, outcome })
 }
 

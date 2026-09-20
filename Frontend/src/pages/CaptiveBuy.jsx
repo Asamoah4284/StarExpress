@@ -165,8 +165,10 @@ export default function CaptiveBuy() {
     let intervalId = null
 
     const checkStatus = async () => {
+      console.log("[buy] iframe poll status", { paymentReference: moolreReference })
       const status = await fetchPortalPaymentStatus(moolreReference)
       if (cancelled) return
+      console.log("[buy] iframe poll result", status)
       if (status.ok && status.ready) {
         if (intervalId) clearInterval(intervalId)
         setShowMoolre(false)
@@ -204,7 +206,7 @@ export default function CaptiveBuy() {
     setSelectedPackage(null)
     setPackagePage(0)
     if (result.packages.length === 0) {
-      setError("No packages available at this location. Try another location.")
+      setError("No WiFi codes in stock at this location. Upload vouchers for this site, or try another location.")
       return
     }
     setStep(2)
@@ -261,6 +263,13 @@ export default function CaptiveBuy() {
     }
     setError(null)
     setPaying(true)
+    console.log("[buy] pay start", {
+      locationId,
+      packageId: selectedPackage.packageId,
+      packageName: selectedPackage.name,
+      promoCode: appliedPromo?.code || "",
+      portalParams,
+    })
     const result = await initializePortalPayment({
       locationId,
       packageId: selectedPackage.packageId,
@@ -268,6 +277,7 @@ export default function CaptiveBuy() {
       promoCode: appliedPromo?.code || "",
       ...portalParams,
     })
+    console.log("[buy] pay initialize result", result)
     if (!result.ok) {
       setPaying(false)
       setError(result.error)
@@ -284,6 +294,7 @@ export default function CaptiveBuy() {
     response /** @type {{ reference?: string, externalref?: string }} */,
   ) => {
     const ref = response?.reference || response?.externalref || moolreReference
+    console.log("[buy] moolre success callback", { response, ref })
     setShowMoolre(false)
     if (!ref) {
       setError("Payment could not be confirmed. Please try again or contact support.")
@@ -293,6 +304,7 @@ export default function CaptiveBuy() {
   }
 
   const handleMoolreCancel = () => {
+    console.log("[buy] moolre cancelled", { paymentReference: moolreReference })
     setShowMoolre(false)
     setMoolreAuthUrl(null)
     setMoolreReference(null)
