@@ -97,89 +97,53 @@ export async function initializeMoolreEmbedLink(opts) {
     : resolveMoolreRedirectUrl()
   const safeMetadata = stringifyMetadata(metadata)
 
-  const attempts = [
-    {
-      label: "full",
-      payload: {
-        type: 1,
-        amount: amountStr,
-        email: billingEmail,
-        externalref,
-        callback: webhookUrl,
-        redirect: redirectUrl,
-        reusable: "0",
-        currency: "GHS",
-        accountnumber: MOOLRE_ACCOUNT_NUMBER,
-        metadata: safeMetadata,
-      },
-    },
-    {
-      label: "no-metadata",
-      payload: {
-        type: 1,
-        amount: amountStr,
-        email: billingEmail,
-        externalref,
-        callback: webhookUrl,
-        redirect: redirectUrl,
-        reusable: "0",
-        currency: "GHS",
-        accountnumber: MOOLRE_ACCOUNT_NUMBER,
-      },
-    },
-    {
-      label: "minimal",
-      payload: {
-        type: 1,
-        amount: amountStr,
-        email: billingEmail,
-        externalref,
-        reusable: "0",
-        currency: "GHS",
-        accountnumber: MOOLRE_ACCOUNT_NUMBER,
-      },
-    },
-  ]
-
-  /** @type {{ ok: false, error: string } | null} */
-  let lastFail = null
-
-  for (let i = 0; i < attempts.length; i++) {
-    const attempt = attempts[i]
-    if (i > 0) await new Promise((r) => setTimeout(r, 400))
-
-    console.log("[moolre-init] embed/link request", {
-      externalref,
-      attempt: attempt.label,
-      amount: amountStr,
-      email: maskEmail(billingEmail),
-      webhookUrl: "callback" in attempt.payload ? webhookUrl : null,
-      redirectUrl: "redirect" in attempt.payload ? redirectUrl : null,
-      metadataKeys: Object.keys(safeMetadata),
-    })
-    buyLog("moolre embed request", {
-      externalref,
-      attempt: attempt.label,
-      amount: amountStr,
-      email: maskEmail(billingEmail),
-      webhookUrl: "callback" in attempt.payload ? webhookUrl : null,
-      redirectUrl: "redirect" in attempt.payload ? redirectUrl : null,
-      metadata: "metadata" in attempt.payload ? safeMetadata : undefined,
-    })
-
-    const posted = await postMoolreEmbedLink(attempt.payload, externalref)
-    if (posted.ok) {
-      return { ok: true, authorization_url: posted.authorization_url, redirect_url: redirectUrl }
-    }
-
-    lastFail = { ok: false, error: posted.error }
-    const code = String(posted.code || "").toUpperCase()
-    const retryable = code === "IE01" || /internal error/i.test(posted.error)
-    if (!retryable) return lastFail
-    buyError("moolre embed retry", { externalref, attempt: attempt.label, code, error: posted.error })
+  const payload = {
+    type: 1,
+    amount: amountStr,
+    email: billingEmail,
+    externalref,
+    callback: webhookUrl,
+    redirect: redirectUrl,
+    reusable: "0",
+    expiration_time: 15,
+    currency: "GHS",
+    accountnumber: MOOLRE_ACCOUNT_NUMBER,
+    metadata: safeMetadata,
   }
 
-  return lastFail || { ok: false, error: "Payment initialization failed" }
+  console.log("[moolre-init] embed/link request", {
+    externalref,
+    amount: amountStr,
+    email: maskEmail(billingEmail),
+    webhookUrl,
+    redirectUrl,
+    metadataKeys: Object.keys(safeMetadata),
+  })
+  buyLog("moolre embed request", {
+    externalref,
+    amount: amountStr,
+    email: maskEmail(billingEmail),
+    webhookUrl,
+    redirectUrl,
+    metadata: safeMetadata,
+  })
+
+  const posted = await postMoolreEmbedLink(payload, externalref)
+  if (posted.ok) {
+    return { ok: true, authorization_url: posted.authorization_url, redirect_url: redirectUrl }
+  }
+
+  const code = String(posted.code || "").toUpperCase()
+  if (code === "IE01" || /internal error/i.test(posted.error)) {
+    buyError("moolre embed busy", { externalref, code, error: posted.error })
+    return {
+      ok: false,
+      error:
+        "MoMo checkout is still opening from a previous try. Wait about a minute, then tap Pay once. Do not tap Pay repeatedly.",
+    }
+  }
+
+  return { ok: false, error: posted.error }
 }
 
 /**

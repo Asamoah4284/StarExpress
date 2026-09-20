@@ -115,7 +115,7 @@ export default function PortalPaymentSuccess() {
       if (cancelled) return
       if (complete.ok && applyReady(complete)) return
       void tick()
-      intervalId = setInterval(() => void tick(), 1000)
+      intervalId = setInterval(() => void tick(), 4000)
     })()
 
     return () => {

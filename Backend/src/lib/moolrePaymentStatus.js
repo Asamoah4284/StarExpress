@@ -49,13 +49,17 @@ async function queryMoolrePaymentStatus(id, idtype) {
     body: data,
   })
 
+  const isBusy = code === "IE01"
+  const isNotFound = code === "SS07" || txStatusNum === 3
   return {
     ok: apiOk,
     txStatusNum,
     isPaid: txStatusNum === 1,
-    isNotFound: code === "SS07" || txStatusNum === 3,
+    isNotFound,
+    isBusy,
     code,
-    message: data?.message,
+    message: typeof data?.message === "string" ? data.message : "",
+    error: apiOk ? undefined : String(data?.message || data?.code || "Status check failed"),
     data: data?.data,
     idtype,
     queriedId: id,

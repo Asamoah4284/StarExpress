@@ -431,6 +431,10 @@ export function createPortalRouter(deps) {
     }
   })
 
+  /** @type {Map<string, number>} */
+  const lastMoolreStatusAt = new Map()
+  const MOOLRE_STATUS_MIN_INTERVAL_MS = 8_000
+
   // Poll while MoMo is open / on the success page — ready once webhook assigned a voucher + SMS.
   router.get("/payments/status", async (req, res) => {
     try {
@@ -449,31 +453,38 @@ export function createPortalRouter(deps) {
         hasCode: Boolean(wifiCodeFromSale(sale)),
       })
       if (!wifiCodeFromSale(sale)) {
-        const paid = await checkMoolrePaymentStatus(paymentReference)
-        buyLog("status moolre", {
-          paymentReference,
-          ok: paid.ok,
-          isPaid: paid.isPaid,
-          error: paid.ok ? undefined : paid.error,
-        })
-        if (paid.ok && paid.isPaid) {
-          const outcome = await processCaptiveMomoPaymentSuccess({
-            pending: agentPaymentPending,
-            packages,
-            vouchers,
-            sales,
-            auditLogs,
+        const now = Date.now()
+        const lastAt = lastMoolreStatusAt.get(paymentReference) || 0
+        const mayQueryMoolre = now - lastAt >= MOOLRE_STATUS_MIN_INTERVAL_MS
+        if (mayQueryMoolre) {
+          lastMoolreStatusAt.set(paymentReference, now)
+          const paid = await checkMoolrePaymentStatus(paymentReference)
+          buyLog("status moolre", {
             paymentReference,
-            source: "portal-status",
+            ok: paid.ok,
+            isPaid: paid.isPaid,
+            code: paid.code,
+            error: paid.ok ? undefined : paid.error,
           })
-          buyLog("status fulfill outcome", {
-            paymentReference,
-            ok: outcome.ok,
-            status: outcome.status,
-            voucherCode: outcome.voucherCode,
-            smsSent: outcome.smsSent,
-          })
-          sale = await sales.findOne({ paymentReference })
+          if (paid.ok && paid.isPaid) {
+            const outcome = await processCaptiveMomoPaymentSuccess({
+              pending: agentPaymentPending,
+              packages,
+              vouchers,
+              sales,
+              auditLogs,
+              paymentReference,
+              source: "portal-status",
+            })
+            buyLog("status fulfill outcome", {
+              paymentReference,
+              ok: outcome.ok,
+              status: outcome.status,
+              voucherCode: outcome.voucherCode,
+              smsSent: outcome.smsSent,
+            })
+            sale = await sales.findOne({ paymentReference })
+          }
         }
       }
 

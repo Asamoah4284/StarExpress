@@ -177,7 +177,7 @@ export default function CaptiveBuy() {
     }
 
     void checkStatus()
-    intervalId = setInterval(() => void checkStatus(), 1500)
+    intervalId = setInterval(() => void checkStatus(), 4000)
     return () => {
       cancelled = true
       if (intervalId) clearInterval(intervalId)
