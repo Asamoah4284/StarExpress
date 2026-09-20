@@ -8,7 +8,7 @@ export function getBillingEmail(input) {
     const trimmed = input.trim()
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return trimmed
     const digits = trimmed.replace(/\D/g, "")
-    if (digits.length >= 7) return `${digits}@phone.starexpress.app`
+    if (digits.length >= 7) return `${digits}@tabitacum.cloud`
     return null
   }
 
@@ -16,7 +16,7 @@ export function getBillingEmail(input) {
   if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return email
 
   const phone = (input?.phone || "").replace(/\D/g, "")
-  if (phone.length >= 7) return `${phone}@phone.starexpress.app`
+  if (phone.length >= 7) return `${phone}@tabitacum.cloud`
 
   return null
 }

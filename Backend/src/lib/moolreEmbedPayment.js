@@ -4,8 +4,27 @@ import { resolveMoolreRedirectUrl, resolveMoolreWebhookUrl } from "./moolrePayme
 import { getMoolrePaymentAuthHeaders } from "./ussdHelpers.js"
 import { buyLog, buyError } from "./buyLog.js"
 
-const MOOLRE_ACCOUNT_NUMBER = process.env.MOOLRE_ACCOUNT_NUMBER
+const MOOLRE_ACCOUNT_NUMBER = String(process.env.MOOLRE_ACCOUNT_NUMBER || "").replace(/\s/g, "")
 const MOOLRE_EMBED_URL = "https://api.moolre.com/embed/link"
+
+/**
+ * Domain Moolre can resolve. Fake @phone.starexpress.app used to work until their
+ * validator started treating unknown mail domains as IE01 INTERNAL ERROR.
+ */
+function billingEmailDomain() {
+  const fromEnv = String(process.env.MOOLRE_BILLING_EMAIL || "").trim()
+  const at = fromEnv.lastIndexOf("@")
+  if (at > 0) return fromEnv.slice(at + 1).toLowerCase()
+  for (const raw of [process.env.FRONTEND_URL, process.env.BACKEND_URL]) {
+    try {
+      const host = new URL(String(raw || "").trim()).hostname.replace(/^www\./i, "")
+      if (host && host.includes(".")) return host.toLowerCase()
+    } catch {
+      /* ignore */
+    }
+  }
+  return "tabitacum.cloud"
+}
 
 /**
  * @param {string} phone
@@ -13,7 +32,33 @@ const MOOLRE_EMBED_URL = "https://api.moolre.com/embed/link"
 export function billingEmailFromPhone(phone) {
   const digits = String(phone || "").replace(/\D/g, "")
   if (digits.length < 7) return null
-  return `${digits}@phone.starexpress.app`
+  const explicit = String(process.env.MOOLRE_BILLING_EMAIL || "").trim()
+  if (explicit.includes("@")) return explicit
+  return `${digits}@${billingEmailDomain()}`
+}
+
+/**
+ * @param {unknown} amount
+ */
+function formatMoolreAmount(amount) {
+  const n = Number(amount)
+  if (!Number.isFinite(n) || n <= 0) return ""
+  return n.toFixed(2)
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {Record<string, string>}
+ */
+function stringifyMetadata(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  /** @type {Record<string, string>} */
+  const out = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (value == null || value === "") continue
+    out[String(key).slice(0, 40)] = String(value).slice(0, 200)
+  }
+  return out
 }
 
 /**
@@ -40,44 +85,109 @@ export async function initializeMoolreEmbedLink(opts) {
     return { ok: false, error: "Payment gateway not configured. Contact support." }
   }
 
-  const webhookUrl = resolveMoolreWebhookUrl()
-  const redirectBase = redirectOverride
-    ? String(redirectOverride).trim()
-    : resolveMoolreRedirectUrl()
-  const redirectUrl = redirectOverride
-    ? redirectBase
-    : `${redirectBase}${redirectBase.includes("?") ? "&" : "?"}externalref=${encodeURIComponent(externalref)}`
-
-  console.log("[moolre-init] embed/link request", {
-    externalref,
-    amount,
-    email: maskEmail(email),
-    webhookUrl,
-    redirectUrl,
-    metadataKeys: Object.keys(metadata),
-  })
-  buyLog("moolre embed request", {
-    externalref,
-    amount,
-    email: maskEmail(email),
-    webhookUrl,
-    redirectUrl,
-    metadata,
-  })
-
-  const payload = {
-    type: 1,
-    amount: String(amount),
-    email,
-    externalref,
-    callback: webhookUrl,
-    redirect: redirectUrl,
-    reusable: "0",
-    currency: "GHS",
-    accountnumber: MOOLRE_ACCOUNT_NUMBER,
-    metadata,
+  const amountStr = formatMoolreAmount(amount)
+  if (!amountStr) {
+    return { ok: false, error: "Invalid payment amount." }
   }
 
+  const billingEmail = billingEmailFromPhone(String(email || "").split("@")[0]) || String(email || "").trim()
+  const webhookUrl = resolveMoolreWebhookUrl()
+  const redirectUrl = redirectOverride
+    ? String(redirectOverride).trim().replace(/[?#].*$/, "")
+    : resolveMoolreRedirectUrl()
+  const safeMetadata = stringifyMetadata(metadata)
+
+  const attempts = [
+    {
+      label: "full",
+      payload: {
+        type: 1,
+        amount: amountStr,
+        email: billingEmail,
+        externalref,
+        callback: webhookUrl,
+        redirect: redirectUrl,
+        reusable: "0",
+        currency: "GHS",
+        accountnumber: MOOLRE_ACCOUNT_NUMBER,
+        metadata: safeMetadata,
+      },
+    },
+    {
+      label: "no-metadata",
+      payload: {
+        type: 1,
+        amount: amountStr,
+        email: billingEmail,
+        externalref,
+        callback: webhookUrl,
+        redirect: redirectUrl,
+        reusable: "0",
+        currency: "GHS",
+        accountnumber: MOOLRE_ACCOUNT_NUMBER,
+      },
+    },
+    {
+      label: "minimal",
+      payload: {
+        type: 1,
+        amount: amountStr,
+        email: billingEmail,
+        externalref,
+        reusable: "0",
+        currency: "GHS",
+        accountnumber: MOOLRE_ACCOUNT_NUMBER,
+      },
+    },
+  ]
+
+  /** @type {{ ok: false, error: string } | null} */
+  let lastFail = null
+
+  for (let i = 0; i < attempts.length; i++) {
+    const attempt = attempts[i]
+    if (i > 0) await new Promise((r) => setTimeout(r, 400))
+
+    console.log("[moolre-init] embed/link request", {
+      externalref,
+      attempt: attempt.label,
+      amount: amountStr,
+      email: maskEmail(billingEmail),
+      webhookUrl: "callback" in attempt.payload ? webhookUrl : null,
+      redirectUrl: "redirect" in attempt.payload ? redirectUrl : null,
+      metadataKeys: Object.keys(safeMetadata),
+    })
+    buyLog("moolre embed request", {
+      externalref,
+      attempt: attempt.label,
+      amount: amountStr,
+      email: maskEmail(billingEmail),
+      webhookUrl: "callback" in attempt.payload ? webhookUrl : null,
+      redirectUrl: "redirect" in attempt.payload ? redirectUrl : null,
+      metadata: "metadata" in attempt.payload ? safeMetadata : undefined,
+    })
+
+    const posted = await postMoolreEmbedLink(attempt.payload, externalref)
+    if (posted.ok) {
+      return { ok: true, authorization_url: posted.authorization_url, redirect_url: redirectUrl }
+    }
+
+    lastFail = { ok: false, error: posted.error }
+    const code = String(posted.code || "").toUpperCase()
+    const retryable = code === "IE01" || /internal error/i.test(posted.error)
+    if (!retryable) return lastFail
+    buyError("moolre embed retry", { externalref, attempt: attempt.label, code, error: posted.error })
+  }
+
+  return lastFail || { ok: false, error: "Payment initialization failed" }
+}
+
+/**
+ * @param {Record<string, unknown>} payload
+ * @param {string} externalref
+ * @returns {Promise<{ ok: true, authorization_url: string } | { ok: false, error: string, code?: string }>}
+ */
+async function postMoolreEmbedLink(payload, externalref) {
   const response = await fetch(MOOLRE_EMBED_URL, {
     method: "POST",
     headers: {
@@ -107,10 +217,12 @@ export async function initializeMoolreEmbedLink(opts) {
   }
 
   const status = Number(data?.status)
+  const code = data && typeof data.code === "string" ? data.code : ""
   console.log("[moolre-init] embed/link response", {
     externalref,
     httpStatus: response.status,
     moolreStatus: status,
+    code,
     message: data?.message,
     hasAuthUrl: Boolean(data?.data && typeof data.data === "object"),
   })
@@ -118,6 +230,7 @@ export async function initializeMoolreEmbedLink(opts) {
     externalref,
     httpStatus: response.status,
     moolreStatus: status,
+    code,
     body: data,
   })
 
@@ -126,9 +239,9 @@ export async function initializeMoolreEmbedLink(opts) {
       data && typeof data === "object" && "message" in data && data.message
         ? String(data.message)
         : "Payment initialization failed"
-    console.error("[moolre-init] failed", { externalref, httpStatus: response.status, msg })
+    console.error("[moolre-init] failed", { externalref, httpStatus: response.status, msg, code })
     buyError("moolre embed failed", { externalref, httpStatus: response.status, msg, body: data })
-    return { ok: false, error: msg }
+    return { ok: false, error: msg, code }
   }
 
   const authUrl =
@@ -140,7 +253,7 @@ export async function initializeMoolreEmbedLink(opts) {
     return { ok: false, error: "Payment gateway did not return a payment URL." }
   }
 
-  return { ok: true, authorization_url: authUrl, redirect_url: redirectUrl }
+  return { ok: true, authorization_url: authUrl }
 }
 
 /**
