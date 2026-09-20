@@ -12,6 +12,7 @@ import {
   normalizeCaptivePortalParams,
   processCaptiveMomoPaymentSuccess,
   saveCaptivePaymentPending,
+  wifiCodeFromSale,
 } from "../lib/captiveMomoPayment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { getAppSettings } from "../lib/appSettings.js"
@@ -287,7 +288,7 @@ export function createPortalRouter(deps) {
       }
 
       let existingSale = await sales.findOne({ paymentReference })
-      if (existingSale) {
+      if (existingSale && wifiCodeFromSale(existingSale)) {
         return res.json(
           captiveSalePayload(existingSale, {
             paymentReference,
@@ -311,23 +312,33 @@ export function createPortalRouter(deps) {
       })
 
       if (!outcome.ok) {
-        const retryable = outcome.status === "no_pending"
+        const retryable =
+          outcome.status === "no_pending" ||
+          outcome.status === "radius_unavailable" ||
+          outcome.status === "radius_failed"
         const msg =
           outcome.status === "no_pending"
             ? "Payment is still processing. Please wait and try again."
             : outcome.status === "radius_unavailable" || outcome.status === "radius_failed"
-              ? "Payment was received but WiFi login could not be created. Please contact support with your payment phone number."
+              ? "Payment was received. Preparing your WiFi code — keep this page open."
               : "Could not complete your purchase. Please contact support."
         return res.status(retryable ? 409 : 400).json({ error: msg })
       }
 
       existingSale = await sales.findOne({ paymentReference })
+      const code = outcome.voucherCode || wifiCodeFromSale(existingSale)
+      if (!code) {
+        return res.status(409).json({
+          error: "Payment was received. Preparing your WiFi code — keep this page open.",
+        })
+      }
+
       res.json(
         captiveSalePayload(existingSale, {
           paymentReference,
-          voucherCode: outcome.voucherCode || existingSale?.voucherCode || "",
-          username: outcome.username || "",
-          password: outcome.password || "",
+          voucherCode: code,
+          username: outcome.username || code,
+          password: outcome.password || outcome.username || code,
           smsSent: outcome.smsSent === true,
         }),
       )
@@ -348,7 +359,7 @@ export function createPortalRouter(deps) {
 
       let sale = await sales.findOne({ paymentReference })
 
-      if (!sale) {
+      if (!sale || !wifiCodeFromSale(sale)) {
         const status = await checkMoolrePaymentStatus(paymentReference)
         if (status.ok && status.isPaid) {
           await processCaptiveMomoPaymentSuccess({
@@ -363,7 +374,8 @@ export function createPortalRouter(deps) {
         }
       }
 
-      if (!sale) {
+      const code = wifiCodeFromSale(sale)
+      if (!sale || !code) {
         return res.json({ ready: false })
       }
 

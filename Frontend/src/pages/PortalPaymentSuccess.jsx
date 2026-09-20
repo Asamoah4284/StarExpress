@@ -52,7 +52,7 @@ export default function PortalPaymentSuccess() {
       const code = (result.voucherCode || result.username || "").trim()
       if (!code) {
         setError(
-          "Payment succeeded but no WiFi code was issued. Contact support with the phone number you paid with.",
+          "Payment was received, but the WiFi code is not ready yet. Keep this page open and tap Try again in a moment. If it still fails, the hotspot login server may be unreachable.",
         )
         setLoading(false)
         return
@@ -109,8 +109,16 @@ export default function PortalPaymentSuccess() {
               <CardDescription>{error}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button asChild className="w-full">
-                <Link to="/buy">Try again</Link>
+              <Button
+                className="w-full"
+                onClick={() => {
+                  setError(null)
+                  setLoading(true)
+                  setWifiCode("")
+                  window.location.reload()
+                }}
+              >
+                Try again
               </Button>
               <Button asChild variant="outline" className="w-full">
                 <Link to="/retrieve-voucher">Look up by phone</Link>

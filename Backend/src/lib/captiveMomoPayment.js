@@ -92,6 +92,102 @@ export function isHotspotCaptiveSale(saleOrPending) {
 }
 
 /**
+ * @param {import("mongodb").Document | null | undefined} sale
+ */
+export function wifiCodeFromSale(sale) {
+  if (!sale) return ""
+  if (typeof sale.voucherCode === "string" && sale.voucherCode.trim()) return sale.voucherCode.trim()
+  if (typeof sale.radiusUsername === "string" && sale.radiusUsername.trim()) return sale.radiusUsername.trim()
+  return ""
+}
+
+/** @type {Map<string, Promise<unknown>>} */
+const captiveFulfillInFlight = new Map()
+
+/**
+ * Write a shareable RADIUS login onto a paid sale that has no code yet (legacy auto-connect rows).
+ * @param {{
+ *   sale: import("mongodb").Document
+ *   packages: import("mongodb").Collection
+ *   sales: import("mongodb").Collection
+ *   pending: import("mongodb").Collection
+ *   source?: string
+ * }} opts
+ */
+async function issueShareableRadiusCodeOnSale(opts) {
+  const { sale, packages, sales, pending, source = "backfill" } = opts
+  const existing = wifiCodeFromSale(sale)
+  if (existing) {
+    const password =
+      typeof sale.radiusPassword === "string" && sale.radiusPassword.trim()
+        ? sale.radiusPassword.trim()
+        : existing
+    return {
+      ok: true,
+      sale,
+      voucherCode: existing,
+      username: existing,
+      password,
+    }
+  }
+
+  if (!isRadiusConfigured()) {
+    return { ok: false, status: "radius_unavailable" }
+  }
+
+  const packageId = String(sale.packageId || "").trim()
+  const pkg = packageId ? await packages.findOne({ _id: packageId }) : null
+  let radiusLogin
+  try {
+    radiusLogin = await createShareableRadiusLogin(packageId, pkg)
+  } catch (err) {
+    console.error(`[captive-momo] ${source} RADIUS backfill failed`, {
+      saleId: sale._id,
+      error: err instanceof Error ? err.message : err,
+    })
+    return { ok: false, status: "radius_failed" }
+  }
+
+  const patch = {
+    voucherId: radiusLogin.username,
+    voucherCode: radiusLogin.username,
+    radiusUsername: radiusLogin.username,
+    radiusPassword: radiusLogin.password,
+    fulfillmentMode: "radius_code",
+    smsSent: false,
+  }
+  await sales.updateOne({ _id: sale._id }, { $set: patch })
+  const updated = { ...sale, ...patch }
+  const sms = await ensureSaleVoucherSmsSent({
+    sale: updated,
+    packages,
+    sales,
+    source: `${source}-sms`,
+  })
+  const smsSent = sms.smsSent === true
+  const paymentReference = typeof sale.paymentReference === "string" ? sale.paymentReference : ""
+  if (paymentReference) {
+    await markAgentPaymentPendingCompleted(pending, paymentReference, {
+      saleId: String(sale._id),
+      smsSent,
+    })
+  }
+  console.log(`[captive-momo] ${source} issued RADIUS code on existing sale`, {
+    saleId: sale._id,
+    voucherCode: radiusLogin.username,
+    smsSent,
+  })
+  return {
+    ok: true,
+    sale: { ...updated, smsSent },
+    voucherCode: radiusLogin.username,
+    username: radiusLogin.username,
+    password: radiusLogin.password,
+    smsSent,
+  }
+}
+
+/**
  * @param {import("mongodb").Collection} pendingCol
  * @param {{
  *   paymentReference: string
@@ -160,6 +256,28 @@ export async function saveCaptivePaymentPending(pendingCol, data) {
  * }} opts
  */
 export async function processCaptiveMomoPaymentSuccess(opts) {
+  const paymentReference = opts.paymentReference
+  const existing = captiveFulfillInFlight.get(paymentReference)
+  if (existing) return existing
+  const run = processCaptiveMomoPaymentSuccessUnqueued(opts).finally(() => {
+    captiveFulfillInFlight.delete(paymentReference)
+  })
+  captiveFulfillInFlight.set(paymentReference, run)
+  return run
+}
+
+/**
+ * @param {{
+ *   pending: import("mongodb").Collection
+ *   packages: import("mongodb").Collection
+ *   vouchers?: import("mongodb").Collection
+ *   sales: import("mongodb").Collection
+ *   auditLogs: import("mongodb").Collection
+ *   paymentReference: string
+ *   source?: string
+ * }} opts
+ */
+async function processCaptiveMomoPaymentSuccessUnqueued(opts) {
   const { pending, packages, sales, auditLogs, paymentReference, source = "webhook" } = opts
 
   console.log(`[captive-momo] ${source} processing`, { paymentReference })
@@ -170,9 +288,25 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
       paymentReference,
       saleId: existingSale._id,
       fulfillmentMode: existingSale.fulfillmentMode || "radius_code",
+      hasCode: Boolean(wifiCodeFromSale(existingSale)),
     })
-    const sms = await ensureSaleVoucherSmsSent({
+    const issued = await issueShareableRadiusCodeOnSale({
       sale: existingSale,
+      packages,
+      sales,
+      pending,
+      source: `${source}-existing`,
+    })
+    if (!issued.ok) {
+      return {
+        ok: false,
+        status: issued.status || "radius_failed",
+        saleId: existingSale._id,
+        hotspot: true,
+      }
+    }
+    const sms = await ensureSaleVoucherSmsSent({
+      sale: issued.sale,
       packages,
       sales,
       source: `${source}-idempotent-sms`,
@@ -182,23 +316,14 @@ export async function processCaptiveMomoPaymentSuccess(opts) {
       saleId: String(existingSale._id),
       smsSent,
     })
-    const voucherCode = typeof existingSale.voucherCode === "string" ? existingSale.voucherCode.trim() : ""
-    const username =
-      typeof existingSale.radiusUsername === "string" && existingSale.radiusUsername.trim()
-        ? existingSale.radiusUsername.trim()
-        : voucherCode
-    const password =
-      typeof existingSale.radiusPassword === "string" && existingSale.radiusPassword.trim()
-        ? existingSale.radiusPassword.trim()
-        : username
     return {
       ok: true,
       status: "already_processed",
       saleId: existingSale._id,
       smsSent,
-      voucherCode,
-      username,
-      password,
+      voucherCode: issued.voucherCode,
+      username: issued.username,
+      password: issued.password,
       hotspot: true,
     }
   }

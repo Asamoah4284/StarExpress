@@ -222,11 +222,17 @@ export async function completePortalPaymentWithRetry(paymentReference) {
       await new Promise((r) => setTimeout(r, delays[attempt]))
     }
     const result = await completePortalPayment(paymentReference)
-    if (result.ok) return result
+    if (result.ok && (result.voucherCode || result.username)) return result
 
-    lastError = result.error || lastError
+    lastError =
+      result.ok && !(result.voucherCode || result.username)
+        ? "Payment was received. Preparing your WiFi code — keep this page open."
+        : result.error || lastError
     const retryable =
-      result.retryable || /processing|verified|confirm|wait/i.test(lastError) || /not verified/i.test(lastError)
+      result.retryable ||
+      (result.ok && !(result.voucherCode || result.username)) ||
+      /processing|verified|confirm|wait|preparing|wifi code/i.test(lastError) ||
+      /not verified/i.test(lastError)
     if (!retryable) break
   }
 
