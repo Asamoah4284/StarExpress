@@ -70,6 +70,11 @@ export function MoolrePayment({
   onSuccess,
   mode = "agent",
 }) {
+  const iframeRef = React.useRef(/** @type {HTMLIFrameElement | null} */ (null))
+  const successFiredRef = React.useRef(false)
+  const [confirming, setConfirming] = React.useState(false)
+  const viewport = useViewport()
+  const isMobile = viewport.width <= MOBILE_MAX_WIDTH
 
   React.useEffect(() => {
     if (!open) {
