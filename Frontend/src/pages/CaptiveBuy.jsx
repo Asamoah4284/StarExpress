@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { MoolrePayment } from "@/components/payments/MoolrePayment.jsx"
+import { HotspotConnectForm } from "@/components/portal/HotspotConnectForm.jsx"
 import { getDefaultAppName } from "@/lib/env.js"
 import {
   fetchPortalLocations,
@@ -100,7 +101,7 @@ export default function CaptiveBuy() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const portalParams = React.useMemo(() => resolvePortalParams(searchParams), [searchParams])
-  const [step, setStep] = React.useState(1)
+  const [step, setStep] = React.useState(0)
   const [locations, setLocations] = React.useState(/** @type {{ locationId: string, name: string }[]} */ ([]))
   const [packages, setPackages] = React.useState(
     /** @type {{ packageId: string, name: string, priceGHS: number, dataLimit: string, remaining: number }[]} */ ([]),
@@ -325,21 +326,27 @@ export default function CaptiveBuy() {
             <Satellite className="text-primary size-6" aria-hidden />
           </div>
           <p className="text-primary text-xs font-semibold uppercase tracking-widest">{appName}</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Buy WiFi access</h1>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">
+            {step === 0 ? "Connect to WiFi" : "Buy WiFi access"}
+          </h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Pay with MoMo, then we show a WiFi code. Enter it and tap Connect to WiFi — or share the code.
+            {step === 0
+              ? "If someone already bought a code for you, enter it and connect. If not, buy a package — you can share that code with a colleague."
+              : "Pay with MoMo, then we show a WiFi code. Connect with it or share it."}
           </p>
         </div>
 
-        <div className="mb-4 flex justify-center gap-2">
-          {[1, 2, 3].map((n) => (
-            <div
-              key={n}
-              className={`h-1.5 w-10 rounded-full ${step >= n ? "bg-primary" : "bg-muted"}`}
-              aria-hidden
-            />
-          ))}
-        </div>
+        {step >= 1 ? (
+          <div className="mb-4 flex justify-center gap-2">
+            {[1, 2, 3].map((n) => (
+              <div
+                key={n}
+                className={`h-1.5 w-10 rounded-full ${step >= n ? "bg-primary" : "bg-muted"}`}
+                aria-hidden
+              />
+            ))}
+          </div>
+        ) : null}
 
         {error ? (
           <div className="border-destructive/30 bg-destructive/10 text-destructive mb-4 rounded-lg border px-3 py-2 text-sm">
@@ -351,6 +358,24 @@ export default function CaptiveBuy() {
           <div className="flex justify-center py-16">
             <Loader2 className="text-primary size-8 animate-spin" aria-label="Loading" />
           </div>
+        ) : null}
+
+        {!loading && step === 0 ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Already have a code?</CardTitle>
+              <CardDescription>
+                Enter the code you were given, then tap Connect to WiFi. Buying is only needed if you do
+                not have a code yet.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <HotspotConnectForm loginUrl={portalParams.login_url} origUrl={portalParams.orig_url} />
+              <Button type="button" variant="outline" className="h-11 w-full" onClick={() => setStep(1)}>
+                I don't have a code — buy WiFi
+              </Button>
+            </CardContent>
+          </Card>
         ) : null}
 
         {!loading && step === 1 ? (
@@ -393,6 +418,9 @@ export default function CaptiveBuy() {
                   "Continue"
                 )}
               </Button>
+              <Button type="button" variant="ghost" className="w-full" onClick={() => setStep(0)}>
+                I already have a code
+              </Button>
             </CardContent>
           </Card>
         ) : null}
@@ -405,18 +433,26 @@ export default function CaptiveBuy() {
                   <CardTitle className="text-lg">Step 2 — Choose a package</CardTitle>
                   <CardDescription className="mt-1 truncate">{locationName}</CardDescription>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => {
-                    setStep(1)
-                    setPackagePage(0)
-                    setError(null)
-                  }}
-                >
-                  Change location
-                </Button>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setStep(1)
+                      setPackagePage(0)
+                      setError(null)
+                    }}
+                  >
+                    Change location
+                  </Button>
+                  <button
+                    type="button"
+                    className="text-primary text-xs font-medium underline-offset-4 hover:underline"
+                    onClick={() => setStep(0)}
+                  >
+                    I have a code
+                  </button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="p-0">
