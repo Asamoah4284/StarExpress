@@ -56,7 +56,7 @@ function getRadiusPool() {
       port: Number(process.env.RADIUS_DB_PORT) || 3306,
       waitForConnections: true,
       connectionLimit: 5,
-      connectTimeout: 8000,
+      connectTimeout: 2000,
     })
   }
   return radiusPool

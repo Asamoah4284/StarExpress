@@ -211,35 +211,6 @@ export async function completePortalPayment(paymentReference) {
 }
 
 /**
- * @param {string} paymentReference
- */
-export async function completePortalPaymentWithRetry(paymentReference) {
-  const delays = [0, 1500, 2000, 2500, 3000, 3500, 4000, 5000]
-  let lastError = "Payment verification failed"
-
-  for (let attempt = 0; attempt < delays.length; attempt++) {
-    if (delays[attempt] > 0) {
-      await new Promise((r) => setTimeout(r, delays[attempt]))
-    }
-    const result = await completePortalPayment(paymentReference)
-    if (result.ok && (result.voucherCode || result.username)) return result
-
-    lastError =
-      result.ok && !(result.voucherCode || result.username)
-        ? "Payment was received. Preparing your WiFi code — keep this page open."
-        : result.error || lastError
-    const retryable =
-      result.retryable ||
-      (result.ok && !(result.voucherCode || result.username)) ||
-      /processing|verified|confirm|wait|preparing|wifi code/i.test(lastError) ||
-      /not verified/i.test(lastError)
-    if (!retryable) break
-  }
-
-  return { ok: false, error: lastError }
-}
-
-/**
  * After captive payment success: ask the backend to write RADIUS credentials and
  * return the Grandstream login_url the browser must hit (hotspot purchases only).
  * @param {string} paymentReference

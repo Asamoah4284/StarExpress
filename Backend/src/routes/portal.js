@@ -4,13 +4,11 @@ import {
   initializeMoolreEmbedLink,
   verifyMoolrePaymentWithRetry,
 } from "../lib/moolreEmbedPayment.js"
-import { checkMoolrePaymentStatus } from "../lib/moolrePaymentStatus.js"
 import {
   generateCaptivePaymentReference,
   hasCaptivePortalAuthParams,
   isCaptivePaymentReference,
   normalizeCaptivePortalParams,
-  processCaptiveMomoPaymentSuccess,
   saveCaptivePaymentPending,
   wifiCodeFromSale,
 } from "../lib/captiveMomoPayment.js"
@@ -287,7 +285,7 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "Invalid payment reference." })
       }
 
-      let existingSale = await sales.findOne({ paymentReference })
+      const existingSale = await sales.findOne({ paymentReference })
       if (existingSale && wifiCodeFromSale(existingSale)) {
         return res.json(
           captiveSalePayload(existingSale, {
@@ -302,53 +300,25 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: verified.error || "Payment not verified." })
       }
 
-      const outcome = await processCaptiveMomoPaymentSuccess({
-        pending: agentPaymentPending,
-        packages,
-        sales,
-        auditLogs,
-        paymentReference,
-        source: "portal-complete",
+      const saleAfterPay = await sales.findOne({ paymentReference })
+      if (saleAfterPay && wifiCodeFromSale(saleAfterPay)) {
+        return res.json(
+          captiveSalePayload(saleAfterPay, {
+            paymentReference,
+          }),
+        )
+      }
+
+      return res.status(409).json({
+        error: "Payment was received. Sending your WiFi username and password…",
       })
-
-      if (!outcome.ok) {
-        const retryable =
-          outcome.status === "no_pending" ||
-          outcome.status === "radius_unavailable" ||
-          outcome.status === "radius_failed"
-        const msg =
-          outcome.status === "no_pending"
-            ? "Payment is still processing. Please wait and try again."
-            : outcome.status === "radius_unavailable" || outcome.status === "radius_failed"
-              ? "Payment was received. Preparing your WiFi code — keep this page open."
-              : "Could not complete your purchase. Please contact support."
-        return res.status(retryable ? 409 : 400).json({ error: msg })
-      }
-
-      existingSale = await sales.findOne({ paymentReference })
-      const code = outcome.voucherCode || wifiCodeFromSale(existingSale)
-      if (!code) {
-        return res.status(409).json({
-          error: "Payment was received. Preparing your WiFi code — keep this page open.",
-        })
-      }
-
-      res.json(
-        captiveSalePayload(existingSale, {
-          paymentReference,
-          voucherCode: code,
-          username: outcome.username || code,
-          password: outcome.password || outcome.username || code,
-          smsSent: outcome.smsSent === true,
-        }),
-      )
     } catch (err) {
       console.error("[portal] POST /payments/complete", err)
       res.status(500).json({ error: "Failed to complete payment." })
     }
   })
 
-  // Poll while the Moolre POS iframe is open — ready once the RADIUS login code exists.
+  // Poll while MoMo is open / on the success page — ready once webhook wrote RADIUS + SMS.
   router.get("/payments/status", async (req, res) => {
     try {
       const paymentReference =
@@ -357,23 +327,7 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "Valid paymentReference is required." })
       }
 
-      let sale = await sales.findOne({ paymentReference })
-
-      if (!sale || !wifiCodeFromSale(sale)) {
-        const status = await checkMoolrePaymentStatus(paymentReference)
-        if (status.ok && status.isPaid) {
-          await processCaptiveMomoPaymentSuccess({
-            pending: agentPaymentPending,
-            packages,
-            sales,
-            auditLogs,
-            paymentReference,
-            source: "portal-status",
-          })
-          sale = await sales.findOne({ paymentReference })
-        }
-      }
-
+      const sale = await sales.findOne({ paymentReference })
       const code = wifiCodeFromSale(sale)
       if (!sale || !code) {
         return res.json({ ready: false })

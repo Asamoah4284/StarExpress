@@ -5,7 +5,42 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { getDefaultAppName } from "@/lib/env.js"
 import { clearPersistedPortalParams } from "@/lib/captivePortalParams.js"
-import { completePortalPaymentWithRetry } from "@/lib/portalApi.js"
+import { fetchPortalPaymentStatus } from "@/lib/portalApi.js"
+
+/**
+ * @param {{ label: string, value: string }} props
+ */
+function CredentialRow({ label, value }) {
+  const [copied, setCopied] = React.useState(false)
+  const copy = async () => {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+  return (
+    <div className="space-y-1.5">
+      <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">{label}</p>
+      <button
+        type="button"
+        onClick={() => void copy()}
+        className="border-border bg-muted/40 hover:bg-muted/70 flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left"
+        title="Tap to copy"
+      >
+        <span className="font-mono text-xl font-bold tracking-[0.18em]">{value}</span>
+        {copied ? (
+          <Check className="size-5 shrink-0 text-emerald-500" aria-hidden />
+        ) : (
+          <Copy className="text-muted-foreground size-5 shrink-0" aria-hidden />
+        )}
+      </button>
+    </div>
+  )
+}
 
 export default function PortalPaymentSuccess() {
   const appName = getDefaultAppName()
@@ -16,17 +51,16 @@ export default function PortalPaymentSuccess() {
     searchParams.get("reference") ||
     searchParams.get("ref") ||
     ""
-  const searchKey = searchParams.toString()
 
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState(/** @type {string | null} */ (null))
-  const [wifiCode, setWifiCode] = React.useState("")
+  const [username, setUsername] = React.useState("")
+  const [password, setPassword] = React.useState("")
   const [packageName, setPackageName] = React.useState("WiFi")
   const [smsSent, setSmsSent] = React.useState(false)
-  const [copied, setCopied] = React.useState(false)
 
   React.useEffect(() => {
-    document.title = "Your WiFi code"
+    document.title = "Your WiFi login"
   }, [])
 
   React.useEffect(() => {
@@ -37,50 +71,51 @@ export default function PortalPaymentSuccess() {
     }
 
     let cancelled = false
-    ;(async () => {
-      setLoading(true)
-      setError(null)
+    const started = Date.now()
+    const maxMs = 20_000
+    /** @type {ReturnType<typeof setInterval> | null} */
+    let intervalId = null
 
-      const result = await completePortalPaymentWithRetry(paymentReference)
+    const applyReady = (status) => {
+      const user = (status.username || status.voucherCode || "").trim()
+      const pass = (status.password || user).trim()
+      if (!user) return false
+      clearPersistedPortalParams()
+      setUsername(user)
+      setPassword(pass)
+      setPackageName(status.packageName || "WiFi")
+      setSmsSent(status.smsSent === true)
+      setError(null)
+      setLoading(false)
+      return true
+    }
+
+    const tick = async () => {
+      const status = await fetchPortalPaymentStatus(paymentReference)
       if (cancelled) return
-      if (!result.ok) {
-        setError(result.error)
-        setLoading(false)
+      if (status.ok && status.ready && applyReady(status)) {
+        if (intervalId) clearInterval(intervalId)
         return
       }
-
-      const code = (result.voucherCode || result.username || "").trim()
-      if (!code) {
+      if (Date.now() - started >= maxMs) {
+        if (intervalId) clearInterval(intervalId)
         setError(
-          "Payment was received, but the WiFi code is not ready yet. Keep this page open and tap Try again in a moment. If it still fails, the hotspot login server may be unreachable.",
+          "Payment was received. If an SMS has not arrived, use Look up by phone with the number you paid with.",
         )
         setLoading(false)
-        return
       }
+    }
 
-      clearPersistedPortalParams()
-      setWifiCode(code)
-      setPackageName(result.packageName || "WiFi")
-      setSmsSent(result.smsSent === true)
-      setLoading(false)
-    })()
+    setLoading(true)
+    setError(null)
+    void tick()
+    intervalId = setInterval(() => void tick(), 1000)
 
     return () => {
       cancelled = true
+      if (intervalId) clearInterval(intervalId)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- searchKey stabilizes URLSearchParams identity
-  }, [paymentReference, searchKey])
-
-  const copyCode = async () => {
-    if (!wifiCode) return
-    try {
-      await navigator.clipboard.writeText(wifiCode)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* clipboard unavailable — code is still on screen */
-    }
-  }
+  }, [paymentReference])
 
   return (
     <div className="text-foreground relative flex min-h-svh flex-col items-center justify-center bg-canvas px-4 py-8 dark:bg-background">
@@ -96,8 +131,8 @@ export default function PortalPaymentSuccess() {
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-12">
               <Loader2 className="text-primary size-10 animate-spin" aria-hidden />
-              <p className="text-sm font-medium">Confirming your payment…</p>
-              <p className="text-muted-foreground text-xs">This may take a few seconds.</p>
+              <p className="text-sm font-medium">Sending your WiFi username and password…</p>
+              <p className="text-muted-foreground text-xs">This usually takes a few seconds.</p>
             </CardContent>
           </Card>
         ) : null}
@@ -105,7 +140,7 @@ export default function PortalPaymentSuccess() {
         {!loading && error ? (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Could not load your WiFi code</CardTitle>
+              <CardTitle className="text-lg">WiFi login is on the way</CardTitle>
               <CardDescription>{error}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -114,7 +149,8 @@ export default function PortalPaymentSuccess() {
                 onClick={() => {
                   setError(null)
                   setLoading(true)
-                  setWifiCode("")
+                  setUsername("")
+                  setPassword("")
                   window.location.reload()
                 }}
               >
@@ -127,33 +163,21 @@ export default function PortalPaymentSuccess() {
           </Card>
         ) : null}
 
-        {!loading && !error && wifiCode ? (
+        {!loading && !error && username ? (
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Your WiFi code</CardTitle>
+              <CardTitle className="text-lg">Your WiFi login</CardTitle>
               <CardDescription>
-                {packageName}. Enter this as both username and password on the WiFi login page. You can
-                share it with someone else.
+                {packageName}. Enter these on the WiFi login page. You can share them with someone else.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <button
-                type="button"
-                onClick={() => void copyCode()}
-                className="border-border bg-muted/40 hover:bg-muted/70 flex w-full items-center justify-between gap-3 rounded-xl border px-4 py-4 text-left"
-                title="Tap to copy"
-              >
-                <span className="font-mono text-2xl font-bold tracking-[0.18em]">{wifiCode}</span>
-                {copied ? (
-                  <Check className="size-5 shrink-0 text-emerald-500" aria-hidden />
-                ) : (
-                  <Copy className="text-muted-foreground size-5 shrink-0" aria-hidden />
-                )}
-              </button>
+              <CredentialRow label="Username" value={username} />
+              <CredentialRow label="Password" value={password || username} />
               <p className="text-muted-foreground text-sm">
                 {smsSent
-                  ? "We also texted this code to the phone number you paid with."
-                  : "Save this code. If SMS did not arrive, use Look up by phone with the number you paid with."}
+                  ? "We also texted username and password to the phone number you paid with."
+                  : "Save these. If SMS did not arrive, use Look up by phone with the number you paid with."}
               </p>
               <Button asChild className="w-full">
                 <Link to="/retrieve-voucher">Look up by phone</Link>

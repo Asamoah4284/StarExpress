@@ -23,5 +23,6 @@ export function buildSaleVoucherSmsMessage(packageName, dataLimit, voucherCode) 
  * @param {string} wifiCode
  */
 export function buildRadiusWifiSmsMessage(packageName, dataLimit, wifiCode) {
-  return `Your wifi access is ready!\n${packageLine(packageName, dataLimit)}\n WiFi code: ${wifiCode}\nEnter this as username and password on the WiFi login page.`
+  const code = String(wifiCode || "").trim()
+  return `Your wifi login is ready.\n${packageLine(packageName, dataLimit)}\n Username: ${code}\n Password: ${code}\nEnter these on the WiFi login page.`
 }
