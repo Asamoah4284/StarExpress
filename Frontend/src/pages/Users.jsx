@@ -21,10 +21,28 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useAuth } from "@/context/AuthContext.jsx"
-import { createTeamUser, fetchUsersList, setTeamUserActive } from "@/lib/api.js"
+import { useCatalog } from "@/hooks/useCatalog.js"
+import { createTeamUser, fetchUsersList, setTeamUserActive, updateTeamUser } from "@/lib/api.js"
 
-/** @param {{ onDeactivate: (id: string) => void, pendingId: string | null, canManageUsers: boolean }} props */
-function useUserColumns({ onDeactivate, pendingId, canManageUsers }) {
+const NONE_LOCATION = "__none__"
+
+const emptyForm = () => ({
+  name: "",
+  email: "",
+  role: "Sales Agent",
+  password: "",
+  locationId: "",
+})
+
+/**
+ * @param {{
+ *   onEdit: (row: { id: string, name: string, email: string, role: string, active: boolean, locationId?: string, locationName?: string }) => void
+ *   onDeactivate: (id: string) => void
+ *   pendingId: string | null
+ *   canManageUsers: boolean
+ * }} props
+ */
+function useUserColumns({ onEdit, onDeactivate, pendingId, canManageUsers }) {
   return React.useMemo(
     () => [
       { accessorKey: "name", header: "Name" },
@@ -35,6 +53,15 @@ function useUserColumns({ onDeactivate, pendingId, canManageUsers }) {
         cell: ({ getValue }) => {
           const v = getValue()
           return <Badge variant={v === "Admin" ? "default" : "secondary"}>{v}</Badge>
+        },
+      },
+      {
+        accessorKey: "locationName",
+        header: "Location",
+        cell: ({ row }) => {
+          if (row.original.role !== "Sales Agent") return <span className="text-muted-foreground">—</span>
+          const name = String(row.original.locationName || "").trim()
+          return name || <span className="text-muted-foreground">Unassigned</span>
         },
       },
       {
@@ -58,6 +85,15 @@ function useUserColumns({ onDeactivate, pendingId, canManageUsers }) {
               type="button"
               size="sm"
               variant="outline"
+              disabled={!canManageUsers || pendingId === row.original.id}
+              onClick={() => onEdit(row.original)}
+            >
+              Edit
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
               disabled={!canManageUsers || !row.original.active || pendingId === row.original.id}
               onClick={() => onDeactivate(row.original.id)}
             >
@@ -67,15 +103,18 @@ function useUserColumns({ onDeactivate, pendingId, canManageUsers }) {
         ),
       },
     ],
-    [onDeactivate, pendingId, canManageUsers],
+    [onEdit, onDeactivate, pendingId, canManageUsers],
   )
 }
 
 export default function Users() {
   const { token, authReady, user } = useAuth()
   const queryClient = useQueryClient()
+  const catalog = useCatalog()
+  const locations = catalog.data?.locations ?? []
   const [open, setOpen] = React.useState(false)
-  const [form, setForm] = React.useState({ name: "", email: "", role: "Sales Agent", password: "" })
+  const [editing, setEditing] = React.useState(/** @type {{ id: string } | null} */ (null))
+  const [form, setForm] = React.useState(emptyForm)
   const [formError, setFormError] = React.useState(null)
 
   const usersQuery = useQuery({
@@ -97,17 +136,30 @@ export default function Users() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teamUsers"] })
+      queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
     },
   })
 
-  const createMutation = useMutation({
+  const saveMutation = useMutation({
     mutationFn: async () => {
       if (!token) throw new Error("Not signed in")
-      const r = await createTeamUser(token, {
+      const payload = {
         name: form.name.trim(),
         email: form.email.trim(),
         role: form.role,
+        locationId: form.role === "Sales Agent" ? form.locationId : "",
+      }
+      if (editing) {
+        const r = await updateTeamUser(token, editing.id, {
+          ...payload,
+          ...(form.password ? { password: form.password } : {}),
+        })
+        if (!r.ok) throw new Error(r.error || "Failed to update user")
+        return
+      }
+      const r = await createTeamUser(token, {
+        ...payload,
         password: form.password,
       })
       if (!r.ok) {
@@ -117,9 +169,11 @@ export default function Users() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["teamUsers"] })
+      queryClient.invalidateQueries({ queryKey: ["catalog"] })
       queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
       setOpen(false)
-      setForm({ name: "", email: "", role: "Sales Agent", password: "" })
+      setEditing(null)
+      setForm(emptyForm())
       setFormError(null)
     },
     onError: (err) => {
@@ -134,6 +188,26 @@ export default function Users() {
     [deactivateMutation],
   )
 
+  const openAdd = () => {
+    setEditing(null)
+    setForm(emptyForm())
+    setFormError(null)
+    setOpen(true)
+  }
+
+  const openEdit = React.useCallback((row) => {
+    setEditing({ id: row.id })
+    setForm({
+      name: row.name,
+      email: row.email,
+      role: row.role === "Admin" ? "Admin" : "Sales Agent",
+      password: "",
+      locationId: row.locationId || "",
+    })
+    setFormError(null)
+    setOpen(true)
+  }, [])
+
   const saveUser = () => {
     setFormError(null)
     if (form.name.trim().length < 2) {
@@ -144,17 +218,22 @@ export default function Users() {
       setFormError("Email is required.")
       return
     }
-    if (form.password.length < 6) {
+    if (!editing && form.password.length < 6) {
       setFormError("Password must be at least 6 characters.")
       return
     }
-    createMutation.mutate()
+    if (editing && form.password && form.password.length < 6) {
+      setFormError("New password must be at least 6 characters.")
+      return
+    }
+    saveMutation.mutate()
   }
 
   const rows = usersQuery.data ?? []
   const isAdmin = user?.role === "Admin"
 
   const columns = useUserColumns({
+    onEdit: openEdit,
     onDeactivate,
     pendingId: deactivateMutation.isPending ? deactivateMutation.variables ?? null : null,
     canManageUsers: isAdmin,
@@ -164,9 +243,9 @@ export default function Users() {
     <div className="space-y-6">
       <PageHeader
         title="Users"
-        description="Team accounts from the API. Add and deactivate users: Admin only."
+        description="Add team accounts, edit details, and assign sales agents to a wifi location."
       >
-        <Button type="button" onClick={() => setOpen(true)} disabled={!isAdmin}>
+        <Button type="button" onClick={openAdd} disabled={!isAdmin}>
           Add user
         </Button>
       </PageHeader>
@@ -186,22 +265,25 @@ export default function Users() {
         </p>
       ) : null}
 
-      <DataTable data={rows} columns={columns} searchPlaceholder="Search name, email, role…" pageSize={8} />
+      <DataTable data={rows} columns={columns} searchPlaceholder="Search name, email, role, location…" pageSize={8} />
 
-      <UserAddDialog
+      <UserFormDialog
         open={open}
+        editing={Boolean(editing)}
         onOpenChange={(o) => {
           setOpen(o)
           if (!o) {
             setFormError(null)
-            setForm({ name: "", email: "", role: "Sales Agent", password: "" })
+            setEditing(null)
+            setForm(emptyForm())
           }
         }}
         form={form}
         setForm={setForm}
+        locations={locations}
         onSave={saveUser}
         formError={formError}
-        saving={createMutation.isPending}
+        saving={saveMutation.isPending}
         saveDisabled={!isAdmin}
       />
     </div>
@@ -211,21 +293,34 @@ export default function Users() {
 /**
  * @param {{
  *   open: boolean
+ *   editing: boolean
  *   onOpenChange: (open: boolean) => void
- *   form: { name: string, email: string, role: string, password: string }
- *   setForm: React.Dispatch<React.SetStateAction<{ name: string, email: string, role: string, password: string }>>
+ *   form: { name: string, email: string, role: string, password: string, locationId: string }
+ *   setForm: React.Dispatch<React.SetStateAction<{ name: string, email: string, role: string, password: string, locationId: string }>>
+ *   locations: { id: string, name: string }[]
  *   onSave: () => void
  *   formError?: string | null
  *   saving?: boolean
  *   saveDisabled?: boolean
  * }} props
  */
-function UserAddDialog({ open, onOpenChange, form, setForm, onSave, formError, saving, saveDisabled }) {
+function UserFormDialog({
+  open,
+  editing,
+  onOpenChange,
+  form,
+  setForm,
+  locations,
+  onSave,
+  formError,
+  saving,
+  saveDisabled,
+}) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add user</DialogTitle>
+          <DialogTitle>{editing ? "Edit user" : "Add user"}</DialogTitle>
         </DialogHeader>
         <div className="grid gap-3 py-2">
           {formError ? (
@@ -248,7 +343,16 @@ function UserAddDialog({ open, onOpenChange, form, setForm, onSave, formError, s
           </div>
           <div className="space-y-1.5">
             <Label>Role</Label>
-            <Select value={form.role} onValueChange={(v) => setForm((f) => ({ ...f, role: v }))}>
+            <Select
+              value={form.role}
+              onValueChange={(v) =>
+                setForm((f) => ({
+                  ...f,
+                  role: v,
+                  locationId: v === "Sales Agent" ? f.locationId : "",
+                }))
+              }
+            >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -258,17 +362,43 @@ function UserAddDialog({ open, onOpenChange, form, setForm, onSave, formError, s
               </SelectContent>
             </Select>
           </div>
+          {form.role === "Sales Agent" ? (
+            <div className="space-y-1.5">
+              <Label>Assigned location</Label>
+              <Select
+                value={form.locationId || NONE_LOCATION}
+                onValueChange={(v) => setForm((f) => ({ ...f, locationId: v === NONE_LOCATION ? "" : v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a location" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE_LOCATION}>Unassigned</SelectItem>
+                  {locations.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground text-xs">
+                Sales agents only see stock and sales for this location.
+              </p>
+            </div>
+          ) : null}
           <div className="space-y-1.5">
-            <Label htmlFor="user-password">Temporary password</Label>
+            <Label htmlFor="user-password">{editing ? "New password (optional)" : "Temporary password"}</Label>
             <Input
               id="user-password"
               type="password"
               autoComplete="new-password"
               value={form.password}
               onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-              placeholder="At least 6 characters"
+              placeholder={editing ? "Leave blank to keep the current password" : "At least 6 characters"}
             />
-            <p className="text-muted-foreground text-xs">Share this with the new user.</p>
+            <p className="text-muted-foreground text-xs">
+              {editing ? "Only fill this if you want to reset their password." : "Share this with the new user."}
+            </p>
           </div>
         </div>
         <DialogFooter>

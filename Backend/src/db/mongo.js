@@ -129,17 +129,40 @@ export async function connectMongo(uri) {
   }
   await customerProfilesCollection.createIndex({ orgId: 1, scope: 1, phoneKey: 1 }, { unique: true })
   try {
-    await locationsCollection.dropIndex("managerUserId_1")
-  } catch {
-    /* may not exist */
+    const locationIndexes = await locationsCollection.indexes()
+    for (const idx of locationIndexes) {
+      if (!idx?.unique || idx.name === "_id_") continue
+      const keys = Object.keys(idx.key || {})
+      const keyList = keys.join(",")
+      const isLegacyAgentIndex =
+        keyList === "managerUserId" ||
+        (keyList === "orgId,managerUserId" && !idx.partialFilterExpression)
+      const isGlobalNameUnique = keyList === "name"
+      if (isLegacyAgentIndex || isGlobalNameUnique) {
+        try {
+          await locationsCollection.dropIndex(idx.name)
+          console.log(`MongoDB: dropped leftover unique index ${idx.name} on locations`)
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("MongoDB: could not inspect locations indexes.", e)
   }
   try {
     await locationsCollection.createIndex(
       { orgId: 1, managerUserId: 1 },
-      { unique: true, sparse: true },
+      {
+        unique: true,
+        name: "orgId_1_managerUserId_partial",
+        partialFilterExpression: {
+          managerUserId: { $exists: true, $type: "string", $gt: "" },
+        },
+      },
     )
   } catch (e) {
-    console.warn("MongoDB: could not create unique sparse index on locations.orgId+managerUserId.", e)
+    console.warn("MongoDB: could not create partial unique index on locations.orgId+managerUserId.", e)
   }
   await locationsCollection.createIndex({ orgId: 1, name: 1 })
   await salesCollection.createIndex({ orgId: 1, locationId: 1, date: 1, status: 1 })

@@ -15,6 +15,8 @@
  * @property {string} email
  * @property {string} role
  * @property {boolean} active
+ * @property {string} [locationId]
+ * @property {string} [locationName]
  */
 
 /**

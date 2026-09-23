@@ -246,6 +246,7 @@ async function main() {
       userStore,
       jwtSecret: JWT_SECRET,
       auditLogs: getAuditLogsCollection(),
+      locations: getLocationsCollection(),
     }),
   )
 

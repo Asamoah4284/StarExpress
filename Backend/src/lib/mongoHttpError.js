@@ -7,6 +7,16 @@ import { MongoServerError } from "mongodb"
  */
 export function mongoHttpError(err) {
   if (err instanceof MongoServerError && err.code === 11000) {
+    const keys = err.keyPattern && typeof err.keyPattern === "object" ? Object.keys(err.keyPattern) : []
+    if (keys.includes("managerUserId")) {
+      return { status: 409, error: "That sales agent is already assigned to another location." }
+    }
+    if (keys.includes("name") && keys.includes("orgId")) {
+      return { status: 409, error: "A location with this name already exists in your WiFi group." }
+    }
+    if (keys.includes("name")) {
+      return { status: 409, error: "A location with this name already exists." }
+    }
     return { status: 409, error: "A record with this value already exists." }
   }
   const name =

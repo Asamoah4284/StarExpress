@@ -239,6 +239,72 @@ export class UserStore {
     const result = await this.users.updateOne({ _id: id }, { $set: { orgId } })
     return result.matchedCount > 0
   }
+
+  /**
+   * @param {string} id
+   * @param {string} orgId
+   * @param {{
+   *   name?: string
+   *   email?: string
+   *   role?: "Admin" | "Sales Agent"
+   *   password?: string
+   *   saltRounds?: number
+   * }} patch
+   * @returns {Promise<{ id: string, name: string, email: string, role: string, active: boolean, orgId?: string } | "not_found" | "exists" | "last_admin">}
+   */
+  async updateUser(id, orgId, patch) {
+    const existing = await this.users.findOne({ _id: id, orgId })
+    if (!existing) return "not_found"
+
+    /** @type {Record<string, unknown>} */
+    const $set = {}
+
+    if (typeof patch.name === "string") {
+      const name = patch.name.trim()
+      if (name.length < 2) throw new Error("Name must be at least 2 characters.")
+      $set.name = name
+    }
+
+    if (typeof patch.email === "string") {
+      const displayEmail = patch.email.trim()
+      if (!displayEmail.includes("@")) throw new Error("A valid email is required.")
+      const key = normalizeEmail(displayEmail)
+      const currentKey = typeof existing.email_normalized === "string" ? existing.email_normalized : normalizeEmail(String(existing.email || ""))
+      if (key !== currentKey) {
+        const clash = await this.users.findOne({ email_normalized: key, _id: { $ne: id } })
+        if (clash) return "exists"
+        $set.email = displayEmail
+        $set.email_normalized = key
+      }
+    }
+
+    if (patch.role === "Admin" || patch.role === "Sales Agent") {
+      if (patch.role !== existing.role && existing.role === "Admin") {
+        const adminCount = await this.users.countDocuments({
+          orgId,
+          role: "Admin",
+          active: { $ne: false },
+        })
+        if (adminCount <= 1) return "last_admin"
+      }
+      $set.role = patch.role
+    }
+
+    if (typeof patch.password === "string" && patch.password.length > 0) {
+      if (patch.password.length < 6) throw new Error("Password must be at least 6 characters.")
+      const saltRounds = Number(patch.saltRounds) || Number(process.env.BCRYPT_SALT_ROUNDS) || 10
+      $set.password_hash = bcrypt.hashSync(patch.password, saltRounds)
+    }
+
+    if (Object.keys($set).length === 0) {
+      return this.getPublicUserById(id)
+    }
+
+    $set.updated_at = new Date()
+    const result = await this.users.updateOne({ _id: id, orgId }, { $set })
+    if (result.matchedCount === 0) return "not_found"
+    return this.getPublicUserById(id)
+  }
 }
 
 function normalizeEmail(email) {

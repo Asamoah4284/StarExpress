@@ -451,6 +451,7 @@ function toAudit(d) {
 }
 
 const ROLE_SALES_AGENT = "Sales Agent"
+const UNASSIGNED_MANAGER_LABEL = "—"
 
 /**
  * Hostel manager MoMo / payout phone. Empty clears; otherwise Ghana local format.
@@ -519,7 +520,7 @@ async function getActiveSalesAgentName(users, userId, orgId) {
  */
 async function tryResolveUniqueSalesAgentIdFromManagerName(users, managerName) {
   const t = typeof managerName === "string" ? managerName.trim().toLowerCase() : ""
-  if (!t) return null
+  if (!t || t === UNASSIGNED_MANAGER_LABEL.toLowerCase() || t === "-") return null
   const docs = await users
     .find({ role: ROLE_SALES_AGENT, active: { $ne: false } })
     .project({ _id: 1, name: 1 })
@@ -556,8 +557,6 @@ async function findConflictingLocationForSalesAgent(locations, users, agentUserI
   }
   return null
 }
-
-const UNASSIGNED_MANAGER_LABEL = "—"
 
 /**
  * Move a sales agent to a new location by clearing their link on every other site.
@@ -1801,6 +1800,13 @@ export function createCatalogRouter(deps) {
       if (!Number.isFinite(totalSales) || totalSales < 0) {
         return res.status(400).json({ error: "totalSales must be a non-negative number." })
       }
+      const nameClash = await locations.findOne({
+        ...byOrg(orgId),
+        name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+      })
+      if (nameClash) {
+        return res.status(409).json({ error: "A location with this name already exists in your WiFi group." })
+      }
       const id = `loc-${randomUUID().slice(0, 8)}`
       /** @type {Record<string, unknown>} */
       let doc
@@ -1881,6 +1887,14 @@ export function createCatalogRouter(deps) {
       const $unset = {}
       if (name !== undefined) {
         if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
+        const nameClash = await locations.findOne({
+          _id: { $ne: id },
+          ...byOrg(orgId),
+          name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+        })
+        if (nameClash) {
+          return res.status(409).json({ error: "A location with this name already exists in your WiFi group." })
+        }
         $set.name = name
       }
       if (address !== undefined) {

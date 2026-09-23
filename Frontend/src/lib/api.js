@@ -387,7 +387,7 @@ export async function fetchUsersList(token) {
 
 /**
  * @param {string} token
- * @param {{ name: string, email: string, role: string, password: string }} body
+ * @param {{ name: string, email: string, role: string, password: string, locationId?: string }} body
  */
 export async function createTeamUser(token, body) {
   const { res, data } = await parseJsonResponse("/api/users", {
@@ -398,6 +398,28 @@ export async function createTeamUser(token, body) {
   if (res.status === 409) {
     return { ok: false, code: "exists", error: typeof data === "object" && data && "error" in data ? String(data.error) : "Email taken." }
   }
+  if (!res.ok) {
+    const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
+    return { ok: false, error: msg }
+  }
+  if (typeof data !== "object" || data === null || typeof data.user !== "object" || data.user === null) {
+    return { ok: false, error: "Unexpected response from server." }
+  }
+  return { ok: true, user: data.user }
+}
+
+/**
+ * @param {string} token
+ * @param {string} id
+ * @param {{ name?: string, email?: string, role?: string, password?: string, locationId?: string }} body
+ */
+export async function updateTeamUser(token, id, body) {
+  const path = `/api/users/${encodeURIComponent(id)}`
+  const { res, data } = await parseJsonResponse(path, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
   if (!res.ok) {
     const msg = typeof data === "object" && data && "error" in data ? String(data.error) : res.statusText
     return { ok: false, error: msg }
