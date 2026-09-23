@@ -38,7 +38,7 @@ function settingsFromResponse(r) {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme()
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const queryClient = useQueryClient()
   const settingsQuery = useAppSettings()
 
@@ -61,6 +61,11 @@ export default function Settings() {
   const [lightBillAmounts, setLightBillAmounts] = React.useState(/** @type {Record<string, string>} */ ({}))
   const [hostelMessage, setHostelMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [savingHostelId, setSavingHostelId] = React.useState(/** @type {string | null} */ (null))
+
+  const workspaceOrgId = settingsQuery.data?.organization?.id || user?.orgId || ""
+  const publicBuyUrl = workspaceOrgId
+    ? `${typeof window !== "undefined" ? window.location.origin : ""}/buy?org=${encodeURIComponent(workspaceOrgId)}`
+    : ""
 
   const financeLocationsQuery = useQuery({
     queryKey: ["financeLocations", token],
@@ -561,6 +566,18 @@ export default function Settings() {
                 placeholder="Starexpress Admin"
               />
               <p className="text-muted-foreground text-xs">Included in CSV exports.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="public-buy-link">Public Buy WiFi link</Label>
+              <Input
+                id="public-buy-link"
+                readOnly
+                value={publicBuyUrl}
+                disabled={!publicBuyUrl}
+              />
+              <p className="text-muted-foreground text-xs">
+                Point this group’s hotspot at this URL so customers only see your locations and packages.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="company-logo">Logo</Label>

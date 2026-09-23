@@ -227,7 +227,7 @@ export default function Signup() {
                   className="border-border/80 bg-background/80 h-9 rounded-md text-sm shadow-none transition-shadow focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/25 dark:border-border dark:bg-background/50 dark:focus-visible:ring-primary/30 sm:h-10 sm:rounded-lg sm:text-sm"
                 />
                 <p className="text-muted-foreground text-[10px] leading-snug sm:text-xs">
-                  Your sales, locations, and finance stay private to this group. Packages are shared across groups.
+                  Your sales, locations, packages, and finance stay private to this group.
                 </p>
               </div>
               <div className="space-y-1.5">

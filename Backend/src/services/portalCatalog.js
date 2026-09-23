@@ -1,18 +1,26 @@
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
+import { resolvePortalOrgId } from "../lib/organizations.js"
 import {
   buildLocationAvailabilityFilter,
   buildPackageAvailabilityFilter,
 } from "./voucherSaleFulfillment.js"
 
 /**
- * All wifi locations (captive portal sells RADIUS login codes — no CSV voucher stock required).
+ * @param {unknown} orgId
+ */
+function locationOrgFilter(orgId) {
+  return { orgId: resolvePortalOrgId(orgId) }
+}
+
+/**
+ * All wifi locations for one workspace (captive portal sells RADIUS login codes — no CSV voucher stock required).
  * @param {import("mongodb").Collection} locationsCol
- * @param {{ maxLocations?: number }} [opts]
+ * @param {{ maxLocations?: number, orgId?: string }} [opts]
  * @returns {Promise<{ locationId: string, name: string }[]>}
  */
 export async function getPortalLocations(locationsCol, opts = {}) {
   const maxLocations = opts.maxLocations
-  const cursor = locationsCol.find({}).sort({ name: 1 })
+  const cursor = locationsCol.find(locationOrgFilter(opts.orgId)).sort({ name: 1 })
   if (Number.isFinite(maxLocations) && maxLocations > 0) {
     cursor.limit(maxLocations)
   }
@@ -30,14 +38,15 @@ export async function getPortalLocations(locationsCol, opts = {}) {
  * Active packages at a wifi location (captive portal sells RADIUS login codes — no CSV voucher stock required).
  * @param {import("mongodb").Collection} packagesCol
  * @param {string} locationId
- * @param {{ maxPackages?: number }} [opts]
+ * @param {{ maxPackages?: number, orgId?: string }} [opts]
  * @returns {Promise<{ packageId: string, name: string, priceGHS: number, dataLimit: string, remaining: number }[]>}
  */
 export async function getPortalPackagesForLocation(packagesCol, locationId, opts = {}) {
   if (!locationId) return []
 
   const maxPackages = opts.maxPackages
-  const cursor = packagesCol.find({ status: "Active" }).sort({ priceGHS: 1, name: 1 })
+  const orgId = resolvePortalOrgId(opts.orgId)
+  const cursor = packagesCol.find({ orgId, status: "Active" }).sort({ priceGHS: 1, name: 1 })
   if (Number.isFinite(maxPackages) && maxPackages > 0) {
     cursor.limit(maxPackages)
   }
@@ -74,12 +83,13 @@ export async function getPortalPackagesForLocation(packagesCol, locationId, opts
  * Wifi locations with at least one unused voucher (USSD / legacy voucher channels).
  * @param {import("mongodb").Collection} locationsCol
  * @param {import("mongodb").Collection} vouchersCol
- * @param {{ maxLocations?: number }} [opts]
+ * @param {{ maxLocations?: number, orgId?: string }} [opts]
  * @returns {Promise<{ locationId: string, name: string }[]>}
  */
 export async function getLocationsWithStock(locationsCol, vouchersCol, opts = {}) {
   const maxLocations = opts.maxLocations
-  const cursor = locationsCol.find({}).sort({ name: 1 })
+  const orgId = resolvePortalOrgId(opts.orgId)
+  const cursor = locationsCol.find({ orgId }).sort({ name: 1 })
   if (Number.isFinite(maxLocations) && maxLocations > 0) {
     cursor.limit(maxLocations)
   }
@@ -89,7 +99,10 @@ export async function getLocationsWithStock(locationsCol, vouchersCol, opts = {}
   const list = []
   for (const loc of locDocs) {
     const locationId = String(loc._id)
-    const remaining = await vouchersCol.countDocuments(buildLocationAvailabilityFilter(locationId))
+    const remaining = await vouchersCol.countDocuments({
+      ...buildLocationAvailabilityFilter(locationId),
+      orgId,
+    })
     if (remaining > 0) {
       list.push({
         locationId,
@@ -105,14 +118,15 @@ export async function getLocationsWithStock(locationsCol, vouchersCol, opts = {}
  * @param {import("mongodb").Collection} packagesCol
  * @param {import("mongodb").Collection} vouchersCol
  * @param {string} locationId
- * @param {{ maxPackages?: number }} [opts]
+ * @param {{ maxPackages?: number, orgId?: string }} [opts]
  * @returns {Promise<{ packageId: string, name: string, priceGHS: number, dataLimit: string, remaining: number }[]>}
  */
 export async function getPackagesForLocation(packagesCol, vouchersCol, locationId, opts = {}) {
   if (!locationId) return []
 
   const maxPackages = opts.maxPackages
-  const cursor = packagesCol.find({ status: "Active" }).sort({ priceGHS: 1, name: 1 })
+  const orgId = resolvePortalOrgId(opts.orgId)
+  const cursor = packagesCol.find({ orgId, status: "Active" }).sort({ priceGHS: 1, name: 1 })
   if (Number.isFinite(maxPackages) && maxPackages > 0) {
     cursor.limit(maxPackages)
   }
@@ -124,7 +138,10 @@ export async function getPackagesForLocation(packagesCol, vouchersCol, locationI
     const packageId = String(pkg._id)
     const resolved = resolvePackageForLocation(pkg, locationId)
     if (resolved.status && resolved.status !== "Active") continue
-    const remaining = await vouchersCol.countDocuments(buildPackageAvailabilityFilter(packageId, locationId))
+    const remaining = await vouchersCol.countDocuments({
+      ...buildPackageAvailabilityFilter(packageId, locationId),
+      orgId,
+    })
     if (remaining > 0) {
       list.push({
         packageId,

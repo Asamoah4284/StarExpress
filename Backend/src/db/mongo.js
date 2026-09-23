@@ -148,6 +148,7 @@ export async function connectMongo(uri) {
   await auditLogsCollection.createIndex({ orgId: 1, at: -1 })
   await expensesCollection.createIndex({ orgId: 1, date: 1 })
   await expensesCollection.createIndex({ orgId: 1, locationId: 1, date: 1 })
+  await packagesCollection.createIndex({ orgId: 1 })
   try {
     await financeWeeklySnapshotsCollection.dropIndex("weekStart_1")
   } catch {

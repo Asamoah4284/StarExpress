@@ -1,15 +1,14 @@
-const GLOBAL_SETTINGS_ID = "global"
 const MAX_LABEL_LENGTH = 120
 const MAX_LOGO_DATA_URL_LENGTH = 600_000
 const MAX_ALERT_PHONE_LENGTH = 200
+export const NEW_ORG_COMMISSION_RATE = 0.167
 
 const LOGO_DATA_URL_RE = /^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i
 const ALERT_PHONE_RE = /^[0-9+\-(),\s]+$/
 
 /** @param {string | undefined} orgId */
 function settingsDocId(orgId) {
-  const id = typeof orgId === "string" ? orgId.trim() : ""
-  return id || GLOBAL_SETTINGS_ID
+  return typeof orgId === "string" ? orgId.trim() : ""
 }
 
 /** @returns {string} */
@@ -80,8 +79,8 @@ export function normalizeAlertPhone(value) {
 /** @returns {number} */
 export function defaultSalesAgentCommissionRate() {
   const raw = process.env.SALES_AGENT_COMMISSION_RATE
-  const n = typeof raw === "string" && raw.trim() ? Number.parseFloat(raw.trim()) : 0.2
-  if (!Number.isFinite(n) || n < 0) return 0.2
+  const n = typeof raw === "string" && raw.trim() ? Number.parseFloat(raw.trim()) : NEW_ORG_COMMISSION_RATE
+  if (!Number.isFinite(n) || n < 0) return NEW_ORG_COMMISSION_RATE
   return Math.min(1, n)
 }
 
@@ -101,10 +100,7 @@ export function normalizeCommissionRate(value) {
  */
 export async function getSalesAgentCommissionRate(appSettings, orgId) {
   const docId = settingsDocId(orgId)
-  let doc = await appSettings.findOne({ _id: docId })
-  if (!doc && docId !== GLOBAL_SETTINGS_ID) {
-    doc = await appSettings.findOne({ _id: GLOBAL_SETTINGS_ID })
-  }
+  const doc = docId ? await appSettings.findOne({ _id: docId }) : null
   const stored = doc && typeof doc.salesAgentCommissionRate === "number" ? doc.salesAgentCommissionRate : null
   const normalized = stored != null ? normalizeCommissionRate(stored) : null
   return normalized ?? defaultSalesAgentCommissionRate()
@@ -121,11 +117,12 @@ export async function setSalesAgentCommissionRate(appSettings, rate, auth) {
     throw new Error("Invalid commission rate.")
   }
   const docId = settingsDocId(auth?.orgId)
+  if (!docId) throw new Error("Organization is required.")
   await appSettings.updateOne(
     { _id: docId },
     {
       $set: {
-        orgId: docId === GLOBAL_SETTINGS_ID ? undefined : docId,
+        orgId: docId,
         salesAgentCommissionRate: normalized,
         updatedAt: new Date().toISOString(),
         updatedBy: auth?.userId ?? null,
@@ -142,10 +139,7 @@ export async function setSalesAgentCommissionRate(appSettings, rate, auth) {
  */
 export async function getAppSettings(appSettings, orgId) {
   const docId = settingsDocId(orgId)
-  let doc = await appSettings.findOne({ _id: docId })
-  if (!doc && docId !== GLOBAL_SETTINGS_ID) {
-    doc = await appSettings.findOne({ _id: GLOBAL_SETTINGS_ID })
-  }
+  const doc = docId ? await appSettings.findOne({ _id: docId }) : null
   const salesAgentCommissionRate = await getSalesAgentCommissionRate(appSettings, orgId)
   const appName = normalizeLabel(doc?.appName, defaultAppName())
   const companyName = normalizeLabel(doc?.companyName, defaultCompanyName())
@@ -183,7 +177,8 @@ export async function patchAppSettings(appSettings, patch, auth) {
     updatedBy: auth?.userId ?? null,
   }
   const docId = settingsDocId(auth?.orgId)
-  if (docId !== GLOBAL_SETTINGS_ID) $set.orgId = docId
+  if (!docId) throw new Error("Organization is required.")
+  $set.orgId = docId
   let savedRate = null
 
   if (patch.salesAgentCommissionRate != null) {
@@ -226,4 +221,31 @@ export async function patchAppSettings(appSettings, patch, auth) {
   const current = await getAppSettings(appSettings, auth?.orgId)
   if (savedRate != null) current.salesAgentCommissionRate = savedRate
   return current
+}
+
+/**
+ * Private workspace settings for a new signup. Never copies the global or another org row.
+ * @param {import("mongodb").Collection} appSettings
+ * @param {{ orgId: string, name: string }} opts
+ */
+export async function seedOrgAppSettings(appSettings, opts) {
+  const orgId = typeof opts.orgId === "string" ? opts.orgId.trim() : ""
+  if (!orgId) return
+  const label = normalizeLabel(opts.name, defaultAppName())
+  const now = new Date().toISOString()
+  await appSettings.updateOne(
+    { _id: orgId },
+    {
+      $setOnInsert: {
+        orgId,
+        salesAgentCommissionRate: NEW_ORG_COMMISSION_RATE,
+        appName: label,
+        companyName: label,
+        companyLogoUrl: null,
+        createdAt: now,
+      },
+      $set: { updatedAt: now },
+    },
+    { upsert: true },
+  )
 }

@@ -1,9 +1,9 @@
 /**
  * Merge a package document with its optional per-location override.
  *
- * Packages are stored once globally (single `_id` shared by every wifi location that
- * sells them). When admins need a different price, data limit, status, or display name
- * at a specific hostel, they save a per-location override into
+ * Packages belong to one workspace (`orgId`). Within that org, a single `_id` can be
+ * sold at every wifi location. When admins need a different price, data limit, status,
+ * or display name at a specific hostel, they save a per-location override into
  * `packages.locationOverrides[locationId]`. Reads at that location must apply the
  * override so the USSD menu, captive sale, and admin UI all see the same values.
  *

@@ -46,6 +46,14 @@ export function byOrg(orgId) {
 }
 
 /**
+ * Public /buy and USSD: use the requested org, otherwise the legacy default workspace.
+ * @param {unknown} value
+ */
+export function resolvePortalOrgId(value) {
+  return normalizeOrgId(value) || DEFAULT_ORG_ID
+}
+
+/**
  * @param {import("mongodb").Collection} organizations
  * @param {string} orgId
  * @param {string} name

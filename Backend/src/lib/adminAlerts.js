@@ -11,9 +11,8 @@
  */
 import { randomUUID } from "node:crypto"
 import { sendSms } from "../services/sms.js"
+import { getAppSettings } from "./appSettings.js"
 import { getAppSettingsCollection, getAuditLogsCollection, getLocationsCollection } from "../db/mongo.js"
-
-const GLOBAL_SETTINGS_ID = "global"
 
 /**
  * @param {string} phone
@@ -25,20 +24,38 @@ function maskPhone(phone) {
 }
 
 /**
- * Resolve alert phone(s) + on/off + app name. Settings first, env fallback.
+ * @param {{ orgId?: string, locationId?: string }} [info]
+ */
+async function resolveOrgIdForAlert(info) {
+  if (typeof info?.orgId === "string" && info.orgId.trim()) return info.orgId.trim()
+  const locationId = String(info?.locationId || "").trim()
+  if (!locationId) return ""
+  try {
+    const loc = await getLocationsCollection().findOne({ _id: locationId }, { projection: { orgId: 1 } })
+    return typeof loc?.orgId === "string" ? loc.orgId.trim() : ""
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Resolve alert phone(s) + on/off + app name. This workspace's settings, then env.
+ * @param {string} [orgId]
  * @returns {Promise<{ phones: string[], enabled: boolean, appName: string }>}
  */
-async function resolveAlertConfig() {
+async function resolveAlertConfig(orgId) {
   let alertPhone = ""
   let enabled = true
   let appName = ""
 
   try {
-    const doc = await getAppSettingsCollection().findOne({ _id: GLOBAL_SETTINGS_ID })
-    if (doc) {
-      if (typeof doc.alertPhone === "string" && doc.alertPhone.trim()) alertPhone = doc.alertPhone.trim()
-      if (typeof doc.purchaseAlertsEnabled === "boolean") enabled = doc.purchaseAlertsEnabled
-      if (typeof doc.appName === "string" && doc.appName.trim()) appName = doc.appName.trim()
+    const settings = await getAppSettings(getAppSettingsCollection(), orgId)
+    if (typeof settings.alertPhone === "string" && settings.alertPhone.trim()) {
+      alertPhone = settings.alertPhone.trim()
+    }
+    enabled = settings.purchaseAlertsEnabled !== false
+    if (typeof settings.appName === "string" && settings.appName.trim()) {
+      appName = settings.appName.trim()
     }
   } catch (err) {
     console.error("[admin-alert] could not read settings", err instanceof Error ? err.message : err)
@@ -101,8 +118,8 @@ async function writeAlertAudit(action) {
  * @param {string} message
  * @returns {Promise<{ ok: boolean, skipped?: boolean, reason?: string }>}
  */
-async function sendAdminAlertSms(message) {
-  const { phones, enabled } = await resolveAlertConfig()
+async function sendAdminAlertSms(message, orgId) {
+  const { phones, enabled } = await resolveAlertConfig(orgId)
   if (!enabled) {
     console.log("[admin-alert] skipped — purchase alerts disabled in settings")
     return { ok: false, skipped: true, reason: "disabled" }
@@ -156,7 +173,8 @@ function formatAmount(amount) {
 export function notifyAdminPaidNoVoucher(info) {
   void (async () => {
     const locationName = info.locationName || (await resolveLocationName(info.locationId || ""))
-    const { appName } = await resolveAlertConfig()
+    const orgId = await resolveOrgIdForAlert(info)
+    const { appName } = await resolveAlertConfig(orgId)
     await writeAlertAudit(
       `Captive purchase problem — PAID but NO VOUCHER: ${info.customerPhone || "unknown"} · ${
         info.packageName || "package"
@@ -175,7 +193,7 @@ export function notifyAdminPaidNoVoucher(info) {
       info.paymentReference ? `Ref ${info.paymentReference}.` : "",
       "Please follow up / refund.",
     ].filter(Boolean)
-    await sendAdminAlertSms(parts.join(" ").replace(/\s+\./g, "."))
+    await sendAdminAlertSms(parts.join(" ").replace(/\s+\./g, "."), orgId)
   })().catch((err) => {
     console.error("[admin-alert] notifyAdminPaidNoVoucher failed", err instanceof Error ? err.message : err)
   })
@@ -196,7 +214,8 @@ export function notifyAdminPaidNoVoucher(info) {
 export function notifyAdminCustomerSmsFailed(info) {
   void (async () => {
     const locationName = info.locationName || (await resolveLocationName(info.locationId || ""))
-    const { appName } = await resolveAlertConfig()
+    const orgId = await resolveOrgIdForAlert(info)
+    const { appName } = await resolveAlertConfig(orgId)
     await writeAlertAudit(
       `Captive purchase problem — VOUCHER SMS FAILED: ${info.customerPhone || "unknown"} · ${
         info.packageName || "package"
@@ -213,7 +232,7 @@ export function notifyAdminCustomerSmsFailed(info) {
       "but the SMS did not send. They may not have their code.",
       info.paymentReference ? `Ref ${info.paymentReference}.` : "",
     ].filter(Boolean)
-    await sendAdminAlertSms(parts.join(" ").replace(/\s+—/g, " —"))
+    await sendAdminAlertSms(parts.join(" ").replace(/\s+—/g, " —"), orgId)
   })().catch((err) => {
     console.error("[admin-alert] notifyAdminCustomerSmsFailed failed", err instanceof Error ? err.message : err)
   })
@@ -236,7 +255,8 @@ export function notifyAdminCustomerSmsFailed(info) {
 export function notifyAdminStalledPayment(info) {
   void (async () => {
     const locationName = info.locationName || (await resolveLocationName(info.locationId || ""))
-    const { appName } = await resolveAlertConfig()
+    const orgId = await resolveOrgIdForAlert(info)
+    const { appName } = await resolveAlertConfig(orgId)
     await writeAlertAudit(
       `Captive purchase problem — PAYMENT NOT COMPLETED (no MoMo approval): ${
         info.customerPhone || "unknown"
@@ -255,7 +275,7 @@ export function notifyAdminStalledPayment(info) {
       info.paymentReference ? `Ref ${info.paymentReference}.` : "",
       "They were not charged.",
     ].filter(Boolean)
-    await sendAdminAlertSms(parts.join(" ").replace(/\s+\./g, "."))
+    await sendAdminAlertSms(parts.join(" ").replace(/\s+\./g, "."), orgId)
   })().catch((err) => {
     console.error("[admin-alert] notifyAdminStalledPayment failed", err instanceof Error ? err.message : err)
   })

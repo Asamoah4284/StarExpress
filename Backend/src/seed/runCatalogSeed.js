@@ -44,6 +44,7 @@ export async function seedCatalogIfEmpty(cols) {
     await packages.insertMany(
       SEED_PACKAGES.map(({ id, name, priceGHS, dataLimit, status, stockUnits }) => ({
         _id: id,
+        orgId: DEFAULT_ORG_ID,
         name,
         priceGHS,
         dataLimit,

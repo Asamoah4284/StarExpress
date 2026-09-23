@@ -18,6 +18,7 @@ import {
 import { sendUssdVoucherSms } from "../services/ussdVoucherSms.js"
 import { isAgentPaymentReference, processAgentMomoPaymentSuccess } from "../lib/agentMomoPayment.js"
 import { isCaptivePaymentReference, processCaptiveMomoPaymentSuccess } from "../lib/captiveMomoPayment.js"
+import { resolvePortalOrgId } from "../lib/organizations.js"
 import { getLocationsWithStock, getPackagesForLocation } from "../services/portalCatalog.js"
 import { findRecentVouchersForPhone } from "../services/voucherRetrieve.js"
 import { buyLog, buyError, errorForLog } from "../lib/buyLog.js"
@@ -199,14 +200,25 @@ export function createUssdRouter(deps) {
     return { message: lines.join("\n"), reply: false }
   }
 
-  /** @returns {Promise<{ locationId: string, name: string }[]>} */
-  async function getLocationsForUssdMenu() {
-    return getLocationsWithStock(locations, vouchers, { maxLocations: MAX_LOCATIONS_IN_MENU })
+  /** @param {string} [orgId] */
+  function readUssdOrgId(orgId) {
+    return resolvePortalOrgId(orgId)
   }
 
-  /** @param {string} locationId */
-  async function getPackagesForUssdMenu(locationId) {
-    return getPackagesForLocation(packages, vouchers, locationId, { maxPackages: MAX_PACKAGES_IN_MENU })
+  /** @param {string} [orgId] */
+  async function getLocationsForUssdMenu(orgId) {
+    return getLocationsWithStock(locations, vouchers, {
+      maxLocations: MAX_LOCATIONS_IN_MENU,
+      orgId: readUssdOrgId(orgId),
+    })
+  }
+
+  /** @param {string} locationId @param {string} [orgId] */
+  async function getPackagesForUssdMenu(locationId, orgId) {
+    return getPackagesForLocation(packages, vouchers, locationId, {
+      maxPackages: MAX_PACKAGES_IN_MENU,
+      orgId: readUssdOrgId(orgId),
+    })
   }
 
   // Hard cap on how many characters of a package name we render in the USSD menu.
@@ -335,10 +347,13 @@ export function createUssdRouter(deps) {
     }
   })
 
-  router.get("/locations", async (_req, res) => {
+  router.get("/locations", async (req, res) => {
     try {
-      const locationList = await getLocationsForUssdMenu()
-      res.json({ locations: locationList })
+      const orgId = readUssdOrgId(
+        typeof req.query?.org === "string" ? req.query.org : req.query?.orgId,
+      )
+      const locationList = await getLocationsForUssdMenu(orgId)
+      res.json({ locations: locationList, org: orgId })
     } catch (err) {
       console.error("[ussd] GET /locations", err)
       res.status(500).json({ error: "Failed to load locations." })
@@ -347,25 +362,29 @@ export function createUssdRouter(deps) {
 
   router.get("/packages", async (req, res) => {
     try {
+      const orgId = readUssdOrgId(
+        typeof req.query?.org === "string" ? req.query.org : req.query?.orgId,
+      )
       const queryLocationId =
         typeof req.query?.locationId === "string" ? req.query.locationId.trim() : ""
-      const locationList = await getLocationsForUssdMenu()
+      const locationList = await getLocationsForUssdMenu(orgId)
 
       if (queryLocationId) {
-        const loc = await locations.findOne({ _id: queryLocationId })
+        const loc = await locations.findOne({ _id: queryLocationId, orgId })
         if (!loc) return res.status(404).json({ error: "Unknown location." })
-        const items = await getPackagesForUssdMenu(queryLocationId)
+        const items = await getPackagesForUssdMenu(queryLocationId, orgId)
         return res.json({
           shortcode: USSD_SHORTCODE,
           locationId: queryLocationId,
           locationName: typeof loc.name === "string" ? loc.name : queryLocationId,
           packages: items,
+          org: orgId,
         })
       }
 
       const withPackages = await Promise.all(
         locationList.map(async (entry) => {
-          const items = await getPackagesForUssdMenu(entry.locationId)
+          const items = await getPackagesForUssdMenu(entry.locationId, orgId)
           return { ...entry, packages: items }
         }),
       )

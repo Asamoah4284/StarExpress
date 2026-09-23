@@ -101,6 +101,7 @@ export default function CaptiveBuy() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const portalParams = React.useMemo(() => resolvePortalParams(searchParams), [searchParams])
+  const orgId = portalParams.org
   const [step, setStep] = React.useState(0)
   const [locations, setLocations] = React.useState(/** @type {{ locationId: string, name: string }[]} */ ([]))
   const [packages, setPackages] = React.useState(
@@ -141,7 +142,7 @@ export default function CaptiveBuy() {
     ;(async () => {
       setLoading(true)
       setError(null)
-      const result = await fetchPortalLocations()
+      const result = await fetchPortalLocations(orgId)
       if (cancelled) return
       if (!result.ok) {
         setError(result.error)
@@ -154,7 +155,7 @@ export default function CaptiveBuy() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [orgId])
 
   // While the Moolre POS iframe is open, poll our backend so the customer gets their code the
   // moment the payment is confirmed (via webhook or our own status check) — even if Moolre's POS
@@ -192,7 +193,7 @@ export default function CaptiveBuy() {
     }
     setError(null)
     setLoadingPackages(true)
-    const result = await fetchPortalPackages(locationId)
+    const result = await fetchPortalPackages(locationId, orgId)
     setLoadingPackages(false)
     if (!result.ok) {
       setError(result.error)

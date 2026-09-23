@@ -22,24 +22,25 @@ export function readPortalParamsFromSearch(searchParams) {
     client_mac: first("client_mac", "clientMac", "clientmac", "mac", "user_mac", "usermac"),
     orig_url: first("orig_url", "origUrl", "origurl", "redir", "redirect", "continue"),
     ssid: first("ssid", "SSID"),
+    org: first("org", "orgId"),
   }
 }
 
 /**
- * @param {{ login_url?: string, ap_mac?: string, client_mac?: string, orig_url?: string, ssid?: string }} params
+ * @param {{ login_url?: string, ap_mac?: string, client_mac?: string, orig_url?: string, ssid?: string, org?: string }} params
  */
 export function persistPortalParams(params) {
   try {
-    if (!params?.login_url && !params?.client_mac) return
+    if (!params?.login_url && !params?.client_mac && !params?.org) return
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(params))
   } catch {
     /* private mode / unavailable */
   }
 }
 
-/** @returns {{ login_url: string, ap_mac: string, client_mac: string, orig_url: string, ssid: string }} */
+/** @returns {{ login_url: string, ap_mac: string, client_mac: string, orig_url: string, ssid: string, org: string }} */
 export function loadPersistedPortalParams() {
-  const empty = { login_url: "", ap_mac: "", client_mac: "", orig_url: "", ssid: "" }
+  const empty = { login_url: "", ap_mac: "", client_mac: "", orig_url: "", ssid: "", org: "" }
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY)
     if (!raw) return empty
@@ -51,6 +52,7 @@ export function loadPersistedPortalParams() {
       client_mac: typeof parsed.client_mac === "string" ? parsed.client_mac : "",
       orig_url: typeof parsed.orig_url === "string" ? parsed.orig_url : "",
       ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
+      org: typeof parsed.org === "string" ? parsed.org : "",
     }
   } catch {
     return empty
@@ -70,8 +72,9 @@ export function resolvePortalParams(searchParams) {
     client_mac: fromUrl.client_mac || fromStore.client_mac,
     orig_url: fromUrl.orig_url || fromStore.orig_url,
     ssid: fromUrl.ssid || fromStore.ssid,
+    org: fromUrl.org || fromStore.org,
   }
-  if (merged.login_url || merged.client_mac) {
+  if (merged.login_url || merged.client_mac || merged.org) {
     persistPortalParams(merged)
   }
   return merged
@@ -104,7 +107,7 @@ export function buildHotspotAuthorizeUrl(loginUrl, code, extra = {}) {
 
 /**
  * @param {unknown} raw
- * @returns {{ login_url: string, ap_mac: string, client_mac: string, orig_url: string, ssid: string }}
+ * @returns {{ login_url: string, ap_mac: string, client_mac: string, orig_url: string, ssid: string, org: string }}
  */
 export function portalParamsFromApi(raw) {
   const src = raw && typeof raw === "object" ? /** @type {Record<string, unknown>} */ (raw) : {}
@@ -115,6 +118,7 @@ export function portalParamsFromApi(raw) {
     client_mac: pick("client_mac"),
     orig_url: pick("orig_url"),
     ssid: pick("ssid"),
+    org: pick("org") || pick("orgId"),
   }
 }
 

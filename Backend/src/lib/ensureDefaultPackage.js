@@ -1,6 +1,8 @@
+import { DEFAULT_ORG_ID } from "./organizations.js"
+
 /**
- * Default captive-portal packages (FreeRADIUS limits via radiusSessionTimeout / radiusMaxOctets).
- * Startup seed is empty-collection only so admin deletes are not undone on restart.
+ * Default captive-portal packages for the legacy org-default workspace only.
+ * New signups start with an empty catalog — do not call this on API startup.
  */
 
 const GB = 1024 ** 3
@@ -85,9 +87,9 @@ export const DEFAULT_PACKAGES = [
 ]
 
 /**
- * Seed the default catalog only when the collection is empty, so an admin delete
- * is not undone the next time the API starts. Pass `{ fillMissing: true }` from
- * the CLI to restore any missing default `_id`s on purpose.
+ * CLI-only: insert the historic default packages into org-default.
+ * Pass `{ fillMissing: true }` to restore any missing default `_id`s.
+ * Do not run this on startup — new workspaces must stay empty.
  *
  * @param {import("mongodb").Collection} packagesCol
  * @param {{ fillMissing?: boolean }} [opts]
@@ -111,7 +113,7 @@ export async function ensureDefaultPackage(packagesCol, opts = {}) {
       continue
     }
     try {
-      await packagesCol.insertOne({ ...doc })
+      await packagesCol.insertOne({ ...doc, orgId: DEFAULT_ORG_ID })
       created += 1
       console.log(`[packages] Default package created: ${doc.name} (${doc._id})`)
     } catch (err) {

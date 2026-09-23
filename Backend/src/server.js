@@ -30,7 +30,6 @@ import { createCatalogRouter } from "./routes/catalog.js"
 import { createSettingsRouter } from "./routes/settings.js"
 import { createFinanceRouter } from "./routes/finance.js"
 import { seedCatalogIfEmpty } from "./seed/runCatalogSeed.js"
-import { ensureDefaultPackage } from "./lib/ensureDefaultPackage.js"
 import { createUssdRouter } from "./routes/ussd.js"
 import { createPortalRouter } from "./routes/portal.js"
 import { createMoolrePaymentSuccessHandler } from "./lib/moolrePaymentSuccessPage.js"
@@ -147,6 +146,7 @@ async function main() {
     customerProfiles: getCustomerProfilesCollection(),
     agentPaymentPending: getAgentPaymentPendingCollection(),
     appSettings: getAppSettingsCollection(),
+    packages: getPackagesCollection(),
   })
 
   if (envTruthy("CATALOG_SEED_ON_STARTUP")) {
@@ -160,9 +160,6 @@ async function main() {
   } else {
     console.info("Catalog seed skipped (set CATALOG_SEED_ON_STARTUP=true to seed empty collections, or run npm run seed:catalog).")
   }
-
-  // Captive /buy needs at least one Active package. Only inserts when packages is empty.
-  await ensureDefaultPackage(getPackagesCollection())
 
   if (ADMIN_EMAIL && ADMIN_PASSWORD) {
     await userStore.seedAdmin(ADMIN_EMAIL, ADMIN_PASSWORD, "System Admin", BCRYPT_SALT_ROUNDS, DEFAULT_ORG_ID)
@@ -280,6 +277,7 @@ async function main() {
     jwtSecret: JWT_SECRET,
     jwtExpiresIn: JWT_EXPIRES_IN,
     organizations: getOrganizationsCollection(),
+    appSettings: getAppSettingsCollection(),
   })
   app.use("/api/auth", authRouter)
 

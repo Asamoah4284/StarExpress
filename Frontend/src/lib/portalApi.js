@@ -66,9 +66,17 @@ async function fetchWithFallback(paths, init = {}) {
   return last || { res: new Response(null, { status: 404 }), data: null }
 }
 
-/** @returns {Promise<{ ok: true, locations: { locationId: string, name: string }[] } | { ok: false, error: string }>} */
-export async function fetchPortalLocations() {
-  const { res, data } = await fetchWithFallback(["/api/portal/locations", "/ussd/locations", "/ussd/packages"])
+/**
+ * @param {string} [orgId]
+ * @returns {Promise<{ ok: true, locations: { locationId: string, name: string }[] } | { ok: false, error: string }>}
+ */
+export async function fetchPortalLocations(orgId = "") {
+  const q = orgId ? `?org=${encodeURIComponent(orgId)}` : ""
+  const { res, data } = await fetchWithFallback([
+    `/api/portal/locations${q}`,
+    `/ussd/locations${q}`,
+    `/ussd/packages${q}`,
+  ])
 
   if (!res.ok) {
     return { ok: false, error: data?.error || res.statusText || "Failed to load locations." }
@@ -93,13 +101,16 @@ export async function fetchPortalLocations() {
 
 /**
  * @param {string} locationId
+ * @param {string} [orgId]
  * @returns {Promise<{ ok: true, locationId: string, locationName: string, packages: object[] } | { ok: false, error: string }>}
  */
-export async function fetchPortalPackages(locationId) {
-  const q = encodeURIComponent(locationId)
+export async function fetchPortalPackages(locationId, orgId = "") {
+  const params = new URLSearchParams({ locationId })
+  if (orgId) params.set("org", orgId)
+  const q = params.toString()
   const { res, data } = await fetchWithFallback([
-    `/api/portal/packages?locationId=${q}`,
-    `/ussd/packages?locationId=${q}`,
+    `/api/portal/packages?${q}`,
+    `/ussd/packages?${q}`,
   ])
 
   if (!res.ok) {
@@ -134,6 +145,7 @@ export async function fetchPortalPackages(locationId) {
  *   client_mac?: string
  *   orig_url?: string
  *   ssid?: string
+ *   org?: string
  * }} body
  */
 export async function initializePortalPayment(body) {
@@ -147,6 +159,7 @@ export async function initializePortalPayment(body) {
     ...(body.client_mac ? { client_mac: body.client_mac } : {}),
     ...(body.orig_url ? { orig_url: body.orig_url } : {}),
     ...(body.ssid ? { ssid: body.ssid } : {}),
+    ...(body.org ? { org: body.org } : {}),
   }
   const { res, data } = await parseJsonResponse("/api/portal/payments/initialize", {
     method: "POST",

@@ -17,6 +17,7 @@ import { DEFAULT_ORG_ID, DEFAULT_ORG_NAME } from "./organizations.js"
  *   customerProfiles: import("mongodb").Collection
  *   agentPaymentPending: import("mongodb").Collection
  *   appSettings: import("mongodb").Collection
+ *   packages?: import("mongodb").Collection
  * }} cols
  */
 export async function migrateDefaultOrganization(cols) {
@@ -33,6 +34,7 @@ export async function migrateDefaultOrganization(cols) {
     customerProfiles,
     agentPaymentPending,
     appSettings,
+    packages,
   } = cols
 
   const existing = await organizations.findOne({ _id: DEFAULT_ORG_ID })
@@ -62,6 +64,7 @@ export async function migrateDefaultOrganization(cols) {
     ["finance_weekly_snapshots", financeWeeklySnapshots],
     ["customer_profiles", customerProfiles],
     ["agent_payment_pending", agentPaymentPending],
+    ...(packages ? [["packages", packages]] : []),
   ]
 
   for (const [label, col] of stamped) {

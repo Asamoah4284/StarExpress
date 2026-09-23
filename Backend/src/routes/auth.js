@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs"
 import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { normalizeGhanaPhone } from "../lib/ghanaPhone.js"
 import { createOrganization } from "../lib/organizations.js"
+import { seedOrgAppSettings } from "../lib/appSettings.js"
 import { OTP_RESEND_COOLDOWN_MS, OTP_TTL_MS, SignupOtpStore } from "../lib/signupOtpStore.js"
 import { sendSms } from "../services/sms.js"
 import { UserStore } from "../userStore.js"
@@ -16,9 +17,10 @@ import { UserStore } from "../userStore.js"
  *   jwtSecret: string
  *   jwtExpiresIn: string
  *   organizations: import("mongodb").Collection
+ *   appSettings?: import("mongodb").Collection
  * }} deps
  */
-export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpiresIn, organizations }) {
+export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpiresIn, organizations, appSettings }) {
   const router = express.Router()
 
   function signToken(user) {
@@ -180,6 +182,10 @@ export function createAuthRouter({ userStore, signupOtpStore, jwtSecret, jwtExpi
       }
 
       await organizations.updateOne({ _id: org.id }, { $set: { createdByUserId: created.id } })
+
+      if (appSettings) {
+        await seedOrgAppSettings(appSettings, { orgId: org.id, name: org.name })
+      }
 
       const publicUser = toPublicUser(created)
       return res.status(201).json({

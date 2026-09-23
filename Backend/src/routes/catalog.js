@@ -243,8 +243,8 @@ function toVoucher(d) {
  * @param {import("mongodb").Collection} packages
  * @param {string} packageId
  */
-async function getActivePackageForVoucherAssign(packages, packageId) {
-  const pkg = await packages.findOne({ _id: packageId })
+async function getActivePackageForVoucherAssign(packages, packageId, orgId) {
+  const pkg = await packages.findOne({ _id: packageId, ...byOrg(orgId) })
   if (!pkg) return { ok: false, error: "Unknown package — refresh the page and pick a valid package." }
   if (pkg.status !== "Active") {
     return { ok: false, error: "Only active packages can receive vouchers. Activate the package or pick another." }
@@ -782,7 +782,8 @@ async function releaseOrphanedUsedVouchers(vouchersCol, orgId) {
 async function syncPackageStockUnitsFromVouchers(vouchersCol, packagesCol, orgId = "") {
   const inventory = await aggregatePackageVoucherInventory(vouchersCol, "", orgId)
   const remainingByPackageId = new Map(inventory.map((row) => [row.id, row.remaining]))
-  const pkgDocs = await packagesCol.find({}).project({ _id: 1, stockUnits: 1 }).toArray()
+  const pkgFilter = orgId ? byOrg(orgId) : { _id: { $in: [] } }
+  const pkgDocs = await packagesCol.find(pkgFilter).project({ _id: 1, stockUnits: 1 }).toArray()
   const ops = []
   for (const pkg of pkgDocs) {
     const id = String(pkg._id)
@@ -790,7 +791,7 @@ async function syncPackageStockUnitsFromVouchers(vouchersCol, packagesCol, orgId
     if (pkg.stockUnits !== remaining) {
       ops.push({
         updateOne: {
-          filter: { _id: pkg._id },
+          filter: { _id: pkg._id, ...byOrg(orgId) },
           update: { $set: { stockUnits: remaining } },
         },
       })
@@ -989,7 +990,7 @@ export function createCatalogRouter(deps) {
       if (!packageId) return res.status(400).json({ error: "packageId is required." })
       if (!locationId) return res.status(400).json({ error: "locationId is required." })
 
-      const pkg = await packages.findOne({ _id: packageId })
+      const pkg = await packages.findOne({ _id: packageId, ...byOrg(orgId) })
       if (!pkg) return res.status(404).json({ error: "Unknown package." })
 
       if (req.auth.role !== "Admin") {
@@ -1084,7 +1085,7 @@ export function createCatalogRouter(deps) {
           error: "packageId is required — pick a package to assign these vouchers.",
         })
       }
-      const pkgResult = await getActivePackageForVoucherAssign(packages, packageIdRaw)
+      const pkgResult = await getActivePackageForVoucherAssign(packages, packageIdRaw, orgId)
       if (!pkgResult.ok) return res.status(400).json({ error: pkgResult.error })
       const packageName = pkgResult.packageName
 
@@ -1270,7 +1271,7 @@ export function createCatalogRouter(deps) {
         filter.locationId = locParam
       }
       if (pkgParam) {
-        packageDoc = await packages.findOne({ _id: pkgParam })
+        packageDoc = await packages.findOne({ _id: pkgParam, ...byOrg(orgId) })
         if (!packageDoc) return res.status(400).json({ error: "Unknown package for bulk delete." })
         filter.packageId = pkgParam
       }
@@ -1347,7 +1348,7 @@ export function createCatalogRouter(deps) {
         await releaseOrphanedUsedVouchers(vouchers, orgId)
       }
       await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
-      const pkgDocs = await packages.find({}).sort({ name: 1 }).toArray()
+      const pkgDocs = await packages.find(byOrg(orgId)).sort({ name: 1 }).toArray()
 
       /** @type {Awaited<ReturnType<typeof aggregatePackageVoucherInventory>>} */
       let packageVoucherInventory = []
@@ -1405,7 +1406,7 @@ export function createCatalogRouter(deps) {
         return res.status(400).json({ error: "A valid customer phone is required to start MoMo payment." })
       }
 
-      const pkg = await packages.findOne({ _id: packageId })
+      const pkg = await packages.findOne({ _id: packageId, ...byOrg(orgId) })
       if (!pkg) return res.status(400).json({ error: "Unknown package." })
 
       let locationId = ""
@@ -1533,7 +1534,7 @@ export function createCatalogRouter(deps) {
         })
       }
 
-      const pkg = await packages.findOne({ _id: packageId })
+      const pkg = await packages.findOne({ _id: packageId, ...byOrg(orgId) })
       if (!pkg) return res.status(400).json({ error: "Unknown package." })
 
       let locationId = ""
@@ -2325,6 +2326,7 @@ export function createCatalogRouter(deps) {
 
   router.post("/packages", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const name = typeof req.body?.name === "string" ? req.body.name.trim() : ""
       const dataLimit = typeof req.body?.dataLimit === "string" ? req.body.dataLimit.trim() : ""
       const status = typeof req.body?.status === "string" ? req.body.status.trim() : "Active"
@@ -2337,6 +2339,7 @@ export function createCatalogRouter(deps) {
       const id = `pkg-${randomUUID().slice(0, 8)}`
       const doc = {
         _id: id,
+        orgId,
         name,
         priceGHS,
         dataLimit,
@@ -2345,8 +2348,8 @@ export function createCatalogRouter(deps) {
         ...extras.fields,
       }
       await packages.insertOne(doc)
-      await syncPackageStockUnitsFromVouchers(vouchers, packages, req.auth.orgId)
-      const saved = await packages.findOne({ _id: id })
+      await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
+      const saved = await packages.findOne({ _id: id, ...byOrg(orgId) })
       await appendAuditLog(auditLogs, req.auth, `Created package "${name}" (${id})`)
       res.status(201).json({ package: toPackage(saved ?? doc) })
     } catch (err) {
@@ -2390,7 +2393,7 @@ export function createCatalogRouter(deps) {
         return res.status(400).json({ error: "No valid fields to update." })
       }
 
-      const existing = await packages.findOne({ _id: id })
+      const existing = await packages.findOne({ _id: id, ...byOrg(orgId) })
       if (!existing) return res.status(404).json({ error: "Package not found." })
 
       // Scoped edit: only this hostel's view should change. Fork the package when it's actually
@@ -2419,6 +2422,7 @@ export function createCatalogRouter(deps) {
           const forked = {
             ...existingFields,
             _id: newId,
+            orgId,
             stockUnits: 0,
             ...fields,
           }
@@ -2441,7 +2445,7 @@ export function createCatalogRouter(deps) {
           )
 
           await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
-          const saved = await packages.findOne({ _id: newId })
+          const saved = await packages.findOne({ _id: newId, ...byOrg(orgId) })
           if (!saved) return res.status(500).json({ error: "Failed to load forked package." })
 
           await appendAuditLog(
@@ -2454,7 +2458,7 @@ export function createCatalogRouter(deps) {
         // Not shared with any other location — safe to edit in place.
       }
 
-      const r = await packages.updateOne({ _id: id }, { $set: fields })
+      const r = await packages.updateOne({ _id: id, ...byOrg(orgId) }, { $set: fields })
       if (r.matchedCount === 0) return res.status(404).json({ error: "Package not found." })
 
       // Keep voucher/sales display fields in sync with the package they reference.
@@ -2464,7 +2468,7 @@ export function createCatalogRouter(deps) {
       }
 
       await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
-      const doc = await packages.findOne({ _id: id })
+      const doc = await packages.findOne({ _id: id, ...byOrg(orgId) })
       if (!doc) return res.status(404).json({ error: "Package not found." })
       await appendAuditLog(auditLogs, req.auth, `Updated package "${doc.name}" (${id})`)
       res.json({ package: toPackage(doc), forked: false })
@@ -2477,11 +2481,12 @@ export function createCatalogRouter(deps) {
 
   router.delete("/packages/:id", requireAdmin, async (req, res) => {
     try {
+      const orgId = req.auth.orgId
       const id = decodeURIComponent(String(req.params.id || "")).trim()
       if (!id) return res.status(400).json({ error: "Package id is required." })
-      const existing = await packages.findOne({ _id: id })
-      if (!existing) return res.status(404).json({ error: "Package not found." })
-      const r = await packages.deleteOne({ _id: id })
+      const existing = await packages.findOne({ _id: id, ...byOrg(orgId) })
+      if (!existing || existing.orgId !== orgId) return res.status(404).json({ error: "Package not found." })
+      const r = await packages.deleteOne({ _id: id, ...byOrg(orgId) })
       if (r.deletedCount === 0) return res.status(404).json({ error: "Package not found." })
       await appendAuditLog(
         auditLogs,

@@ -17,6 +17,7 @@ import {
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
 import { getAppSettings } from "../lib/appSettings.js"
 import { applyPercentOff, normalizePercentOff } from "../lib/promoDiscount.js"
+import { resolvePortalOrgId } from "../lib/organizations.js"
 import { getPortalLocations, getPackagesForLocation } from "../services/portalCatalog.js"
 import { buildPackageAvailabilityFilter } from "../services/voucherSaleFulfillment.js"
 import { formatPhoneNumber } from "../lib/ussdHelpers.js"
@@ -119,10 +120,22 @@ export function createPortalRouter(deps) {
     return { code, percentOff: normalizePercentOff(promo.percentOff) }
   }
 
-  router.get("/locations", async (_req, res) => {
+  /**
+   * @param {import("express").Request} req
+   */
+  function readPortalOrgParam(req) {
+    const queryOrg = typeof req.query?.org === "string" ? req.query.org.trim() : ""
+    const queryOrgId = typeof req.query?.orgId === "string" ? req.query.orgId.trim() : ""
+    const bodyOrg = typeof req.body?.org === "string" ? req.body.org.trim() : ""
+    const bodyOrgId = typeof req.body?.orgId === "string" ? req.body.orgId.trim() : ""
+    return queryOrg || queryOrgId || bodyOrg || bodyOrgId
+  }
+
+  router.get("/locations", async (req, res) => {
     try {
-      const items = await getPortalLocations(locations)
-      res.json({ locations: items })
+      const orgId = resolvePortalOrgId(readPortalOrgParam(req))
+      const items = await getPortalLocations(locations, { orgId })
+      res.json({ locations: items, org: orgId })
     } catch (err) {
       console.error("[portal] GET /locations", err)
       res.status(500).json({ error: "Failed to load locations." })
@@ -135,16 +148,19 @@ export function createPortalRouter(deps) {
       if (!locationId) {
         return res.status(400).json({ error: "locationId is required." })
       }
-      const loc = await locations.findOne({ _id: locationId })
+      const orgId = resolvePortalOrgId(readPortalOrgParam(req))
+      const loc = await locations.findOne({ _id: locationId, orgId })
       if (!loc) return res.status(404).json({ error: "Unknown location." })
+      const locOrgId = resolvePortalOrgId(typeof loc.orgId === "string" ? loc.orgId : orgId)
       if (!vouchers) return res.status(503).json({ error: "Voucher stock is unavailable." })
-      const items = await getPackagesForLocation(packages, vouchers, locationId)
+      const items = await getPackagesForLocation(packages, vouchers, locationId, { orgId: locOrgId })
       const promo = await getVisiblePromoForLocation(loc)
       res.json({
         locationId,
         locationName: typeof loc.name === "string" ? loc.name : locationId,
         packages: items,
         promo,
+        org: locOrgId,
       })
     } catch (err) {
       console.error("[portal] GET /packages", err)
@@ -197,17 +213,18 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "A valid customer phone is required to start MoMo payment." })
       }
 
-      const loc = await locations.findOne({ _id: locationId })
+      const orgId = resolvePortalOrgId(readPortalOrgParam(req))
+      const loc = await locations.findOne({ _id: locationId, orgId })
       if (!loc) {
-        buyError("initialize abort", { reason: "unknown location", locationId })
+        buyError("initialize abort", { reason: "unknown location", locationId, orgId })
         return res.status(400).json({ error: "Unknown location." })
       }
-      const locOrgId = typeof loc.orgId === "string" ? loc.orgId.trim() : ""
-      buyLog("initialize location", { locationId, name: loc.name, orgId: locOrgId || null })
+      const locOrgId = resolvePortalOrgId(typeof loc.orgId === "string" ? loc.orgId : orgId)
+      buyLog("initialize location", { locationId, name: loc.name, orgId: locOrgId })
 
-      const pkg = await packages.findOne({ _id: packageId })
+      const pkg = await packages.findOne({ _id: packageId, orgId: locOrgId })
       if (!pkg) {
-        buyError("initialize abort", { reason: "unknown package", packageId })
+        buyError("initialize abort", { reason: "unknown package", packageId, orgId: locOrgId })
         return res.status(400).json({ error: "Unknown package." })
       }
 
