@@ -19,6 +19,7 @@ export function useAppSettings() {
         companyName: r.companyName,
         companyLogoUrl: r.companyLogoUrl ?? null,
         alertPhone: typeof r.alertPhone === "string" ? r.alertPhone : "",
+        enquiryPhone: typeof r.enquiryPhone === "string" ? r.enquiryPhone : "",
         purchaseAlertsEnabled: typeof r.purchaseAlertsEnabled === "boolean" ? r.purchaseAlertsEnabled : true,
         promosVisible: typeof r.promosVisible === "boolean" ? r.promosVisible : true,
         organization: r.organization ?? null,

@@ -312,9 +312,6 @@ export default function Packages() {
             "No wifi location is linked to your account. Ask an administrator to assign you to a location.",
           )
         }
-        if (!paymentReference) {
-          throw new Error("MoMo payment is required before completing an agent sale.")
-        }
       }
       const result = paymentReference
         ? await createCatalogSaleWithPaymentRetry(token, saleBody)
@@ -944,32 +941,33 @@ export default function Packages() {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="overflow-hidden sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{isSalesAgent ? "Sell package (MoMo)" : "Record sale"}</DialogTitle>
+            <DialogTitle>{isSalesAgent ? "Sell package" : "Record sale"}</DialogTitle>
           </DialogHeader>
           {sellPkg ? (
-            <div className="grid gap-3 py-2">
+            <div className="grid min-w-0 gap-4 py-1">
               {sellError ? (
                 <p className="text-destructive bg-destructive/10 rounded-md px-2 py-1.5 text-sm" role="alert">
                   {sellError}
                 </p>
               ) : null}
-              <div className="bg-muted/50 space-y-1 rounded-md border px-3 py-2 text-sm">
+              <div className="bg-muted/50 min-w-0 space-y-1 overflow-hidden rounded-md border px-3 py-2 text-sm">
                 <p className="font-medium">{sellPkg.name}</p>
-                <p className="text-muted-foreground">
+                <p className="text-muted-foreground break-words">
                   {formatCedis(sellPkg.priceGHS)} · {sellPkg.dataLimit} · Stock: {sellStockLabel}
                   {sellStockQuery.isError ? (
                     <span className="text-destructive"> (could not load stock)</span>
                   ) : null}
                 </p>
               </div>
-              <div className="space-y-1.5">
+              <div className="min-w-0 space-y-1.5">
                 <Label htmlFor="sell-phone">Customer phone (SMS voucher)</Label>
                 <Input
                   id="sell-phone"
                   type="tel"
                   inputMode="tel"
+                  className="w-full min-w-0"
                   value={sellCustomerPhone}
                   onChange={(e) => setSellCustomerPhone(e.target.value)}
                   placeholder="e.g. 0241234567"
@@ -977,13 +975,13 @@ export default function Packages() {
                 />
               </div>
               {isAdmin ? (
-                <div className="space-y-1.5">
+                <div className="min-w-0 space-y-1.5">
                   <Label htmlFor="sell-location">Wifi location</Label>
                   {locations.length === 0 ? (
                     <p className="text-muted-foreground text-sm">No wifi locations in the catalog. Add one first.</p>
                   ) : (
                     <Select value={sellLocationId} onValueChange={setSellLocationId}>
-                      <SelectTrigger id="sell-location" className="w-full">
+                      <SelectTrigger id="sell-location" className="w-full min-w-0">
                         <SelectValue placeholder="Select wifi location" />
                       </SelectTrigger>
                       <SelectContent>
@@ -997,59 +995,63 @@ export default function Packages() {
                   )}
                 </div>
               ) : (
-                <div className="space-y-1.5">
+                <div className="min-w-0 space-y-1.5">
                   <Label>Wifi location</Label>
-                  <p className="text-muted-foreground text-sm">
+                  <p className="text-muted-foreground break-words text-sm">
                     {agentStore ? `${agentStore.name} (${agentStore.address})` : "—"}
                   </p>
                 </div>
               )}
             </div>
           ) : null}
-          <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
-            <Button type="button" variant="outline" onClick={() => setSellOpen(false)}>
-              Cancel
-            </Button>
-            {isAdmin ? (
+          <DialogFooter className="flex-col gap-2 sm:flex-col sm:items-stretch sm:justify-stretch">
+            <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2">
+              {isAdmin || isSalesAgent ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full min-w-0"
+                  onClick={confirmCashSale}
+                  disabled={
+                    sellMutation.isPending ||
+                    isInitializingMomo ||
+                    !sellPhoneValid ||
+                    (isAdmin && (!sellLocationId || locations.length === 0)) ||
+                    (isSalesAgent && !agentStore) ||
+                    !sellStockLocationId ||
+                    sellStockQuery.isLoading ||
+                    sellStockQuery.isError ||
+                    sellStockRemaining === 0
+                  }
+                >
+                  {sellMutation.isPending ? "Recording…" : "Record cash sale"}
+                </Button>
+              ) : null}
               <Button
                 type="button"
-                variant="outline"
-                onClick={confirmCashSale}
+                className="w-full min-w-0"
+                onClick={handleCollectMomo}
                 disabled={
                   sellMutation.isPending ||
                   isInitializingMomo ||
                   !sellPhoneValid ||
-                  !sellLocationId ||
-                  locations.length === 0 ||
+                  (isAdmin && (!sellLocationId || locations.length === 0)) ||
+                  (isSalesAgent && !agentStore) ||
                   !sellStockLocationId ||
                   sellStockQuery.isLoading ||
                   sellStockQuery.isError ||
                   sellStockRemaining === 0
                 }
               >
-                {sellMutation.isPending ? "Recording…" : "Record cash sale"}
+                {isInitializingMomo
+                  ? "Starting payment…"
+                  : sellMutation.isPending
+                    ? "Completing sale…"
+                    : "Collect MoMo payment"}
               </Button>
-            ) : null}
-            <Button
-              type="button"
-              onClick={handleCollectMomo}
-              disabled={
-                sellMutation.isPending ||
-                isInitializingMomo ||
-                !sellPhoneValid ||
-                (isAdmin && (!sellLocationId || locations.length === 0)) ||
-                (isSalesAgent && !agentStore) ||
-                !sellStockLocationId ||
-                sellStockQuery.isLoading ||
-                sellStockQuery.isError ||
-                sellStockRemaining === 0
-              }
-            >
-              {isInitializingMomo
-                ? "Starting payment…"
-                : sellMutation.isPending
-                  ? "Completing sale…"
-                  : "Collect MoMo payment"}
+            </div>
+            <Button type="button" variant="ghost" className="w-full" onClick={() => setSellOpen(false)}>
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>

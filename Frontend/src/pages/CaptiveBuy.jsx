@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
-import { Check, ChevronLeft, ChevronRight, Copy, Gift, Loader2, Satellite, Wifi } from "lucide-react"
+import { Check, ChevronLeft, ChevronRight, Copy, Gift, Loader2, Phone, Satellite, Wifi } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -22,6 +22,7 @@ import {
   initializePortalPayment,
 } from "@/lib/portalApi.js"
 import { resolvePortalParams } from "@/lib/captivePortalParams.js"
+import { formatGhanaPhoneDisplayLocal } from "@/lib/ghanaPhone.js"
 import { cn, formatCedis } from "@/lib/utils"
 
 function formatPackagePrice(priceGHS) {
@@ -104,6 +105,7 @@ export default function CaptiveBuy() {
   const orgId = portalParams.org
   const [step, setStep] = React.useState(0)
   const [locations, setLocations] = React.useState(/** @type {{ locationId: string, name: string }[]} */ ([]))
+  const [enquiryPhone, setEnquiryPhone] = React.useState("")
   const [packages, setPackages] = React.useState(
     /** @type {{ packageId: string, name: string, priceGHS: number, dataLimit: string, remaining: number }[]} */ ([]),
   )
@@ -147,8 +149,10 @@ export default function CaptiveBuy() {
       if (!result.ok) {
         setError(result.error)
         setLocations([])
+        setEnquiryPhone("")
       } else {
         setLocations(result.locations)
+        setEnquiryPhone(result.enquiryPhone || "")
       }
       setLoading(false)
     })()
@@ -299,7 +303,11 @@ export default function CaptiveBuy() {
     console.log("[buy] moolre success callback", { response, ref })
     setShowMoolre(false)
     if (!ref) {
-      setError("Payment could not be confirmed. Please try again or contact support.")
+      setError(
+        enquiryPhone
+          ? `Payment could not be confirmed. Please try again or call ${formatGhanaPhoneDisplayLocal(enquiryPhone)} for enquiries.`
+          : "Payment could not be confirmed. Please try again or contact support.",
+      )
       return
     }
     navigate(`/portal-payment-success?externalref=${encodeURIComponent(ref)}`)
@@ -634,6 +642,26 @@ export default function CaptiveBuy() {
                   </Button>
                 </div>
               </form>
+
+              {enquiryPhone ? (
+                <div className="border-border/60 bg-muted/40 mt-4 flex items-start gap-3 rounded-lg border px-3 py-2.5">
+                  <div className="bg-primary/10 text-primary mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg">
+                    <Phone className="size-4" aria-hidden />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">Payment not going through?</p>
+                    <p className="text-muted-foreground text-xs leading-snug">
+                      Call enquiries{" "}
+                      <a
+                        href={`tel:${enquiryPhone.replace(/\s+/g, "")}`}
+                        className="text-foreground font-semibold underline-offset-2 hover:underline"
+                      >
+                        {formatGhanaPhoneDisplayLocal(enquiryPhone)}
+                      </a>
+                    </p>
+                  </div>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         ) : null}

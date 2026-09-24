@@ -34,7 +34,7 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
 
   router.patch("/", requireAdmin, async (req, res) => {
     try {
-      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean, organizationName?: string }} */
+      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, enquiryPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean, organizationName?: string }} */
       const patch = {}
 
       if (typeof req.body?.salesAgentCommissionRate === "number") {
@@ -68,6 +68,10 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
         patch.alertPhone = req.body.alertPhone
       }
 
+      if (req.body?.enquiryPhone === null || typeof req.body?.enquiryPhone === "string") {
+        patch.enquiryPhone = req.body.enquiryPhone
+      }
+
       if (typeof req.body?.purchaseAlertsEnabled === "boolean") {
         patch.purchaseAlertsEnabled = req.body.purchaseAlertsEnabled
       }
@@ -85,13 +89,14 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
         patch.companyName == null &&
         patch.companyLogoUrl === undefined &&
         patch.alertPhone === undefined &&
+        patch.enquiryPhone === undefined &&
         patch.purchaseAlertsEnabled === undefined &&
         patch.promosVisible === undefined &&
         !organizationName
       ) {
         return res.status(400).json({
           error:
-            "Provide salesAgentCommissionRate/Percent, appName, companyName, organizationName, companyLogoUrl, alertPhone, purchaseAlertsEnabled, and/or promosVisible to update.",
+            "Provide salesAgentCommissionRate/Percent, appName, companyName, organizationName, companyLogoUrl, alertPhone, enquiryPhone, purchaseAlertsEnabled, and/or promosVisible to update.",
         })
       }
 
@@ -112,6 +117,7 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
         patch.companyName != null ||
         patch.companyLogoUrl !== undefined ||
         patch.alertPhone !== undefined ||
+        patch.enquiryPhone !== undefined ||
         patch.purchaseAlertsEnabled !== undefined ||
         patch.promosVisible !== undefined
 
@@ -133,6 +139,9 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
       if (patch.alertPhone !== undefined) {
         auditParts.push(saved.alertPhone ? "purchase alert phone" : "cleared purchase alert phone")
       }
+      if (patch.enquiryPhone !== undefined) {
+        auditParts.push(saved.enquiryPhone ? "enquiry phone" : "cleared enquiry phone")
+      }
       if (patch.purchaseAlertsEnabled !== undefined) {
         auditParts.push(`purchase alerts ${saved.purchaseAlertsEnabled ? "enabled" : "disabled"}`)
       }
@@ -152,6 +161,7 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
         message.includes("Logo") ||
         message.includes("commission") ||
         message.includes("Alert phone") ||
+        message.includes("Enquiry phone") ||
         message.includes("Organization")
           ? 400
           : 500

@@ -30,6 +30,7 @@ function parseAppSettingsPayload(data) {
         : getDefaultCompanyName(),
     companyLogoUrl,
     alertPhone: typeof data.alertPhone === "string" ? data.alertPhone.trim() : "",
+    enquiryPhone: typeof data.enquiryPhone === "string" ? data.enquiryPhone.trim() : "",
     purchaseAlertsEnabled: typeof data.purchaseAlertsEnabled === "boolean" ? data.purchaseAlertsEnabled : true,
     promosVisible: typeof data.promosVisible === "boolean" ? data.promosVisible : true,
     organization,
@@ -1202,6 +1203,7 @@ export async function fetchAppSettings(token) {
  *   organizationName?: string
  *   companyLogoUrl?: string | null
  *   alertPhone?: string | null
+ *   enquiryPhone?: string | null
  *   purchaseAlertsEnabled?: boolean
  *   promosVisible?: boolean
  * }} body

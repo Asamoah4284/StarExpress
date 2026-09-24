@@ -1527,12 +1527,6 @@ export function createCatalogRouter(deps) {
         return res.status(400).json({ error: "Payment number must be at most 64 characters." })
       }
 
-      if (req.auth.role === ROLE_SALES_AGENT && !paymentReferenceRaw) {
-        return res.status(400).json({
-          error: "MoMo payment is required. Collect payment via Moolre before completing the sale.",
-        })
-      }
-
       const pkg = await packages.findOne({ _id: packageId, ...byOrg(orgId) })
       if (!pkg) return res.status(400).json({ error: "Unknown package." })
 

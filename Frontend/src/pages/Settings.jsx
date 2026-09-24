@@ -30,6 +30,7 @@ function settingsFromResponse(r) {
     companyName: r.companyName,
     companyLogoUrl: r.companyLogoUrl ?? null,
     alertPhone: r.alertPhone ?? "",
+    enquiryPhone: r.enquiryPhone ?? "",
     purchaseAlertsEnabled: r.purchaseAlertsEnabled ?? true,
     promosVisible: r.promosVisible ?? true,
     organization: r.organization ?? null,
@@ -53,8 +54,10 @@ export default function Settings() {
   const [commissionMessage, setCommissionMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [profileMessage, setProfileMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [alertPhone, setAlertPhone] = React.useState("")
+  const [enquiryPhone, setEnquiryPhone] = React.useState("")
   const [purchaseAlertsEnabled, setPurchaseAlertsEnabled] = React.useState(true)
   const [alertsMessage, setAlertsMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
+  const [enquiryMessage, setEnquiryMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [promosVisible, setPromosVisible] = React.useState(true)
   const [promosMessage, setPromosMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [hostelRates, setHostelRates] = React.useState(/** @type {Record<string, string>} */ ({}))
@@ -107,6 +110,7 @@ export default function Settings() {
   const loadedOrganizationName = settingsQuery.data?.organization?.name
   const loadedCompanyLogoUrl = settingsQuery.data?.companyLogoUrl
   const loadedAlertPhone = settingsQuery.data?.alertPhone
+  const loadedEnquiryPhone = settingsQuery.data?.enquiryPhone
   const loadedPurchaseAlertsEnabled = settingsQuery.data?.purchaseAlertsEnabled
   const loadedPromosVisible = settingsQuery.data?.promosVisible
 
@@ -147,6 +151,12 @@ export default function Settings() {
       setAlertPhone(loadedAlertPhone)
     }
   }, [loadedAlertPhone])
+
+  React.useEffect(() => {
+    if (typeof loadedEnquiryPhone === "string") {
+      setEnquiryPhone(loadedEnquiryPhone)
+    }
+  }, [loadedEnquiryPhone])
 
   React.useEffect(() => {
     if (typeof loadedPurchaseAlertsEnabled === "boolean") {
@@ -267,6 +277,34 @@ export default function Settings() {
     },
   })
 
+  const saveEnquiryMutation = useMutation({
+    mutationFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const r = await updateAppSettings(token, {
+        enquiryPhone: enquiryPhone.trim(),
+      })
+      if (!r.ok) throw new Error(r.error || "Failed to save enquiry phone")
+      return settingsFromResponse(r)
+    },
+    onSuccess: (settings) => {
+      queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      setEnquiryPhone(settings.enquiryPhone ?? "")
+      setEnquiryMessage({
+        type: "ok",
+        text: settings.enquiryPhone
+          ? "Enquiry number saved. Buyers see it on the WiFi payment page when payment fails."
+          : "Enquiry number cleared. Buyers will see your purchase-alert number if one is set.",
+      })
+    },
+    onError: (err) => {
+      setEnquiryMessage({
+        type: "err",
+        text: err instanceof Error ? err.message : "Could not save enquiry phone.",
+      })
+    },
+  })
+
   const savePromoVisibilityMutation = useMutation({
     mutationFn: async (/** @type {boolean} */ next) => {
       if (!token) throw new Error("Not signed in")
@@ -304,6 +342,12 @@ export default function Settings() {
     e.preventDefault()
     setAlertsMessage(null)
     saveAlertsMutation.mutate()
+  }
+
+  const onSaveEnquiry = (e) => {
+    e.preventDefault()
+    setEnquiryMessage(null)
+    saveEnquiryMutation.mutate()
   }
 
   const onSaveProfile = (e) => {
@@ -631,6 +675,51 @@ export default function Settings() {
                 role="status"
               >
                 {profileMessage.text}
+              </p>
+            ) : null}
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Customer enquiries</CardTitle>
+          <CardDescription>
+            Number shown on the public WiFi buy page so customers can call if MoMo payment does not go
+            through. If left empty, the first purchase-alert number is shown instead.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={onSaveEnquiry} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="enquiry-phone">Enquiry phone number</Label>
+              <Input
+                id="enquiry-phone"
+                type="tel"
+                inputMode="tel"
+                value={enquiryPhone}
+                onChange={(e) => setEnquiryPhone(e.target.value)}
+                disabled={settingsQuery.isLoading || saveEnquiryMutation.isPending}
+                placeholder="e.g. 0541234567"
+                aria-describedby="enquiry-phone-hint"
+              />
+              <p id="enquiry-phone-hint" className="text-muted-foreground text-xs">
+                One Ghana mobile number customers can call or tap to dial from the buy page.
+              </p>
+            </div>
+            <Button type="submit" disabled={saveEnquiryMutation.isPending || settingsQuery.isLoading}>
+              {saveEnquiryMutation.isPending ? "Saving…" : "Save enquiry number"}
+            </Button>
+            {enquiryMessage ? (
+              <p
+                className={
+                  enquiryMessage.type === "ok"
+                    ? "text-sm text-emerald-600 dark:text-emerald-400"
+                    : "text-sm text-destructive"
+                }
+                role="status"
+              >
+                {enquiryMessage.text}
               </p>
             ) : null}
           </form>

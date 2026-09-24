@@ -61,6 +61,15 @@ export function defaultAlertPhone() {
 }
 
 /**
+ * Default customer enquiry phone from env. Empty when unset.
+ * @returns {string}
+ */
+export function defaultEnquiryPhone() {
+  const raw = process.env.ENQUIRY_PHONE
+  return typeof raw === "string" && raw.trim() ? raw.trim().slice(0, MAX_ALERT_PHONE_LENGTH) : ""
+}
+
+/**
  * Normalize the alert phone field.
  * @param {unknown} value
  * @returns {string | undefined} `""` clears it, a string sets it, `undefined` = omit from patch.
@@ -74,6 +83,50 @@ export function normalizeAlertPhone(value) {
     throw new Error("Alert phone can only contain digits, +, spaces, commas, and hyphens.")
   }
   return trimmed
+}
+
+/**
+ * Normalize a single customer-facing enquiry phone (no comma lists).
+ * @param {unknown} value
+ * @returns {string | undefined} `""` clears it, a string sets it, `undefined` = omit from patch.
+ */
+export function normalizeEnquiryPhone(value) {
+  if (value === null || value === "") return ""
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim().slice(0, MAX_ALERT_PHONE_LENGTH)
+  if (!trimmed) return ""
+  if (!ALERT_PHONE_RE.test(trimmed) || trimmed.includes(",")) {
+    throw new Error("Enquiry phone can only contain digits, +, spaces, and hyphens.")
+  }
+  if (trimmed.replace(/\D/g, "").length < 7) {
+    throw new Error("Enquiry phone must include at least 7 digits.")
+  }
+  return trimmed
+}
+
+/**
+ * Phone shown to buyers when payment fails — dedicated enquiry number, else first alert phone, else env.
+ * @param {{ enquiryPhone?: string, alertPhone?: string }} settings
+ * @returns {string}
+ */
+export function resolvePublicEnquiryPhone(settings) {
+  const dedicated =
+    typeof settings?.enquiryPhone === "string" && settings.enquiryPhone.trim()
+      ? settings.enquiryPhone.trim()
+      : ""
+  if (dedicated) return dedicated
+  const fromEnv = defaultEnquiryPhone()
+  if (fromEnv) return fromEnv
+  const alert =
+    typeof settings?.alertPhone === "string" && settings.alertPhone.trim()
+      ? settings.alertPhone.trim()
+      : ""
+  if (!alert) return ""
+  const first = alert
+    .split(/[,]+/)
+    .map((p) => p.trim())
+    .find((p) => p.replace(/\D/g, "").length >= 7)
+  return first || ""
 }
 
 /** @returns {number} */
@@ -151,6 +204,10 @@ export async function getAppSettings(appSettings, orgId) {
     typeof doc?.alertPhone === "string" && doc.alertPhone.trim()
       ? doc.alertPhone.trim()
       : defaultAlertPhone()
+  const enquiryPhone =
+    typeof doc?.enquiryPhone === "string" && doc.enquiryPhone.trim()
+      ? doc.enquiryPhone.trim()
+      : defaultEnquiryPhone()
   const purchaseAlertsEnabled =
     typeof doc?.purchaseAlertsEnabled === "boolean" ? doc.purchaseAlertsEnabled : true
   const promosVisible = typeof doc?.promosVisible === "boolean" ? doc.promosVisible : true
@@ -160,6 +217,7 @@ export async function getAppSettings(appSettings, orgId) {
     companyName,
     companyLogoUrl,
     alertPhone,
+    enquiryPhone,
     purchaseAlertsEnabled,
     promosVisible,
   }
@@ -167,7 +225,7 @@ export async function getAppSettings(appSettings, orgId) {
 
 /**
  * @param {import("mongodb").Collection} appSettings
- * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean }} patch
+ * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, enquiryPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean }} patch
  * @param {{ userId?: string, orgId?: string } | undefined} auth
  */
 export async function patchAppSettings(appSettings, patch, auth) {
@@ -206,6 +264,12 @@ export async function patchAppSettings(appSettings, patch, auth) {
     const normalized = normalizeAlertPhone(patch.alertPhone)
     if (normalized === undefined) throw new Error("Invalid alert phone.")
     $set.alertPhone = normalized
+  }
+
+  if (patch.enquiryPhone !== undefined) {
+    const normalized = normalizeEnquiryPhone(patch.enquiryPhone)
+    if (normalized === undefined) throw new Error("Invalid enquiry phone.")
+    $set.enquiryPhone = normalized
   }
 
   if (typeof patch.purchaseAlertsEnabled === "boolean") {

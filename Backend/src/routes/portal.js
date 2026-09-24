@@ -15,7 +15,7 @@ import {
   buildHotspotAuthorizeUrl,
 } from "../lib/captiveMomoPayment.js"
 import { resolvePackageForLocation } from "../lib/packageOverrides.js"
-import { getAppSettings } from "../lib/appSettings.js"
+import { getAppSettings, resolvePublicEnquiryPhone } from "../lib/appSettings.js"
 import { applyPercentOff, normalizePercentOff } from "../lib/promoDiscount.js"
 import { resolvePortalOrgId } from "../lib/organizations.js"
 import { getPortalLocations, getPackagesForLocation } from "../services/portalCatalog.js"
@@ -135,7 +135,14 @@ export function createPortalRouter(deps) {
     try {
       const orgId = resolvePortalOrgId(readPortalOrgParam(req))
       const items = await getPortalLocations(locations, { orgId })
-      res.json({ locations: items, org: orgId })
+      let enquiryPhone = ""
+      try {
+        const settings = await getAppSettings(appSettings, orgId)
+        enquiryPhone = resolvePublicEnquiryPhone(settings)
+      } catch {
+        enquiryPhone = ""
+      }
+      res.json({ locations: items, org: orgId, enquiryPhone })
     } catch (err) {
       console.error("[portal] GET /locations", err)
       res.status(500).json({ error: "Failed to load locations." })
