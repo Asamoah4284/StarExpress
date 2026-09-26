@@ -121,7 +121,10 @@ export function HotspotConnectForm({
       <p className="text-muted-foreground text-sm">
         {String(loginUrl || "").trim() || String(authorizeUrl || "").trim()
           ? "Tap Connect to go online. You can also copy this code and share it."
-          : "Stay on this venue's WiFi, enter the code, then tap Connect. If Connect is unavailable, type the code on the hotspot login page."}
+          : "Enter the code, then tap Connect. If Connect is unavailable, type the code on the hotspot login page."}
+      </p>
+      <p className="text-muted-foreground text-sm">
+        Having Issues? Call this number 0202343065/0542343069
       </p>
     </form>
   )
