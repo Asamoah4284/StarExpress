@@ -18,6 +18,7 @@ import { useAuth } from "@/context/AuthContext.jsx"
 import { useCatalog } from "@/hooks/useCatalog.js"
 import { LIVE_POLL_MS, useLiveSales } from "@/hooks/useLiveCustomerDashboard.js"
 import { useCompanyName } from "@/hooks/useAppSettings.js"
+import { findAgentStoreLocation } from "@/lib/agentLocation.js"
 import { currentWeekRange, filterSalesByDateRange, filterSalesByLocation, salesToCsv } from "@/lib/aggregations.js"
 import {
   formatDateRangeLabel,
@@ -28,17 +29,33 @@ import {
   normalizeDateRange,
 } from "@/lib/dates.js"
 import { locationNameById } from "@/lib/locations.js"
+import { ROLE_SALES_AGENT } from "@/lib/roles.js"
 import { formatCedis } from "@/lib/utils"
 
 export default function SalesHistory() {
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const queryClient = useQueryClient()
   const catalog = useCatalog()
   const companyName = useCompanyName()
-  const locations = catalog.data?.locations ?? []
+  const isSalesAgent = user?.role === ROLE_SALES_AGENT
+  const allLocations = catalog.data?.locations ?? []
+  const agentStore = React.useMemo(
+    () => (isSalesAgent ? findAgentStoreLocation(allLocations, user) : null),
+    [isSalesAgent, allLocations, user],
+  )
+  const locations = React.useMemo(() => {
+    if (isSalesAgent) return agentStore ? [agentStore] : []
+    return allLocations
+  }, [isSalesAgent, agentStore, allLocations])
   const [locationId, setLocationId] = React.useState("all")
   const [dateRange, setDateRange] = React.useState(/** @type {{ from?: Date, to?: Date } | undefined} */ (undefined))
   const rangeInitialized = React.useRef(false)
+
+  React.useEffect(() => {
+    if (!isSalesAgent) return
+    if (agentStore?.id) setLocationId(agentStore.id)
+    else setLocationId("all")
+  }, [isSalesAgent, agentStore?.id])
 
   const handleDateRangeChange = React.useCallback((range) => {
     setDateRange(normalizeDateRange(range))
@@ -53,14 +70,17 @@ export default function SalesHistory() {
   const rangeComplete = isCompleteDateRange(dateRange)
   const dateLabel = formatDateRangeLabel(dateRange)
 
-  const locationLabel =
-    locationId === "all"
+  const effectiveLocationId = isSalesAgent ? agentStore?.id || "__none__" : locationId
+
+  const locationLabel = isSalesAgent
+    ? agentStore?.name ?? "No store assigned"
+    : effectiveLocationId === "all"
       ? "All locations"
-      : (locations.find((l) => l.id === locationId)?.name ?? locationId)
+      : (locations.find((l) => l.id === effectiveLocationId)?.name ?? effectiveLocationId)
 
   const filtered = React.useMemo(() => {
     const sales = catalog.data?.sales ?? []
-    let rows = filterSalesByLocation(sales, locationId)
+    let rows = filterSalesByLocation(sales, effectiveLocationId === "__none__" ? "___no_match___" : effectiveLocationId)
     if (rangeComplete && dateRange?.from && dateRange?.to) {
       rows = filterSalesByDateRange(
         rows,
@@ -73,13 +93,13 @@ export default function SalesHistory() {
       const tb = b.soldAt || `${b.date}T00:00:00`
       return ta < tb ? 1 : ta > tb ? -1 : 0
     })
-  }, [catalog.data, locationId, dateRange, rangeComplete])
+  }, [catalog.data, effectiveLocationId, dateRange, rangeComplete])
 
   const salesScopeKey = React.useMemo(() => {
     const from = rangeComplete && dateRange?.from ? localDateToIso(dateRange.from) : ""
     const to = rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : ""
-    return `${locationId}|${from}|${to}`
-  }, [locationId, dateRange, rangeComplete])
+    return `${effectiveLocationId}|${from}|${to}`
+  }, [effectiveLocationId, dateRange, rangeComplete])
 
   React.useEffect(() => {
     if (!token) return
@@ -174,34 +194,47 @@ export default function SalesHistory() {
       <PageHeader
         title="Sales History"
         description={
-          rangeComplete
-            ? `${filtered.length} sale${filtered.length === 1 ? "" : "s"} for ${locationLabel} · ${dateLabel}.`
-            : "Browse and export sales. Filter by location and date range."
+          isSalesAgent && !agentStore
+            ? "No wifi location is linked to your account. Ask an administrator to assign you."
+            : rangeComplete
+              ? `${filtered.length} sale${filtered.length === 1 ? "" : "s"} for ${locationLabel} · ${dateLabel}.`
+              : isSalesAgent
+                ? `Sales at ${locationLabel} only. Filter by date range.`
+                : "Browse and export sales. Filter by location and date range."
         }
       >
         <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
-            <div className="space-y-1 sm:text-right">
-              <Label
-                htmlFor="sales-history-location-top"
-                className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
-              >
-                Location
-              </Label>
-              <Select value={locationId} onValueChange={setLocationId}>
-                <SelectTrigger id="sales-history-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
-                  <SelectValue placeholder="All locations" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All locations</SelectItem>
-                  {locations.map((l) => (
-                    <SelectItem key={l.id} value={l.id}>
-                      {l.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {!isSalesAgent ? (
+              <div className="space-y-1 sm:text-right">
+                <Label
+                  htmlFor="sales-history-location-top"
+                  className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide"
+                >
+                  Location
+                </Label>
+                <Select value={locationId} onValueChange={setLocationId}>
+                  <SelectTrigger id="sales-history-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
+                    <SelectValue placeholder="All locations" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All locations</SelectItem>
+                    {locations.map((l) => (
+                      <SelectItem key={l.id} value={l.id}>
+                        {l.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <div className="space-y-1 sm:text-right">
+                <Label className="text-muted-foreground text-[10px] font-semibold uppercase tracking-wide">
+                  Location
+                </Label>
+                <p className="text-foreground flex h-9 items-center text-sm font-medium">{locationLabel}</p>
+              </div>
+            )}
             <div className="space-y-1 sm:text-right">
               <Label
                 htmlFor="sales-history-date-range-top"

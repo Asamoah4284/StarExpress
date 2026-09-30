@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useNavigate } from "react-router-dom"
-import { MapPin, Trash2 } from "lucide-react"
+import { MapPin, Trash2, Check, Copy } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
@@ -100,6 +100,8 @@ export default function Packages() {
   const [sellLocationId, setSellLocationId] = React.useState("")
   const [sellError, setSellError] = React.useState(null)
   const [sellSuccess, setSellSuccess] = React.useState(/** @type {string | null} */ (null))
+  const [soldVoucherCode, setSoldVoucherCode] = React.useState(/** @type {string | null} */ (null))
+  const [voucherCopied, setVoucherCopied] = React.useState(false)
   const [showMoolre, setShowMoolre] = React.useState(false)
   const [moolreAuthUrl, setMoolreAuthUrl] = React.useState(/** @type {string | null} */ (null))
   const [moolreReference, setMoolreReference] = React.useState(/** @type {string | null} */ (null))
@@ -328,9 +330,9 @@ export default function Packages() {
       queryClient.invalidateQueries({ queryKey: ["vouchers-summary"] })
       queryClient.invalidateQueries({ queryKey: ["voucher-stats"] })
 
-      const code = sale?.voucherCode
+      const code = typeof sale?.voucherCode === "string" ? sale.voucherCode.trim() : ""
       const successMsg = code
-        ? `Sale recorded. Voucher ${code} was sent by SMS to the customer and marked as used.`
+        ? `Sale recorded. SMS sent to the customer. Show or copy the WiFi code below.`
         : "Sale recorded. Voucher SMS was sent and marked as used."
 
       resetMoolreState()
@@ -344,12 +346,17 @@ export default function Packages() {
       if (paymentReference && isSalesAgent) {
         navigate("/", {
           replace: true,
-          state: { flashMessage: successMsg },
+          state: {
+            flashMessage: successMsg,
+            ...(code ? { voucherCode: code } : {}),
+          },
         })
         return
       }
 
       setSellSuccess(successMsg)
+      setSoldVoucherCode(code || null)
+      setVoucherCopied(false)
     },
     onError: (err) => {
       setSellError(err instanceof Error ? err.message : "Request failed")
@@ -408,6 +415,8 @@ export default function Packages() {
       setSellLocationId(defaultLoc)
       setSellError(null)
       setSellSuccess(null)
+      setSoldVoucherCode(null)
+      setVoucherCopied(false)
       setSellOpen(true)
     },
     [locations, isAdmin, locationFilterId],
@@ -715,10 +724,64 @@ export default function Packages() {
         </div>
       </PageHeader>
 
-      {sellSuccess ? (
-        <p className="text-foreground bg-primary/10 border-primary/25 rounded-md border px-3 py-2 text-sm" role="status">
-          {sellSuccess}
-        </p>
+      {sellSuccess || soldVoucherCode ? (
+        <div
+          className="text-foreground bg-primary/10 border-primary/25 space-y-3 rounded-md border px-3 py-3 text-sm"
+          role="status"
+        >
+          {sellSuccess ? <p>{sellSuccess}</p> : null}
+          {soldVoucherCode ? (
+            <div className="space-y-2">
+              <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wide">
+                WiFi code (also sent by SMS)
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="bg-background border-border/80 rounded-md border px-3 py-2 font-mono text-base tracking-[0.14em]">
+                  {soldVoucherCode}
+                </code>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(soldVoucherCode)
+                      setVoucherCopied(true)
+                      setTimeout(() => setVoucherCopied(false), 1500)
+                    } catch {
+                      /* clipboard unavailable */
+                    }
+                  }}
+                >
+                  {voucherCopied ? (
+                    <>
+                      <Check className="size-4 text-emerald-500" aria-hidden />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="size-4" aria-hidden />
+                      Copy code
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground text-xs underline"
+            onClick={() => {
+              setSellSuccess(null)
+      setSoldVoucherCode(null)
+      setVoucherCopied(false)
+              setSoldVoucherCode(null)
+              setVoucherCopied(false)
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
       ) : null}
 
       {saveSuccess ? (
@@ -937,6 +1000,8 @@ export default function Packages() {
             setSellCustomerPhone("")
             setSellError(null)
             setSellSuccess(null)
+      setSoldVoucherCode(null)
+      setVoucherCopied(false)
             resetMoolreState()
           }
         }}

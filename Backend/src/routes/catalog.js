@@ -1335,9 +1335,39 @@ export function createCatalogRouter(deps) {
       await backfillSaleSoldAt(sales, auditLogs)
 
       const orgFilter = byOrg(orgId)
+      const role = req.auth?.role
+
+      /** @type {string} */
+      let agentLocationId = ""
+      if (role === ROLE_SALES_AGENT) {
+        const agentLoc = await findConflictingLocationForSalesAgent(
+          locations,
+          users,
+          req.auth.userId,
+          undefined,
+          orgId,
+        )
+        agentLocationId = agentLoc ? String(agentLoc._id) : ""
+      }
+
+      /** Sales agents only receive their assigned location's sales — never the whole org. */
+      const salesFilter =
+        role === ROLE_SALES_AGENT
+          ? agentLocationId
+            ? { ...orgFilter, locationId: agentLocationId }
+            : { ...orgFilter, locationId: "__none__" }
+          : orgFilter
+
+      const locationsFilter =
+        role === ROLE_SALES_AGENT
+          ? agentLocationId
+            ? { ...orgFilter, _id: agentLocationId }
+            : { ...orgFilter, _id: "__none__" }
+          : orgFilter
+
       const [locDocs, saleDocs, disputeDocs, auditDocs, saleCount] = await Promise.all([
-        locations.find(orgFilter).sort({ name: 1 }).toArray(),
-        sales.find(orgFilter).sort({ soldAt: -1, date: -1, _id: -1 }).toArray(),
+        locations.find(locationsFilter).sort({ name: 1 }).toArray(),
+        sales.find(salesFilter).sort({ soldAt: -1, date: -1, _id: -1 }).toArray(),
         disputes.find(orgFilter).sort({ date: -1 }).toArray(),
         auditLogs.find(orgFilter).sort({ at: -1 }).toArray(),
         sales.countDocuments(orgFilter),
@@ -1351,19 +1381,8 @@ export function createCatalogRouter(deps) {
 
       /** @type {Awaited<ReturnType<typeof aggregatePackageVoucherInventory>>} */
       let packageVoucherInventory = []
-      const role = req.auth?.role
       if (role === "Admin" || role === ROLE_SALES_AGENT) {
-        let inventoryLocationId = ""
-        if (role === ROLE_SALES_AGENT) {
-          const agentLoc = await findConflictingLocationForSalesAgent(
-            locations,
-            users,
-            req.auth.userId,
-            undefined,
-            orgId,
-          )
-          inventoryLocationId = agentLoc ? String(agentLoc._id) : ""
-        }
+        const inventoryLocationId = role === ROLE_SALES_AGENT ? agentLocationId : ""
         if (role === "Admin" || inventoryLocationId) {
           packageVoucherInventory = await aggregatePackageVoucherInventory(
             vouchers,
@@ -1377,8 +1396,8 @@ export function createCatalogRouter(deps) {
         locations: locDocs.map(toLocation),
         packages: pkgDocs.map(toPackage),
         sales: saleDocs.map(toSale),
-        disputes: disputeDocs.map(toDispute),
-        auditLogs: auditDocs.map(toAudit),
+        disputes: role === ROLE_SALES_AGENT ? [] : disputeDocs.map(toDispute),
+        auditLogs: role === ROLE_SALES_AGENT ? [] : auditDocs.map(toAudit),
         packageVoucherInventory,
       })
     } catch (err) {

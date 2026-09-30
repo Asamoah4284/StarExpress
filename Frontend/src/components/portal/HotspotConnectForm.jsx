@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Check, Copy, Wifi } from "lucide-react"
+import { Check, Copy, Phone, Wifi } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -7,6 +7,11 @@ import {
   buildHotspotAuthorizeUrl,
   clearPersistedPortalParams,
 } from "@/lib/captivePortalParams.js"
+
+const SUPPORT_PHONES = [
+  { label: "0202343065", tel: "+233202343065" },
+  { label: "0542343069", tel: "+233542343069" },
+]
 
 /**
  * Code field + Connect: submits the voucher as both username and password to the AP login_url.
@@ -123,9 +128,19 @@ export function HotspotConnectForm({
           ? "Tap Connect to go online. You can also copy this code and share it."
           : "Enter the code, then tap Connect. If Connect is unavailable, type the code on the hotspot login page."}
       </p>
-      <p className="text-muted-foreground text-sm">
-        Having Issues? Call this number 0202343065/0542343069
-      </p>
+      <div className="space-y-2">
+        <p className="text-muted-foreground text-sm">Having issues? Call support:</p>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {SUPPORT_PHONES.map((phone) => (
+            <Button key={phone.tel} type="button" variant="outline" className="h-11 w-full" asChild>
+              <a href={`tel:${phone.tel}`}>
+                <Phone className="size-4" aria-hidden />
+                Call {phone.label}
+              </a>
+            </Button>
+          ))}
+        </div>
+      </div>
     </form>
   )
 }

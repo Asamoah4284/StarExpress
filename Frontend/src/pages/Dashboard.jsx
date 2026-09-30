@@ -1,7 +1,7 @@
 import * as React from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Calendar, DollarSign, MapPin, Percent, ShoppingCart, Wallet } from "lucide-react"
+import { Calendar, Check, Copy, DollarSign, MapPin, Percent, ShoppingCart, Wallet } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { GrossRevenueTrendChart } from "@/components/charts/GrossRevenueTrendChart.jsx"
@@ -74,14 +74,19 @@ export default function Dashboard() {
   const queryClient = useQueryClient()
   const { user, token, authReady } = useAuth()
   const [flashMessage, setFlashMessage] = React.useState(/** @type {string | null} */ (null))
+  const [flashVoucherCode, setFlashVoucherCode] = React.useState(/** @type {string | null} */ (null))
+  const [flashCodeCopied, setFlashCodeCopied] = React.useState(false)
   const [pulseKey, setPulseKey] = React.useState(0)
   const [lastUpdated, setLastUpdated] = React.useState(/** @type {Date | null} */ (null))
   const prevMetricsSigRef = React.useRef(/** @type {string | null} */ (null))
 
   React.useEffect(() => {
     const msg = location.state?.flashMessage
+    const code = location.state?.voucherCode
     if (typeof msg === "string" && msg.trim()) {
       setFlashMessage(msg.trim())
+      setFlashVoucherCode(typeof code === "string" && code.trim() ? code.trim() : null)
+      setFlashCodeCopied(false)
       navigate(location.pathname, { replace: true, state: {} })
     }
   }, [location.pathname, location.state, navigate])
@@ -340,13 +345,62 @@ export default function Dashboard() {
         </div>
       </PageHeader>
 
-      {flashMessage ? (
-        <p
-          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100"
+      {flashMessage || flashVoucherCode ? (
+        <div
+          className="space-y-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-3 text-sm text-emerald-900 dark:text-emerald-100"
           role="status"
         >
-          {flashMessage}
-        </p>
+          {flashMessage ? <p>{flashMessage}</p> : null}
+          {flashVoucherCode ? (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide opacity-80">
+                WiFi code (also sent by SMS)
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="bg-background/80 text-foreground rounded-md border px-3 py-2 font-mono text-base tracking-[0.14em]">
+                  {flashVoucherCode}
+                </code>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(flashVoucherCode)
+                      setFlashCodeCopied(true)
+                      setTimeout(() => setFlashCodeCopied(false), 1500)
+                    } catch {
+                      /* clipboard unavailable */
+                    }
+                  }}
+                >
+                  {flashCodeCopied ? (
+                    <>
+                      <Check className="size-4 text-emerald-500" aria-hidden />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="size-4" aria-hidden />
+                      Copy code
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="text-xs underline opacity-80 hover:opacity-100"
+            onClick={() => {
+              setFlashMessage(null)
+              setFlashVoucherCode(null)
+              setFlashCodeCopied(false)
+            }}
+          >
+            Dismiss
+          </button>
+        </div>
       ) : null}
 
       <div className="grid auto-rows-auto grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
