@@ -52,8 +52,32 @@ export function normalizeCaptivePortalParams(raw) {
     return ""
   }
 
+  let login_url = first(
+    "login_url",
+    "loginUrl",
+    "loginurl",
+    "authaction",
+    "auth_action",
+    "ga_login_url",
+    "post_url",
+    "submit_url",
+  )
+  if (!login_url) {
+    const target = first("target")
+    if (target && target.toLowerCase().includes("login")) {
+      login_url = target
+    }
+  }
+  if (!login_url) {
+    const gw = first("gw_address", "gateway_address", "gw_ip", "ap_ip", "uamip", "nasip", "nas_ip")
+    if (gw) {
+      const port = first("gw_port", "gateway_port", "uamport") || "8880"
+      login_url = `http://${gw}:${port}/gwn/login`
+    }
+  }
+
   return {
-    login_url: first("login_url", "loginUrl", "loginurl", "authaction", "auth_action", "ga_login_url"),
+    login_url,
     ap_mac: first("ap_mac", "apMac", "apmac", "ap_macaddress", "called", "called_station_id"),
     client_mac: first(
       "client_mac",
@@ -65,7 +89,7 @@ export function normalizeCaptivePortalParams(raw) {
       "client_macaddress",
       "calling_station_id",
     ),
-    orig_url: first("orig_url", "origUrl", "origurl", "redir", "redirect", "continue", "userurl"),
+    orig_url: first("orig_url", "origUrl", "origurl", "redir", "redirect", "continue", "target", "url", "userurl"),
     ssid: first("ssid", "SSID", "essid"),
   }
 }

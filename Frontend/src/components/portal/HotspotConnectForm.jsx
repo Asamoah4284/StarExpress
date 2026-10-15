@@ -13,6 +13,19 @@ const SUPPORT_PHONES = [
   { label: "0542343069", tel: "+233542343069" },
 ]
 
+function submitToGateway(target) {
+  try {
+    const form = document.createElement("form")
+    form.method = "GET"
+    form.action = target
+    form.style.display = "none"
+    document.body.appendChild(form)
+    form.submit()
+  } catch {
+    window.location.href = target
+  }
+}
+
 /**
  * Code field + Connect: submits the voucher as both username and password to the AP login_url.
  * @param {{
@@ -32,6 +45,7 @@ export function HotspotConnectForm({
   const [code, setCode] = React.useState(defaultCode)
   const [copied, setCopied] = React.useState(false)
   const [error, setError] = React.useState(/** @type {string | null} */ (null))
+  const [connecting, setConnecting] = React.useState(false)
   const inputId = `wifi-code-${fieldId}`
 
   React.useEffect(() => {
@@ -50,11 +64,18 @@ export function HotspotConnectForm({
     }
   }
 
+  const doConnect = (targetUrl) => {
+    setConnecting(true)
+    setError(null)
+    clearPersistedPortalParams()
+    submitToGateway(targetUrl)
+  }
+
   const onSubmit = (e) => {
     e.preventDefault()
     const pin = code.trim()
     if (!pin) {
-      setError("Enter your WiFi code.")
+      setError("Enter your WiFi code before connecting.")
       return
     }
     const built = buildHotspotAuthorizeUrl(loginUrl, pin, { orig_url: origUrl })
@@ -63,19 +84,25 @@ export function HotspotConnectForm({
     const target = built || fallback
     if (!target) {
       setError(
-        "Join this venue's WiFi first, then tap Connect. If you are already on WiFi, enter this code on the hotspot login page.",
+        "Hotspot gateway address was not detected. Make sure you are connected to the venue WiFi. You can also try connecting via the default gateway below.",
       )
-      console.error("[buy] connect wifi missing login_url", { hasCode: true })
+      console.warn("[buy] connect wifi missing login_url", { pinLength: pin.length })
       return
     }
-    setError(null)
-    console.log("[buy] connect wifi", {
-      hasLoginUrl: Boolean(String(loginUrl || "").trim()),
-      usingFallback: !built && Boolean(fallback),
-    })
-    clearPersistedPortalParams()
-    window.location.assign(target)
+    doConnect(target)
   }
+
+  const onTryDefaultGateway = (gatewayIp = "192.168.1.1") => {
+    const pin = code.trim()
+    if (!pin) {
+      setError("Enter your WiFi code first.")
+      return
+    }
+    const url = buildHotspotAuthorizeUrl(`http://${gatewayIp}:8880/gwn/login`, pin, { orig_url: origUrl })
+    doConnect(url)
+  }
+
+  const hasDetectedGateway = Boolean(String(loginUrl || "").trim() || String(authorizeUrl || "").trim())
 
   return (
     <form className="space-y-4" onSubmit={onSubmit}>
@@ -119,15 +146,43 @@ export function HotspotConnectForm({
           {error}
         </div>
       ) : null}
-      <Button type="submit" className="h-12 w-full text-base">
+      <Button type="submit" disabled={connecting} className="h-12 w-full text-base">
         <Wifi className="size-5" aria-hidden />
-        Connect to WiFi
+        {connecting ? "Connecting to WiFi…" : "Connect to WiFi"}
       </Button>
-      <p className="text-muted-foreground text-sm">
-        {String(loginUrl || "").trim() || String(authorizeUrl || "").trim()
-          ? "Tap Connect to go online. You can also copy this code and share it."
-          : "Enter the code, then tap Connect. If Connect is unavailable, type the code on the hotspot login page."}
-      </p>
+
+      {!hasDetectedGateway ? (
+        <div className="rounded-lg border border-amber-300/40 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-xs text-amber-900 dark:text-amber-200 space-y-2">
+          <p>
+            <strong>Note:</strong> This page was opened without hotspot redirect parameters. If you are already connected to the venue WiFi, you can try connecting via the default Grandstream gateway:
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onTryDefaultGateway("192.168.1.1")}
+              className="text-xs h-8"
+            >
+              Connect via 192.168.1.1
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onTryDefaultGateway("192.168.88.1")}
+              className="text-xs h-8"
+            >
+              Connect via 192.168.88.1
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          Tap Connect to go online. You can also copy this code and share it.
+        </p>
+      )}
+
       <div className="space-y-2">
         <p className="text-muted-foreground text-sm">Having issues? Call support:</p>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
