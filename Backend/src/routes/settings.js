@@ -34,7 +34,7 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
 
   router.patch("/", requireAdmin, async (req, res) => {
     try {
-      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, enquiryPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean, organizationName?: string }} */
+      /** @type {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, enquiryPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean, paymentsEnabled?: boolean, paymentNote?: string, organizationName?: string }} */
       const patch = {}
 
       if (typeof req.body?.salesAgentCommissionRate === "number") {
@@ -80,6 +80,14 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
         patch.promosVisible = req.body.promosVisible
       }
 
+      if (typeof req.body?.paymentsEnabled === "boolean") {
+        patch.paymentsEnabled = req.body.paymentsEnabled
+      }
+
+      if (typeof req.body?.paymentNote === "string") {
+        patch.paymentNote = req.body.paymentNote
+      }
+
       const organizationName =
         typeof req.body?.organizationName === "string" ? req.body.organizationName.trim() : ""
 
@@ -92,11 +100,13 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
         patch.enquiryPhone === undefined &&
         patch.purchaseAlertsEnabled === undefined &&
         patch.promosVisible === undefined &&
+        patch.paymentsEnabled === undefined &&
+        patch.paymentNote === undefined &&
         !organizationName
       ) {
         return res.status(400).json({
           error:
-            "Provide salesAgentCommissionRate/Percent, appName, companyName, organizationName, companyLogoUrl, alertPhone, enquiryPhone, purchaseAlertsEnabled, and/or promosVisible to update.",
+            `Provide salesAgentCommissionRate/Percent, appName, companyName, organizationName, companyLogoUrl, alertPhone, enquiryPhone, purchaseAlertsEnabled, promosVisible, paymentsEnabled, and/or paymentNote to update.`,
         })
       }
 
@@ -119,7 +129,9 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
         patch.alertPhone !== undefined ||
         patch.enquiryPhone !== undefined ||
         patch.purchaseAlertsEnabled !== undefined ||
-        patch.promosVisible !== undefined
+        patch.promosVisible !== undefined ||
+        patch.paymentsEnabled !== undefined ||
+        patch.paymentNote !== undefined
 
       const saved = hasSettingsPatch
         ? await patchAppSettings(appSettings, patch, req.auth)
@@ -147,6 +159,12 @@ export function createSettingsRouter({ appSettings, auditLogs, organizations, jw
       }
       if (patch.promosVisible !== undefined) {
         auditParts.push(`promos ${saved.promosVisible ? "shown to customers" : "hidden from customers"}`)
+      }
+      if (patch.paymentsEnabled !== undefined) {
+        auditParts.push(`online payments ${saved.paymentsEnabled ? "enabled" : "disabled"}`)
+      }
+      if (patch.paymentNote !== undefined) {
+        auditParts.push(saved.paymentNote ? `payment note updated` : "payment note cleared")
       }
       if (auditParts.length) {
         await appendAuditLog(auditLogs, req.auth, `Updated ${auditParts.join(", ")}`)

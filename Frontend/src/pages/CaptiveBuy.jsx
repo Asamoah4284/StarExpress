@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
-import { Check, ChevronLeft, ChevronRight, Copy, Gift, Loader2, Phone, Satellite, Wifi } from "lucide-react"
+import { Check, ChevronLeft, ChevronRight, Copy, Gift, Loader2, Phone, Satellite, Wifi, AlertTriangle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -132,6 +132,8 @@ export default function CaptiveBuy() {
   const [moolreAuthUrl, setMoolreAuthUrl] = React.useState(/** @type {string | null} */ (null))
   const [moolreReference, setMoolreReference] = React.useState(/** @type {string | null} */ (null))
   const [moolreCallbackUrl, setMoolreCallbackUrl] = React.useState(/** @type {string | null} */ (null))
+  const [paymentsEnabled, setPaymentsEnabled] = React.useState(true)
+  const [paymentNote, setPaymentNote] = React.useState("")
 
   const packagePageCount = Math.max(1, Math.ceil(packages.length / PACKAGES_PER_PAGE))
   const visiblePackages = packages.slice(
@@ -153,6 +155,8 @@ export default function CaptiveBuy() {
       } else {
         setLocations(result.locations)
         setEnquiryPhone(result.enquiryPhone || "")
+        setPaymentsEnabled(typeof result.paymentsEnabled === "boolean" ? result.paymentsEnabled : true)
+        setPaymentNote(typeof result.paymentNote === "string" ? result.paymentNote : "")
       }
       setLoading(false)
     })()
@@ -363,6 +367,30 @@ export default function CaptiveBuy() {
           </div>
         ) : null}
 
+        {!paymentsEnabled && !loading ? (
+          <div className="border-amber-400/40 bg-amber-50/80 dark:bg-amber-900/20 dark:border-amber-500/30 rounded-xl border px-5 py-6 text-center shadow-sm">
+            <div className="mx-auto mb-3 flex size-12 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-800/40">
+              <AlertTriangle className="size-6 text-amber-600 dark:text-amber-400" aria-hidden />
+            </div>
+            <h2 className="text-base font-semibold text-amber-900 dark:text-amber-200">
+              Payments temporarily unavailable
+            </h2>
+            <p className="mt-2 text-sm text-amber-800 dark:text-amber-300 leading-relaxed">
+              {paymentNote ||
+                "Online payments are currently disabled. Please check back shortly or contact the WiFi provider for assistance."}
+            </p>
+            {enquiryPhone ? (
+              <a
+                href={`tel:${enquiryPhone}`}
+                className="mt-4 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 transition-colors"
+              >
+                <Phone className="size-4" aria-hidden />
+                Call {formatGhanaPhoneDisplayLocal(enquiryPhone)}
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
         {loading ? (
           <div className="flex justify-center py-16">
             <Loader2 className="text-primary size-8 animate-spin" aria-label="Loading" />
@@ -380,14 +408,16 @@ export default function CaptiveBuy() {
             </CardHeader>
             <CardContent className="space-y-4">
               <HotspotConnectForm loginUrl={portalParams.login_url} origUrl={portalParams.orig_url} />
-              <Button type="button" variant="outline" className="h-11 w-full" onClick={() => setStep(1)}>
-                I don't have a code — buy WiFi
-              </Button>
+              {paymentsEnabled ? (
+                <Button type="button" variant="outline" className="h-11 w-full" onClick={() => setStep(1)}>
+                  I don't have a code — buy WiFi
+                </Button>
+              ) : null}
             </CardContent>
           </Card>
         ) : null}
 
-        {!loading && step === 1 ? (
+        {!loading && paymentsEnabled && step === 1 ? (
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Step 1 — WiFi location</CardTitle>
@@ -434,7 +464,7 @@ export default function CaptiveBuy() {
           </Card>
         ) : null}
 
-        {!loading && step === 2 ? (
+        {!loading && paymentsEnabled && step === 2 ? (
           <Card className="overflow-hidden">
             <CardHeader className="border-border/60 border-b pb-4">
               <div className="flex items-start justify-between gap-3">
@@ -531,7 +561,7 @@ export default function CaptiveBuy() {
           </Card>
         ) : null}
 
-        {!loading && step === 3 && selectedPackage ? (
+        {!loading && paymentsEnabled && step === 3 && selectedPackage ? (
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Step 3 — Pay with MoMo</CardTitle>

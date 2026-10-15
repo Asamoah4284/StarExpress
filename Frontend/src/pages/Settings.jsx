@@ -33,6 +33,8 @@ function settingsFromResponse(r) {
     enquiryPhone: r.enquiryPhone ?? "",
     purchaseAlertsEnabled: r.purchaseAlertsEnabled ?? true,
     promosVisible: r.promosVisible ?? true,
+    paymentsEnabled: r.paymentsEnabled ?? true,
+    paymentNote: r.paymentNote ?? "",
     organization: r.organization ?? null,
   }
 }
@@ -60,6 +62,9 @@ export default function Settings() {
   const [enquiryMessage, setEnquiryMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [promosVisible, setPromosVisible] = React.useState(true)
   const [promosMessage, setPromosMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
+  const [paymentsEnabled, setPaymentsEnabled] = React.useState(true)
+  const [paymentNote, setPaymentNote] = React.useState("")
+  const [paymentsMessage, setPaymentsMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
   const [hostelRates, setHostelRates] = React.useState(/** @type {Record<string, string>} */ ({}))
   const [lightBillAmounts, setLightBillAmounts] = React.useState(/** @type {Record<string, string>} */ ({}))
   const [hostelMessage, setHostelMessage] = React.useState(/** @type {{ type: "ok" | "err", text: string } | null} */ (null))
@@ -169,6 +174,21 @@ export default function Settings() {
       setPromosVisible(loadedPromosVisible)
     }
   }, [loadedPromosVisible])
+
+  const loadedPaymentsEnabled = settingsQuery.data?.paymentsEnabled
+  const loadedPaymentNote = settingsQuery.data?.paymentNote
+
+  React.useEffect(() => {
+    if (typeof loadedPaymentsEnabled === "boolean") {
+      setPaymentsEnabled(loadedPaymentsEnabled)
+    }
+  }, [loadedPaymentsEnabled])
+
+  React.useEffect(() => {
+    if (typeof loadedPaymentNote === "string") {
+      setPaymentNote(loadedPaymentNote)
+    }
+  }, [loadedPaymentNote])
 
   const saveCommissionMutation = useMutation({
     mutationFn: async () => {
@@ -354,6 +374,42 @@ export default function Settings() {
     e.preventDefault()
     setProfileMessage(null)
     saveProfileMutation.mutate()
+  }
+
+  const savePaymentsMutation = useMutation({
+    mutationFn: async () => {
+      if (!token) throw new Error("Not signed in")
+      const r = await updateAppSettings(token, {
+        paymentsEnabled,
+        paymentNote: paymentNote.trim(),
+      })
+      if (!r.ok) throw new Error(r.error || "Failed to save payment settings")
+      return settingsFromResponse(r)
+    },
+    onSuccess: (settings) => {
+      queryClient.setQueryData([APP_SETTINGS_QUERY_KEY, token], settings)
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      setPaymentsEnabled(settings.paymentsEnabled ?? true)
+      setPaymentNote(settings.paymentNote ?? "")
+      setPaymentsMessage({
+        type: "ok",
+        text: settings.paymentsEnabled
+          ? "Payment settings saved. Online payments are currently enabled."
+          : "Payment settings saved. Online payments are currently paused.",
+      })
+    },
+    onError: (err) => {
+      setPaymentsMessage({
+        type: "err",
+        text: err instanceof Error ? err.message : "Could not save payment settings.",
+      })
+    },
+  })
+
+  const onSavePayments = (e) => {
+    e.preventDefault()
+    setPaymentsMessage(null)
+    savePaymentsMutation.mutate()
   }
 
   const isDark = theme === "dark"
@@ -821,6 +877,72 @@ export default function Settings() {
               {promosMessage.text}
             </p>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/80 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Online payments</CardTitle>
+          <CardDescription>
+            Temporarily disable online payments on the public WiFi buy page (e.g. while restocking
+            vouchers or filling gaps). When disabled, customers see your advisory note.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={onSavePayments} className="space-y-4">
+            <div className="border-border/70 flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">Accept online payments</p>
+                <p className="text-muted-foreground text-xs">
+                  {paymentsEnabled
+                    ? "Customers can select packages and pay with Mobile Money on the buy page."
+                    : "Payments are paused. Customers cannot purchase codes on the buy page."}
+                </p>
+              </div>
+              <Switch
+                checked={paymentsEnabled}
+                onCheckedChange={setPaymentsEnabled}
+                aria-label="Toggle online payments"
+                disabled={settingsQuery.isLoading || savePaymentsMutation.isPending}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="payment-note">Payment notice / instructions</Label>
+              <textarea
+                id="payment-note"
+                rows={3}
+                value={paymentNote}
+                onChange={(e) => setPaymentNote(e.target.value)}
+                maxLength={500}
+                disabled={settingsQuery.isLoading || savePaymentsMutation.isPending}
+                placeholder="e.g. Online payments are temporarily paused. To buy a WiFi voucher, please visit the hostel reception or contact 054XXXXXXX."
+                className="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex min-h-[80px] w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-describedby="payment-note-hint"
+              />
+              <p id="payment-note-hint" className="text-muted-foreground text-xs">
+                Shown prominently on the buy page when payments are disabled. Helps customers know how to
+                pay in cash or get assistance (up to 500 characters).
+              </p>
+            </div>
+
+            <Button type="submit" disabled={savePaymentsMutation.isPending || settingsQuery.isLoading}>
+              {savePaymentsMutation.isPending ? "Saving…" : "Save payment settings"}
+            </Button>
+
+            {paymentsMessage ? (
+              <p
+                className={
+                  paymentsMessage.type === "ok"
+                    ? "text-sm text-emerald-600 dark:text-emerald-400"
+                    : "text-sm text-destructive"
+                }
+                role="status"
+              >
+                {paymentsMessage.text}
+              </p>
+            ) : null}
+          </form>
         </CardContent>
       </Card>
 

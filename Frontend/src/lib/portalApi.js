@@ -68,7 +68,7 @@ async function fetchWithFallback(paths, init = {}) {
 
 /**
  * @param {string} [orgId]
- * @returns {Promise<{ ok: true, locations: { locationId: string, name: string }[], enquiryPhone: string } | { ok: false, error: string }>}
+ * @returns {Promise<{ ok: true, locations: { locationId: string, name: string }[], enquiryPhone: string, paymentsEnabled: boolean, paymentNote: string } | { ok: false, error: string }>}
  */
 export async function fetchPortalLocations(orgId = "") {
   const q = orgId ? `?org=${encodeURIComponent(orgId)}` : ""
@@ -84,6 +84,8 @@ export async function fetchPortalLocations(orgId = "") {
 
   const enquiryPhone =
     typeof data?.enquiryPhone === "string" && data.enquiryPhone.trim() ? data.enquiryPhone.trim() : ""
+  const paymentsEnabled = typeof data?.paymentsEnabled === "boolean" ? data.paymentsEnabled : true
+  const paymentNote = typeof data?.paymentNote === "string" ? data.paymentNote : ""
 
   if (Array.isArray(data?.locations)) {
     const locations = data.locations.map((loc) => {
@@ -96,10 +98,10 @@ export async function fetchPortalLocations(orgId = "") {
       return null
     }).filter(Boolean)
 
-    return { ok: true, locations, enquiryPhone }
+    return { ok: true, locations, enquiryPhone, paymentsEnabled, paymentNote }
   }
 
-  return { ok: true, locations: [], enquiryPhone }
+  return { ok: true, locations: [], enquiryPhone, paymentsEnabled, paymentNote }
 }
 
 /**

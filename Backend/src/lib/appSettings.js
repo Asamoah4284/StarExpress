@@ -211,6 +211,11 @@ export async function getAppSettings(appSettings, orgId) {
   const purchaseAlertsEnabled =
     typeof doc?.purchaseAlertsEnabled === "boolean" ? doc.purchaseAlertsEnabled : true
   const promosVisible = typeof doc?.promosVisible === "boolean" ? doc.promosVisible : true
+  const paymentsEnabled = typeof doc?.paymentsEnabled === "boolean" ? doc.paymentsEnabled : true
+  const paymentNote =
+    typeof doc?.paymentNote === "string" && doc.paymentNote.trim()
+      ? doc.paymentNote.trim().slice(0, 500)
+      : ""
   return {
     salesAgentCommissionRate,
     appName,
@@ -220,12 +225,14 @@ export async function getAppSettings(appSettings, orgId) {
     enquiryPhone,
     purchaseAlertsEnabled,
     promosVisible,
+    paymentsEnabled,
+    paymentNote,
   }
 }
 
 /**
  * @param {import("mongodb").Collection} appSettings
- * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, enquiryPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean }} patch
+ * @param {{ salesAgentCommissionRate?: number, appName?: string, companyName?: string, companyLogoUrl?: string | null, alertPhone?: string | null, enquiryPhone?: string | null, purchaseAlertsEnabled?: boolean, promosVisible?: boolean, paymentsEnabled?: boolean, paymentNote?: string }} patch
  * @param {{ userId?: string, orgId?: string } | undefined} auth
  */
 export async function patchAppSettings(appSettings, patch, auth) {
@@ -278,6 +285,14 @@ export async function patchAppSettings(appSettings, patch, auth) {
 
   if (typeof patch.promosVisible === "boolean") {
     $set.promosVisible = patch.promosVisible
+  }
+
+  if (typeof patch.paymentsEnabled === "boolean") {
+    $set.paymentsEnabled = patch.paymentsEnabled
+  }
+
+  if (typeof patch.paymentNote === "string") {
+    $set.paymentNote = patch.paymentNote.trim().slice(0, 500)
   }
 
   await appSettings.updateOne({ _id: docId }, { $set }, { upsert: true })

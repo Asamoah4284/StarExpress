@@ -22,6 +22,8 @@ export function useAppSettings() {
         enquiryPhone: typeof r.enquiryPhone === "string" ? r.enquiryPhone : "",
         purchaseAlertsEnabled: typeof r.purchaseAlertsEnabled === "boolean" ? r.purchaseAlertsEnabled : true,
         promosVisible: typeof r.promosVisible === "boolean" ? r.promosVisible : true,
+        paymentsEnabled: typeof r.paymentsEnabled === "boolean" ? r.paymentsEnabled : true,
+        paymentNote: typeof r.paymentNote === "string" ? r.paymentNote : "",
         organization: r.organization ?? null,
       }
     },

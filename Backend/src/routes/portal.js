@@ -136,13 +136,17 @@ export function createPortalRouter(deps) {
       const orgId = resolvePortalOrgId(readPortalOrgParam(req))
       const items = await getPortalLocations(locations, { orgId })
       let enquiryPhone = ""
+      let paymentsEnabled = true
+      let paymentNote = ""
       try {
         const settings = await getAppSettings(appSettings, orgId)
         enquiryPhone = resolvePublicEnquiryPhone(settings)
+        paymentsEnabled = typeof settings.paymentsEnabled === "boolean" ? settings.paymentsEnabled : true
+        paymentNote = typeof settings.paymentNote === "string" ? settings.paymentNote : ""
       } catch {
         enquiryPhone = ""
       }
-      res.json({ locations: items, org: orgId, enquiryPhone })
+      res.json({ locations: items, org: orgId, enquiryPhone, paymentsEnabled, paymentNote })
     } catch (err) {
       console.error("[portal] GET /locations", err)
       res.status(500).json({ error: "Failed to load locations." })
@@ -228,6 +232,20 @@ export function createPortalRouter(deps) {
       }
       const locOrgId = resolvePortalOrgId(typeof loc.orgId === "string" ? loc.orgId : orgId)
       buyLog("initialize location", { locationId, name: loc.name, orgId: locOrgId })
+
+      try {
+        const settings = await getAppSettings(appSettings, locOrgId)
+        if (settings && settings.paymentsEnabled === false) {
+          buyError("initialize abort", { reason: "payments disabled", locOrgId })
+          return res.status(403).json({
+            error:
+              (settings.paymentNote && settings.paymentNote.trim()) ||
+              "Online payments are currently disabled. Please contact the WiFi provider or administrator.",
+          })
+        }
+      } catch (settingsErr) {
+        buyLog("initialize settings check warning", { error: String(settingsErr) })
+      }
 
       const pkg = await packages.findOne({ _id: packageId, orgId: locOrgId })
       if (!pkg) {

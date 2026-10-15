@@ -33,6 +33,8 @@ function parseAppSettingsPayload(data) {
     enquiryPhone: typeof data.enquiryPhone === "string" ? data.enquiryPhone.trim() : "",
     purchaseAlertsEnabled: typeof data.purchaseAlertsEnabled === "boolean" ? data.purchaseAlertsEnabled : true,
     promosVisible: typeof data.promosVisible === "boolean" ? data.promosVisible : true,
+    paymentsEnabled: typeof data.paymentsEnabled === "boolean" ? data.paymentsEnabled : true,
+    paymentNote: typeof data.paymentNote === "string" ? data.paymentNote : "",
     organization,
   }
 }
@@ -1206,6 +1208,8 @@ export async function fetchAppSettings(token) {
  *   enquiryPhone?: string | null
  *   purchaseAlertsEnabled?: boolean
  *   promosVisible?: boolean
+ *   paymentsEnabled?: boolean
+ *   paymentNote?: string
  * }} body
  */
 export async function updateAppSettings(token, body) {
