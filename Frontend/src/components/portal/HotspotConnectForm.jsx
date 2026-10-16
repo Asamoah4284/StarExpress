@@ -14,16 +14,7 @@ const SUPPORT_PHONES = [
 ]
 
 function submitToGateway(target) {
-  try {
-    const form = document.createElement("form")
-    form.method = "GET"
-    form.action = target
-    form.style.display = "none"
-    document.body.appendChild(form)
-    form.submit()
-  } catch {
-    window.location.href = target
-  }
+  window.location.assign(target)
 }
 
 /**
@@ -67,8 +58,16 @@ export function HotspotConnectForm({
   const doConnect = (targetUrl) => {
     setConnecting(true)
     setError(null)
-    clearPersistedPortalParams()
+    // Mask the password param in the log so it doesn't appear in plain text
+    const logUrl = targetUrl.replace(
+      /(password=)[^&]*/,
+      (_, prefix) => `${prefix}****`,
+    )
+    console.log("[buy] gateway target", logUrl)
     submitToGateway(targetUrl)
+    // Clear persisted params AFTER navigation has started so the AP redirect
+    // back to /buy can still read them if auth fails.
+    clearPersistedPortalParams()
   }
 
   const onSubmit = (e) => {
