@@ -55,6 +55,9 @@ export async function getPortalPackagesForLocation(packagesCol, locationId, opts
   /** @type {{ packageId: string, name: string, priceGHS: number, dataLimit: string, remaining: number }[]} */
   const list = []
   for (const pkg of activePkgs) {
+    if (pkg.locationId && String(pkg.locationId).trim() !== String(locationId).trim()) {
+      continue
+    }
     const packageId = String(pkg._id)
     const resolved = resolvePackageForLocation(pkg, locationId)
     if (resolved.status && resolved.status !== "Active") continue
@@ -135,6 +138,9 @@ export async function getPackagesForLocation(packagesCol, vouchersCol, locationI
   /** @type {{ packageId: string, name: string, priceGHS: number, dataLimit: string, remaining: number }[]} */
   const list = []
   for (const pkg of activePkgs) {
+    if (pkg.locationId && String(pkg.locationId).trim() !== String(locationId).trim()) {
+      continue
+    }
     const packageId = String(pkg._id)
     const resolved = resolvePackageForLocation(pkg, locationId)
     if (resolved.status && resolved.status !== "Active") continue

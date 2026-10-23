@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { mongoHttpError } from "../lib/mongoHttpError.js"
 import { appendAuditLog } from "../lib/appendAuditLog.js"
 import { backfillSaleSoldAt } from "../lib/backfillSaleSoldAt.js"
+import { backfillPackageLocations } from "../lib/backfillPackageLocations.js"
 import { byOrg } from "../lib/organizations.js"
 import { createVerifyJwt, requireAdmin, requireOrg } from "../middleware/authJwt.js"
 import { applyPurchaseRadiusWindow } from "../lib/radiusAuth.js"
@@ -321,6 +322,7 @@ function toPackage(d) {
     uploadSpeed: d.uploadSpeed != null && d.uploadSpeed !== "" ? Number(d.uploadSpeed) : null,
     downloadSpeed: d.downloadSpeed != null && d.downloadSpeed !== "" ? Number(d.downloadSpeed) : null,
     sortOrder: typeof d.sortOrder === "number" && Number.isFinite(d.sortOrder) ? d.sortOrder : null,
+    locationId: d.locationId ? String(d.locationId).trim() : null,
   }
 }
 
@@ -1333,6 +1335,7 @@ export function createCatalogRouter(deps) {
     try {
       const orgId = req.auth.orgId
       await backfillSaleSoldAt(sales, auditLogs)
+      await backfillPackageLocations(packages, vouchers)
 
       const orgFilter = byOrg(orgId)
       const role = req.auth?.role
@@ -2356,8 +2359,11 @@ export function createCatalogRouter(deps) {
       const orgId = req.auth.orgId
       const name = typeof req.body?.name === "string" ? req.body.name.trim() : ""
       const dataLimit = typeof req.body?.dataLimit === "string" ? req.body.dataLimit.trim() : ""
-      const status = typeof req.body?.status === "string" ? req.body.status.trim() : "Active"
+      const statusRaw = typeof req.body?.status === "string" ? req.body.status.trim() : "Active"
+      const status = ["Active", "Paused", "Suspended", "Inactive"].includes(statusRaw) ? statusRaw : "Active"
       const priceGHS = Number(req.body?.priceGHS)
+      const locationIdRaw = typeof req.body?.locationId === "string" ? req.body.locationId.trim() : ""
+      const locationId = locationIdRaw && locationIdRaw !== "all" ? locationIdRaw : null
       if (name.length < 2) return res.status(400).json({ error: "Name must be at least 2 characters." })
       if (!dataLimit) return res.status(400).json({ error: "Data limit is required." })
       if (!Number.isFinite(priceGHS) || priceGHS < 0) return res.status(400).json({ error: "Invalid price." })
@@ -2371,6 +2377,7 @@ export function createCatalogRouter(deps) {
         priceGHS,
         dataLimit,
         status,
+        ...(locationId ? { locationId } : {}),
         stockUnits: 0,
         ...extras.fields,
       }
@@ -2407,7 +2414,13 @@ export function createCatalogRouter(deps) {
         if (!dataLimit) return res.status(400).json({ error: "Data limit is required." })
         fields.dataLimit = dataLimit
       }
-      if (typeof req.body?.status === "string") fields.status = req.body.status.trim()
+      if (typeof req.body?.status === "string") {
+        const s = req.body.status.trim()
+        if (!["Active", "Paused", "Suspended", "Inactive"].includes(s)) {
+          return res.status(400).json({ error: "Status must be Active, Paused, Suspended, or Inactive." })
+        }
+        fields.status = s
+      }
       if (req.body?.priceGHS !== undefined) {
         const priceGHS = Number(req.body.priceGHS)
         if (!Number.isFinite(priceGHS) || priceGHS < 0) return res.status(400).json({ error: "Invalid price." })
@@ -2450,6 +2463,7 @@ export function createCatalogRouter(deps) {
             ...existingFields,
             _id: newId,
             orgId,
+            locationId: locationId || (existing.locationId ? String(existing.locationId).trim() : null),
             stockUnits: 0,
             ...fields,
           }
@@ -2475,10 +2489,20 @@ export function createCatalogRouter(deps) {
           const saved = await packages.findOne({ _id: newId, ...byOrg(orgId) })
           if (!saved) return res.status(500).json({ error: "Failed to load forked package." })
 
+          const statusAction = fields.status
+            ? fields.status === "Paused"
+              ? "paused"
+              : fields.status === "Suspended"
+                ? "suspended"
+                : fields.status === "Active"
+                  ? "resumed"
+                  : "deactivated"
+            : "updated"
+
           await appendAuditLog(
             auditLogs,
             req.auth,
-            `Forked package "${existing.name}" (${id}) for location "${locName}" (${locationId}) into "${saved.name}" (${newId})`,
+            `Forked package "${existing.name}" (${id}) for location "${locName}" (${locationId}) into "${saved.name}" (${newId}) and ${statusAction} it (${saved.status})`,
           )
           return res.json({ package: toPackage(saved), forked: true, fromPackageId: id })
         }
@@ -2497,7 +2521,16 @@ export function createCatalogRouter(deps) {
       await syncPackageStockUnitsFromVouchers(vouchers, packages, orgId)
       const doc = await packages.findOne({ _id: id, ...byOrg(orgId) })
       if (!doc) return res.status(404).json({ error: "Package not found." })
-      await appendAuditLog(auditLogs, req.auth, `Updated package "${doc.name}" (${id})`)
+      const auditText = fields.status
+        ? fields.status === "Paused"
+          ? `Paused package "${doc.name}" (${id}) — hidden from captive portal`
+          : fields.status === "Suspended"
+            ? `Suspended package "${doc.name}" (${id}) — hidden from captive portal`
+            : fields.status === "Active"
+              ? `Resumed package "${doc.name}" (${id}) — visible on captive portal`
+              : `Deactivated package "${doc.name}" (${id})`
+        : `Updated package "${doc.name}" (${id})`
+      await appendAuditLog(auditLogs, req.auth, auditText)
       res.json({ package: toPackage(doc), forked: false })
     } catch (err) {
       console.error(err)

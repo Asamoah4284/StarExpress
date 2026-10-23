@@ -253,6 +253,16 @@ export function createPortalRouter(deps) {
         return res.status(400).json({ error: "Unknown package." })
       }
 
+      if (pkg.locationId && String(pkg.locationId).trim() !== String(locationId).trim()) {
+        buyError("initialize abort", {
+          reason: "package not at location",
+          packageId,
+          locationId,
+          pkgLocationId: pkg.locationId,
+        })
+        return res.status(400).json({ error: "This package is not available at this WiFi location." })
+      }
+
       const resolved = resolvePackageForLocation(pkg, locationId)
       buyLog("initialize package", {
         packageId,

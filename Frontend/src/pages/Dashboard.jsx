@@ -107,11 +107,12 @@ export default function Dashboard() {
     setDateRange(currentWeekRange())
   }, [])
 
-  const rangeComplete = isCompleteDateRange(dateRange)
+  const isAllTime = !dateRange || (!dateRange.from && !dateRange.to)
+  const rangeComplete = isAllTime || isCompleteDateRange(dateRange)
   const rangeEndIso =
-    rangeComplete && dateRange?.to ? localDateToIso(dateRange.to) : localDateToIso(new Date())
+    dateRange?.to ? localDateToIso(dateRange.to) : localDateToIso(new Date())
   const rangeStartIso =
-    rangeComplete && dateRange?.from ? localDateToIso(dateRange.from) : rangeEndIso
+    dateRange?.from ? localDateToIso(dateRange.from) : (isAllTime ? "1970-01-01" : rangeEndIso)
   const calendarTodayIso = accraTodayIso()
   const reportingDayIso =
     rangeStartIso <= calendarTodayIso && calendarTodayIso <= rangeEndIso
@@ -163,7 +164,7 @@ export default function Dashboard() {
     } else {
       rows = filterSalesByLocation(sales, locationId)
     }
-    if (rangeComplete && dateRange?.from && dateRange?.to) {
+    if (!isAllTime && dateRange?.from && dateRange?.to) {
       rows = filterSalesByDateRange(
         rows,
         localDateToIso(dateRange.from),
@@ -171,7 +172,25 @@ export default function Dashboard() {
       )
     }
     return rows
-  }, [catalog.data, locationId, isSalesAgent, agentStore, dateRange, rangeComplete])
+  }, [catalog.data, locationId, isSalesAgent, agentStore, dateRange, isAllTime])
+
+  const allTimeSalesInScope = React.useMemo(() => {
+    const sales = catalog.data?.sales ?? []
+    if (isSalesAgent) {
+      if (!agentStore) return []
+      return filterSalesForAgentAttribution(filterSalesByLocation(sales, agentStore.id))
+    }
+    return filterSalesByLocation(sales, locationId)
+  }, [catalog.data?.sales, isSalesAgent, agentStore, locationId])
+
+  const allTimeCompleted = React.useMemo(
+    () => allTimeSalesInScope.filter((s) => s.status === "Completed"),
+    [allTimeSalesInScope],
+  )
+  const allTimeRevenue = React.useMemo(
+    () => allTimeCompleted.reduce((sum, s) => sum + (Number(s.amount) || 0), 0),
+    [allTimeCompleted],
+  )
 
   const totalVouchersInScope = voucherStatsQuery.data?.total ?? 0
   const remainingVouchers = voucherStatsQuery.data?.remaining ?? 0
@@ -217,7 +236,9 @@ export default function Dashboard() {
   const commissionPercentLabel = `${Math.round(commissionRate * 1000) / 10}% of completed sales`
 
   const overviewDescription = isAdmin
-    ? "Key revenue and sales totals for the selected location and date range (defaults to this week, Tuesday–Monday)."
+    ? isAllTime
+      ? "All-time revenue and sales totals for the selected location."
+      : "Key revenue and sales totals for the selected location and date range (defaults to this week, Tuesday–Monday)."
     : `Commission and sale counts for your wifi location (${commissionPercentLabel}). Use the date range picker above.`
 
   const salesBreakdownHint = isAdmin
@@ -313,6 +334,15 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
+            <Button
+              type="button"
+              variant={isAllTime ? "default" : "outline"}
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setDateRange(undefined)}
+            >
+              All time
+            </Button>
             <Button
               type="button"
               variant="outline"
@@ -468,15 +498,22 @@ export default function Dashboard() {
             <StatCard
               tone="violet"
               icon={DollarSign}
-              label="Total Revenue"
+              label={isAllTime ? "All-Time Revenue" : "Total Revenue"}
               value={formatCedis(m.totalRevenue)}
               moneyAmount={m.totalRevenue}
               animate
               scopeKey={statsScopeKey}
               pulseKey={pulseKey}
               animateEnabled={statsReady}
-              subline={`${m.sold} completed`}
-              trend={{ text: `${m.utilizationRate}% utilized`, positive: true }}
+              subline={
+                isAllTime
+                  ? `${m.sold} all-time completed sales`
+                  : `${m.sold} in range · All-time: ${formatCedis(allTimeRevenue)}`
+              }
+              trend={{
+                text: isAllTime ? "All time" : `${m.utilizationRate}% utilized`,
+                positive: true,
+              }}
               sparkline={{ data: sparkTotalRevenue, variant: "area" }}
             />
             <StatCard
@@ -520,7 +557,7 @@ export default function Dashboard() {
             <StatCard
               tone="sky"
               icon={Wallet}
-              label="Sold Vouchers"
+              label={isAllTime ? "All-Time Sold" : "Sold Vouchers"}
               value={String(m.sold)}
               countValue={m.sold}
               animate
@@ -528,13 +565,11 @@ export default function Dashboard() {
               pulseKey={pulseKey}
               animateEnabled={statsReady}
               subline={
-                voucherStatsQuery.isLoading
-                  ? "…"
-                  : voucherStatsQuery.isError
-                    ? "Could not load vouchers"
-                    : `${remainingVouchers} remaining`
+                isAllTime
+                  ? `${allTimeCompleted.length} total sales · ${remainingVouchers} in stock`
+                  : `${remainingVouchers} in stock (All-time: ${allTimeCompleted.length})`
               }
-              trend={countDayTrend(dod.soldDelta)}
+              trend={isAllTime ? { text: "All-time total", positive: true } : countDayTrend(dod.soldDelta)}
               sparkline={{ data: sparkSold, variant: "area" }}
             />
           </>

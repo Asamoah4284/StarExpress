@@ -1,11 +1,30 @@
 import * as React from "react"
 import { useNavigate } from "react-router-dom"
-import { MapPin, Trash2, Check, Copy } from "lucide-react"
+import {
+  AlertCircle,
+  Ban,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Copy,
+  MapPin,
+  Pause,
+  Play,
+  Trash2,
+} from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { PageHeader } from "@/components/shared/PageHeader.jsx"
 import { DataTable } from "@/components/shared/DataTable.jsx"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Dialog,
   DialogContent,
@@ -39,6 +58,52 @@ import { findAgentStoreLocation } from "@/lib/agentLocation.js"
 import { ROLE_ADMIN, ROLE_SALES_AGENT } from "@/lib/roles.js"
 import { formatCedis } from "@/lib/utils"
 
+function PackageStatusBadge({ status }) {
+  switch (status) {
+    case "Active":
+      return (
+        <Badge
+          variant="outline"
+          className="border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 font-medium whitespace-nowrap"
+        >
+          <span className="size-1.5 rounded-full bg-emerald-500 inline-block mr-1.5 animate-pulse" aria-hidden />
+          Active
+        </Badge>
+      )
+    case "Paused":
+      return (
+        <Badge
+          variant="outline"
+          className="border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-400 font-medium whitespace-nowrap"
+        >
+          <Pause className="size-3 mr-1 inline" aria-hidden />
+          Paused
+        </Badge>
+      )
+    case "Suspended":
+      return (
+        <Badge
+          variant="outline"
+          className="border-rose-500/40 bg-rose-500/15 text-rose-700 dark:text-rose-400 font-medium whitespace-nowrap"
+        >
+          <Ban className="size-3 mr-1 inline" aria-hidden />
+          Suspended
+        </Badge>
+      )
+    case "Inactive":
+    default:
+      return (
+        <Badge
+          variant="secondary"
+          className="text-muted-foreground font-normal whitespace-nowrap"
+        >
+          <span className="size-1.5 rounded-full bg-muted-foreground/40 inline-block mr-1.5" aria-hidden />
+          {status || "Inactive"}
+        </Badge>
+      )
+  }
+}
+
 export default function Packages() {
   const navigate = useNavigate()
   const { token, user } = useAuth()
@@ -53,23 +118,30 @@ export default function Packages() {
 
   const agentStore = React.useMemo(() => findAgentStoreLocation(locations, user), [locations, user])
 
-  const [locationFilterId, setLocationFilterId] = React.useState("all")
+  const [locationFilterId, setLocationFilterId] = React.useState("")
 
-  const viewingAllLocations = isAdmin && locationFilterId === "all"
+  React.useEffect(() => {
+    if (locations.length === 0) return
+    if (!locationFilterId || !locations.some((l) => l.id === locationFilterId)) {
+      setLocationFilterId(locations[0].id)
+    }
+  }, [locations, locationFilterId])
+
+  const viewingAllLocations = false
 
   const inventoryLocationId = React.useMemo(() => {
     if (isSalesAgent) return agentStore?.id ?? ""
-    if (locationFilterId === "all") return ""
-    return locationFilterId
-  }, [isSalesAgent, agentStore?.id, locationFilterId])
+    return locationFilterId || locations[0]?.id || ""
+  }, [isSalesAgent, agentStore?.id, locationFilterId, locations])
 
-  const inventoryFromCatalog =
-    isAdmin && locationFilterId === "all" && Array.isArray(catalog.data?.packageVoucherInventory)
+  const inventoryFromCatalog = false
 
-  const locationFilterLabel =
-    locationFilterId === "all"
-      ? "All locations"
-      : (locations.find((l) => l.id === locationFilterId)?.name ?? locationFilterId)
+  const activeLocation = React.useMemo(
+    () => locations.find((l) => l.id === locationFilterId) ?? locations[0] ?? null,
+    [locations, locationFilterId],
+  )
+
+  const locationFilterLabel = activeLocation?.name ?? locationFilterId
 
   const scopedLocationLabel = isSalesAgent
     ? (agentStore?.name ?? "your wifi location")
@@ -142,8 +214,7 @@ export default function Packages() {
         currency: "GHS",
       }
       if (editing) {
-        const editLocationId =
-          isAdmin && locationFilterId !== "all" ? locationFilterId : ""
+        const editLocationId = isSalesAgent ? (agentStore?.id ?? "") : locationFilterId
         const r = await updateCatalogPackage(
           token,
           editing.id,
@@ -153,7 +224,11 @@ export default function Packages() {
         if (!r.ok) throw new Error(r.error || "Update failed")
         return { mode: /** @type {"edit"} */ ("edit"), forked: Boolean(r.forked) }
       }
-      const r = await createCatalogPackage(token, body)
+      const targetLocationId = isSalesAgent ? (agentStore?.id ?? "") : locationFilterId
+      const r = await createCatalogPackage(token, {
+        ...body,
+        locationId: targetLocationId,
+      })
       if (!r.ok) throw new Error(r.error || "Create failed")
       return { mode: /** @type {"create"} */ ("create"), forked: false }
     },
@@ -206,6 +281,51 @@ export default function Packages() {
     },
   })
 
+  const statusMutation = useMutation({
+    mutationFn: async ({ pkg, nextStatus }) => {
+      if (!token) throw new Error("Not signed in")
+      const editLocationId = isSalesAgent ? (agentStore?.id ?? "") : locationFilterId
+      const r = await updateCatalogPackage(
+        token,
+        pkg.id,
+        { status: nextStatus },
+        editLocationId ? { locationId: editLocationId } : undefined,
+      )
+      if (!r.ok) throw new Error(r.error || `Failed to update status to ${nextStatus}`)
+      return { pkg, nextStatus, forked: Boolean(r.forked) }
+    },
+    onSuccess: ({ pkg, nextStatus, forked }) => {
+      queryClient.invalidateQueries({ queryKey: ["catalog"] })
+      queryClient.invalidateQueries({ queryKey: ["auditLogs"] })
+      queryClient.invalidateQueries({ queryKey: ["package-voucher-inventory"] })
+      queryClient.invalidateQueries({ queryKey: ["package-stock"] })
+
+      const actionWord =
+        nextStatus === "Paused"
+          ? "paused"
+          : nextStatus === "Suspended"
+            ? "suspended"
+            : nextStatus === "Active"
+              ? "activated"
+              : "deactivated"
+
+      const portalNote =
+        nextStatus === "Active"
+          ? "It is now visible on the captive portal buy page."
+          : "It will not show when users are buying from the captive portal."
+
+      const locationScopeNote =
+        forked
+          ? ` at ${locationFilterLabel} (other locations keep the original)`
+          : ` at ${locationFilterLabel}`
+
+      setSaveSuccess(`Package "${pkg.name}" is now ${actionWord}${locationScopeNote}. ${portalNote}`)
+    },
+    onError: (err) => {
+      setFormError(err instanceof Error ? err.message : "Status update failed")
+    },
+  })
+
   const packageInventoryQuery = useQuery({
     queryKey: ["package-voucher-inventory", token, inventoryLocationId],
     queryFn: async () => {
@@ -243,17 +363,75 @@ export default function Packages() {
     : catalog.isLoading || packageInventoryQuery.isLoading
   const inventoryError = catalog.error ?? packageInventoryQuery.error
 
-  /** Single-location view: only packages with vouchers at that site. All locations: full catalog. */
-  const scopedToSingleLocation =
-    !viewingAllLocations &&
-    ((isAdmin && locationFilterId !== "all") || (isSalesAgent && Boolean(inventoryLocationId)))
+  /** Location-specific package view: strictly packages for the selected wifi location. */
+  const scopedToSingleLocation = true
 
   const tableRows = React.useMemo(() => {
-    if (viewingAllLocations) return allPackages
-    if (!scopedToSingleLocation) return allPackages
-    if (inventoryLoading) return []
-    return allPackages.filter((pkg) => inventoryByPackageId.has(pkg.id))
-  }, [allPackages, viewingAllLocations, scopedToSingleLocation, inventoryLoading, inventoryByPackageId])
+    const currentLocId = isSalesAgent ? (agentStore?.id ?? "") : locationFilterId
+    if (!currentLocId) return []
+    return allPackages.filter((pkg) => {
+      // 1. Explicit assigned locationId on package
+      if (pkg.locationId) {
+        return String(pkg.locationId).trim() === String(currentLocId).trim()
+      }
+      // 2. Voucher inventory at this location
+      return inventoryByPackageId.has(pkg.id)
+    })
+  }, [allPackages, isSalesAgent, agentStore?.id, locationFilterId, inventoryByPackageId])
+
+  const packageSalesStats = React.useMemo(() => {
+    const map = new Map()
+    const allSales = catalog.data?.sales ?? []
+    const currentLocId = isSalesAgent ? (agentStore?.id ?? "") : locationFilterId
+
+    for (const sale of allSales) {
+      if (sale.status !== "Completed") continue
+      if (currentLocId && sale.locationId && String(sale.locationId).trim() !== String(currentLocId).trim()) {
+        continue
+      }
+      const pkgId = sale.packageId ? String(sale.packageId).trim() : ""
+      const pkgType = sale.packageType ? String(sale.packageType).trim().toLowerCase() : ""
+
+      if (pkgId) {
+        const prev = map.get(pkgId) || { count: 0, revenue: 0 }
+        map.set(pkgId, { count: prev.count + 1, revenue: prev.revenue + (Number(sale.amount) || 0) })
+      }
+      if (pkgType) {
+        const prev = map.get(pkgType) || { count: 0, revenue: 0 }
+        map.set(pkgType, { count: prev.count + 1, revenue: prev.revenue + (Number(sale.amount) || 0) })
+      }
+    }
+    return map
+  }, [catalog.data?.sales, isSalesAgent, agentStore?.id, locationFilterId])
+
+  const locationSummary = React.useMemo(() => {
+    let totalVouchers = 0
+    let remaining = 0
+    let sold = 0
+    let revenue = 0
+
+    for (const pkg of tableRows) {
+      const inv = inventoryByPackageId.get(pkg.id)
+      const t = inv?.total ?? 0
+      const rem = inv?.remaining ?? 0
+      const voucherSold = Math.max(0, t - rem)
+
+      const statsById = packageSalesStats.get(String(pkg.id).trim())
+      const statsByName = pkg.name ? packageSalesStats.get(String(pkg.name).trim().toLowerCase()) : null
+      const directCount = Math.max(statsById?.count ?? 0, statsByName?.count ?? 0)
+      const directRevenue = Math.max(statsById?.revenue ?? 0, statsByName?.revenue ?? 0)
+
+      const pkgSold = Math.max(voucherSold, directCount)
+      const pkgRev = directRevenue > 0 ? directRevenue : pkgSold * (Number(pkg.priceGHS) || 0)
+
+      totalVouchers += t
+      remaining += rem
+      sold += pkgSold
+      revenue += pkgRev
+    }
+
+    return { totalVouchers, remaining, sold, revenue }
+  }, [tableRows, inventoryByPackageId, packageSalesStats])
 
   const sellPhoneValid = React.useMemo(() => {
     const t = sellCustomerPhone.trim().replace(/\s+/g, " ")
@@ -481,8 +659,8 @@ export default function Packages() {
       }
     }
     const status = form.status.trim()
-    if (status !== "Active" && status !== "Inactive") {
-      setFormError("Status must be Active or Inactive.")
+    if (!["Active", "Paused", "Suspended", "Inactive"].includes(status)) {
+      setFormError("Status must be Active, Paused, Suspended, or Inactive.")
       return
     }
     saveMutation.mutate()
@@ -600,11 +778,113 @@ export default function Packages() {
         },
       },
       {
+        id: "allTimeSales",
+        accessorFn: (row) => {
+          const inv = inventoryByPackageId.get(row.id)
+          const voucherSold = inv ? Math.max(0, (inv.total ?? 0) - (inv.remaining ?? 0)) : 0
+          const statsById = packageSalesStats.get(String(row.id).trim())
+          const statsByName = row.name ? packageSalesStats.get(String(row.name).trim().toLowerCase()) : null
+          const directCount = Math.max(statsById?.count ?? 0, statsByName?.count ?? 0)
+          return Math.max(voucherSold, directCount)
+        },
+        header: "All-time sales",
+        cell: ({ row }) => {
+          const pkg = row.original
+          const inv = inventoryByPackageId.get(pkg.id)
+          const voucherSold = inv ? Math.max(0, (inv.total ?? 0) - (inv.remaining ?? 0)) : 0
+          const statsById = packageSalesStats.get(String(pkg.id).trim())
+          const statsByName = pkg.name ? packageSalesStats.get(String(pkg.name).trim().toLowerCase()) : null
+          const directCount = Math.max(statsById?.count ?? 0, statsByName?.count ?? 0)
+          const directRevenue = Math.max(statsById?.revenue ?? 0, statsByName?.revenue ?? 0)
+          const soldCount = Math.max(voucherSold, directCount)
+          const revenue = directRevenue > 0 ? directRevenue : soldCount * (Number(pkg.priceGHS) || 0)
+
+          if (inventoryLoading) return <span className="text-muted-foreground tabular-nums">…</span>
+
+          return (
+            <div className="flex flex-col">
+              <span className="font-semibold tabular-nums text-foreground">
+                {soldCount.toLocaleString()} <span className="text-xs font-normal text-muted-foreground">sold</span>
+              </span>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {formatCedis(revenue)}
+              </span>
+            </div>
+          )
+        },
+      },
+      {
         accessorKey: "status",
         header: "Status",
-        cell: ({ getValue }) => {
+        cell: ({ row, getValue }) => {
           const v = getValue()
-          return <Badge variant={v === "Active" ? "default" : "secondary"}>{v}</Badge>
+          const pkg = row.original
+          if (!isAdmin) {
+            return <PackageStatusBadge status={v} />
+          }
+          return (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="group inline-flex items-center gap-1 rounded-full cursor-pointer transition-opacity hover:opacity-85 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  title="Click to change package status"
+                >
+                  <PackageStatusBadge status={v} />
+                  <ChevronDown className="size-3 text-muted-foreground opacity-60 group-hover:opacity-100 transition-opacity" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-52">
+                <DropdownMenuLabel className="text-xs text-muted-foreground font-semibold">Change status</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={v === "Active" || statusMutation.isPending}
+                  onClick={() => statusMutation.mutate({ pkg, nextStatus: "Active" })}
+                  className="cursor-pointer"
+                >
+                  <CheckCircle2 className="size-4 mr-2 text-emerald-600 dark:text-emerald-400" />
+                  <div className="flex flex-col">
+                    <span className="font-medium text-xs">Active</span>
+                    <span className="text-[10px] text-muted-foreground">Visible on portal</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={v === "Paused" || statusMutation.isPending}
+                  onClick={() => statusMutation.mutate({ pkg, nextStatus: "Paused" })}
+                  className="cursor-pointer"
+                >
+                  <Pause className="size-4 mr-2 text-amber-600 dark:text-amber-400" />
+                  <div className="flex flex-col">
+                    <span className="font-medium text-xs">Pause</span>
+                    <span className="text-[10px] text-muted-foreground">Hide from captive portal</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={v === "Suspended" || statusMutation.isPending}
+                  onClick={() => statusMutation.mutate({ pkg, nextStatus: "Suspended" })}
+                  className="cursor-pointer"
+                >
+                  <Ban className="size-4 mr-2 text-rose-600 dark:text-rose-400" />
+                  <div className="flex flex-col">
+                    <span className="font-medium text-xs">Suspend</span>
+                    <span className="text-[10px] text-muted-foreground">Suspend package</span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={v === "Inactive" || statusMutation.isPending}
+                  onClick={() => statusMutation.mutate({ pkg, nextStatus: "Inactive" })}
+                  className="cursor-pointer"
+                >
+                  <AlertCircle className="size-4 mr-2 text-muted-foreground" />
+                  <div className="flex flex-col">
+                    <span className="font-medium text-xs">Inactive</span>
+                    <span className="text-[10px] text-muted-foreground">Deactivate package</span>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )
         },
       },
       {
@@ -620,9 +900,10 @@ export default function Packages() {
           const remaining = inv?.remaining ?? (inventoryLoading ? 1 : 0)
           const canSellThis = pkg.status === "Active" && remaining > 0
           const agentBlocked = isSalesAgent && !agentStore
+          const isPausedOrSuspended = pkg.status === "Paused" || pkg.status === "Suspended"
 
           return (
-            <div className="flex flex-wrap justify-end gap-2">
+            <div className="flex flex-wrap justify-end items-center gap-2">
               {canSell ? (
                 <Button
                   type="button"
@@ -630,12 +911,85 @@ export default function Packages() {
                   variant="default"
                   disabled={!canSellThis || sellMutation.isPending || (isSalesAgent && agentBlocked)}
                   onClick={() => openSell(pkg)}
+                  title={
+                    pkg.status !== "Active"
+                      ? "Package is paused/suspended"
+                      : remaining <= 0
+                        ? "No vouchers remaining"
+                        : "Record sale"
+                  }
                 >
                   Sell
                 </Button>
               ) : null}
               {isAdmin ? (
                 <>
+                  {pkg.status === "Active" ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={statusMutation.isPending}
+                          className="text-amber-700 border-amber-300 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-400 dark:border-amber-800/80 dark:hover:bg-amber-950/40"
+                          title="Pause or suspend this package so it won't show on the captive portal"
+                        >
+                          <Pause className="size-3.5 mr-1" />
+                          Pause
+                          <ChevronDown className="size-3 ml-1 opacity-70" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-52">
+                        <DropdownMenuItem
+                          onClick={() => statusMutation.mutate({ pkg, nextStatus: "Paused" })}
+                          className="cursor-pointer"
+                        >
+                          <Pause className="size-4 mr-2 text-amber-600 dark:text-amber-400" />
+                          <div>
+                            <div className="font-medium text-xs">Pause package</div>
+                            <div className="text-[10px] text-muted-foreground">Hide from captive portal buyers</div>
+                          </div>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => statusMutation.mutate({ pkg, nextStatus: "Suspended" })}
+                          className="cursor-pointer"
+                        >
+                          <Ban className="size-4 mr-2 text-rose-600 dark:text-rose-400" />
+                          <div>
+                            <div className="font-medium text-xs">Suspend package</div>
+                            <div className="text-[10px] text-muted-foreground">Suspend & hide from portal</div>
+                          </div>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : isPausedOrSuspended ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={statusMutation.isPending}
+                      onClick={() => statusMutation.mutate({ pkg, nextStatus: "Active" })}
+                      className="text-emerald-700 border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 dark:text-emerald-400 dark:border-emerald-800/80 dark:hover:bg-emerald-950/40"
+                      title="Resume package and show it on the captive portal"
+                    >
+                      <Play className="size-3.5 mr-1 fill-current" />
+                      Resume
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={statusMutation.isPending}
+                      onClick={() => statusMutation.mutate({ pkg, nextStatus: "Active" })}
+                      className="text-emerald-700 border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 dark:text-emerald-400 dark:border-emerald-800/80 dark:hover:bg-emerald-950/40"
+                      title="Activate package"
+                    >
+                      <Play className="size-3.5 mr-1 fill-current" />
+                      Activate
+                    </Button>
+                  )}
                   <Button type="button" size="sm" variant="outline" onClick={() => openEdit(pkg)}>
                     Edit
                   </Button>
@@ -672,16 +1026,16 @@ export default function Packages() {
       remove,
       deleteMutation.isPending,
       sellMutation.isPending,
+      statusMutation,
       inventoryByPackageId,
       inventoryLoading,
       inventoryError,
+      packageSalesStats,
     ],
   )
 
   const pageDescription = isAdmin
-    ? locationFilterId === "all"
-      ? "Package catalog with live voucher inventory (total uploaded and remaining unused across all wifi locations)."
-      : `Voucher totals and remaining stock at ${locationFilterLabel}. Tap Sell to record a sale at this location.`
+    ? `Showing packages and live voucher inventory for ${locationFilterLabel}. Only packages for this location show on its captive portal.`
     : "Packages at your wifi location with voucher totals and remaining stock. Tap Sell to record a sale."
 
   return (
@@ -698,10 +1052,9 @@ export default function Packages() {
               </Label>
               <Select value={locationFilterId} onValueChange={setLocationFilterId}>
                 <SelectTrigger id="packages-location-top" className="h-9 w-full min-w-[11rem] shadow-none sm:w-52">
-                  <SelectValue placeholder="All locations" />
+                  <SelectValue placeholder="Select location" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All locations</SelectItem>
                   {locations.map((l) => (
                     <SelectItem key={l.id} value={l.id}>
                       {l.name}
@@ -823,11 +1176,47 @@ export default function Packages() {
         </p>
       ) : null}
 
-      {scopedToSingleLocation && !inventoryLoading && !inventoryError && tableRows.length === 0 ? (
+      {!inventoryLoading && !inventoryError && tableRows.length === 0 ? (
         <p className="text-muted-foreground rounded-md border border-dashed px-3 py-6 text-center text-sm">
-          No packages with vouchers at {scopedLocationLabel}. Upload vouchers for this location to list them here.
+          No packages found for {scopedLocationLabel}. Tap &ldquo;Add package&rdquo; or upload vouchers for this location to display them here.
         </p>
       ) : null}
+
+      {/* Location All-Time Sales & Stock Summary */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="rounded-lg border border-border bg-card p-3 shadow-none">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">All-time sales</p>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-foreground tabular-nums">
+            {locationSummary.sold.toLocaleString()} <span className="text-xs font-normal text-muted-foreground">sold</span>
+          </p>
+          <p className="text-xs text-muted-foreground tabular-nums">{formatCedis(locationSummary.revenue)} total revenue</p>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-3 shadow-none">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Active Packages</p>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-foreground tabular-nums">
+            {tableRows.filter((p) => p.status === "Active").length} <span className="text-xs font-normal text-muted-foreground">/ {tableRows.length} total</span>
+          </p>
+          <p className="text-xs text-muted-foreground truncate">{locationFilterLabel}</p>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-3 shadow-none">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Vouchers In Stock</p>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400 tabular-nums">
+            {locationSummary.remaining.toLocaleString()}
+          </p>
+          <p className="text-xs text-muted-foreground">Available to sell</p>
+        </div>
+        <div className="rounded-lg border border-border bg-card p-3 shadow-none">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Total Uploaded</p>
+          <p className="mt-1 text-2xl font-bold tracking-tight text-foreground tabular-nums">
+            {locationSummary.totalVouchers.toLocaleString()}
+          </p>
+          <p className="text-xs text-muted-foreground tabular-nums">
+            {locationSummary.totalVouchers > 0
+              ? `${((locationSummary.sold / locationSummary.totalVouchers) * 100).toFixed(1)}% sold rate`
+              : "0% sold"}
+          </p>
+        </div>
+      </div>
 
       <DataTable
         data={tableRows}
@@ -845,25 +1234,19 @@ export default function Packages() {
       >
         <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editing ? "Edit package" : "Add package"}</DialogTitle>
+            <DialogTitle>
+              {editing ? `Edit package (${locationFilterLabel})` : `Add package for ${locationFilterLabel}`}
+            </DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
-            {editing && isAdmin && locationFilterId !== "all" ? (
+            {isAdmin && locationFilterLabel ? (
               <p
-                className="bg-primary/10 text-foreground border-primary/25 rounded-md border px-2 py-1.5 text-xs"
+                className="bg-primary/10 text-foreground border-primary/25 rounded-md border px-2.5 py-2 text-xs"
                 role="status"
               >
-                Saving for <span className="font-medium">{locationFilterLabel}</span> only.
-                If this package is also used at other hostels, a separate copy is created for this
-                hostel and its vouchers/sales are moved onto it — other hostels keep the original.
-              </p>
-            ) : editing ? (
-              <p
-                className="bg-muted/60 text-muted-foreground rounded-md border px-2 py-1.5 text-xs"
-                role="status"
-              >
-                Editing the global package — applies to every hostel still sharing this package.
-                To change only one hostel, filter to that hostel first.
+                {editing
+                  ? `Saving changes for ${locationFilterLabel}. If this package is shared with another location, a separate copy is created for this site so others remain unchanged.`
+                  : `This package will be created specifically for ${locationFilterLabel} and will appear on its captive portal.`}
               </p>
             ) : null}
             {formError ? (
@@ -970,10 +1353,38 @@ export default function Packages() {
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Active">Active</SelectItem>
-                  <SelectItem value="Inactive">Inactive</SelectItem>
+                  <SelectItem value="Active">
+                    <span className="flex items-center gap-2">
+                      <span className="size-2 rounded-full bg-emerald-500 inline-block" />
+                      <span>Active</span>
+                      <span className="text-muted-foreground text-xs">(Visible on captive portal)</span>
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Paused">
+                    <span className="flex items-center gap-2">
+                      <Pause className="size-3 text-amber-500 inline" />
+                      <span>Paused</span>
+                      <span className="text-muted-foreground text-xs">(Hidden from captive portal)</span>
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Suspended">
+                    <span className="flex items-center gap-2">
+                      <Ban className="size-3 text-rose-500 inline" />
+                      <span>Suspended</span>
+                      <span className="text-muted-foreground text-xs">(Hidden from captive portal)</span>
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="Inactive">
+                    <span className="flex items-center gap-2">
+                      <span className="size-2 rounded-full bg-muted-foreground/40 inline-block" />
+                      <span>Inactive</span>
+                    </span>
+                  </SelectItem>
                 </SelectContent>
               </Select>
+              <p className="text-muted-foreground text-xs">
+                Paused or suspended packages do not show when users are buying from the captive portal.
+              </p>
             </div>
           </div>
           <DialogFooter>

@@ -101,9 +101,19 @@ function resolveCalendarYearBounds(value, draft) {
  *   align?: "start" | "center" | "end"
  *   fromYear?: number
  *   toYear?: number
+ *   placeholder?: string
  * }} props
  */
-export function DateRangePicker({ value, onChange, className, id, align = "start", fromYear: fromYearProp, toYear: toYearProp }) {
+export function DateRangePicker({
+  value,
+  onChange,
+  className,
+  id,
+  align = "start",
+  fromYear: fromYearProp,
+  toYear: toYearProp,
+  placeholder = "All time",
+}) {
   const [open, setOpen] = React.useState(false)
   const monthCount = useMonthCount()
   const [draft, setDraft] = React.useState(value)
@@ -145,12 +155,12 @@ export function DateRangePicker({ value, onChange, className, id, align = "start
   const pickingEnd = Boolean(draft?.from && !draft?.to)
 
   const label = React.useMemo(() => {
-    if (!value?.from) return "Custom date range"
+    if (!value?.from) return placeholder
     if (value.to) {
       return `${format(value.from, "MMM d, yyyy")} – ${format(value.to, "MMM d, yyyy")}`
     }
     return `${format(value.from, "MMM d, yyyy")} – …`
-  }, [value])
+  }, [value, placeholder])
 
   const commitFrom = (text) => {
     const trimmed = text.trim()
@@ -304,6 +314,17 @@ export function DateRangePicker({ value, onChange, className, id, align = "start
         </div>
 
         <div className="border-border bg-muted/30 flex flex-wrap items-center gap-2 border-t px-3 py-2.5">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              onChange(undefined)
+              setOpen(false)
+            }}
+          >
+            All time
+          </Button>
           <Button type="button" variant="secondary" size="sm" onClick={applyThisWeek}>
             This week
           </Button>
